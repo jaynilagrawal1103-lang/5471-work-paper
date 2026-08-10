@@ -1,0 +1,23 @@
+{
+  "name": "form-5471-workpaper",
+  "version": "2.1.0",
+  "private": true,
+  "description": "Populates a Form 5471 master workbook from client documents, entirely in the browser.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && npx --yes serve dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}
