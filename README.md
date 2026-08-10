@@ -43,11 +43,15 @@ workbook — Form 5471 is filed per foreign corporation, so nothing is consolida
 
 ### PDF extraction
 
-PDFs are parsed with no external library, using the browser's own
-`DecompressionStream` for FlateDecode. The extractor handles compressed object
+PDFs are parsed by pdf.js, bundled and inlined at build time — no CDN, no separate
+worker file, no network access; the worker runs on the main thread. Glyph positions
+are reconstructed into rows and columns, so the existing mapping engine works on
+PDFs unchanged.
+
+A dependency-free fallback parser (the browser's own `DecompressionStream` for
+FlateDecode) is kept for producers pdf.js rejects. It handles compressed object
 streams, text inside Form XObjects, and Identity-H CID fonts with no ToUnicode map
-(recovering characters by inverting the embedded TrueType `cmap` table). Text is
-returned as positional rows, so the existing mapping engine works on PDFs unchanged.
+(recovering characters by inverting the embedded TrueType `cmap` table).
 
 Scanned PDFs have no text layer; the tool reports that plainly rather than returning
 an empty result.
