@@ -218,7 +218,7 @@ export const FORMULA_REFS: Record<string, (ref: string) => boolean> = {
    leaves their row unused so junk labels never ship in a generated file. */
 export const DEMO_RELABELS: Record<string, string[]> = {
   [SHEET.is]: ["C34", "C35", "C36", "C37", "C38", "C39", "C40", "C41", "C42", "C43", "C44", "C45", "C46", "C47", "C48", "C49"],
-  [SHEET.bs]: ["B54", "B55"],
+  [SHEET.bs]: ["B48", "B54", "B55"],
 };
 
 export type MappingRule = { kw: string[]; t: string };

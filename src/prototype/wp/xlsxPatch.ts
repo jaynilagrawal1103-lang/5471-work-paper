@@ -51,7 +51,7 @@ export function setCell(xml: string, ref: string, value: CellValue): string {
       return xml;
     }
     const styleMatch = /\bs="(\d+)"/.exec(hit[1]);
-    return xml.replace(cellRe, buildCell(ref, value, styleMatch ? styleMatch[1] : null));
+    return xml.replace(cellRe, () => buildCell(ref, value, styleMatch ? styleMatch[1] : null));
   }
 
   // 2. Row present — insert the cell in column order.
@@ -59,14 +59,14 @@ export function setCell(xml: string, ref: string, value: CellValue): string {
   const rowHit = rowRe.exec(xml);
   if (rowHit) {
     const newCell = buildCell(ref, value, null);
-    if (rowHit[2] === "/>") return xml.replace(rowRe, `<row r="${row}"${rowHit[1]}>${newCell}</row>`);
+    if (rowHit[2] === "/>") return xml.replace(rowRe, () => `<row r="${row}"${rowHit[1]}>${newCell}</row>`);
     const inner = rowHit[3];
     let insertAt = inner.length;
     for (const m of inner.matchAll(/<c r="([A-Z]+)(\d+)"/g)) {
       if (colToNum(m[1]) > colNum) { insertAt = m.index!; break; }
     }
     const merged = inner.slice(0, insertAt) + newCell + inner.slice(insertAt);
-    return xml.replace(rowRe, `<row r="${row}"${rowHit[1]}>${merged}</row>`);
+    return xml.replace(rowRe, () => `<row r="${row}"${rowHit[1]}>${merged}</row>`);
   }
 
   // 3. Row absent — insert a new row in row order.
@@ -74,8 +74,8 @@ export function setCell(xml: string, ref: string, value: CellValue): string {
   for (const m of xml.matchAll(/<row r="(\d+)"/g)) {
     if (parseInt(m[1], 10) > row) return xml.slice(0, m.index!) + newRow + xml.slice(m.index!);
   }
-  if (/<sheetData\s*\/>/.test(xml)) return xml.replace(/<sheetData\s*\/>/, `<sheetData>${newRow}</sheetData>`);
-  return xml.replace("</sheetData>", newRow + "</sheetData>");
+  if (/<sheetData\s*\/>/.test(xml)) return xml.replace(/<sheetData\s*\/>/, () => `<sheetData>${newRow}</sheetData>`);
+  return xml.replace("</sheetData>", () => newRow + "</sheetData>");
 }
 
 async function sheetIndex(zip: any): Promise<Record<string, string>> {
@@ -133,7 +133,19 @@ export async function applyWrites(zip: any, writes: Writes): Promise<PatchReport
     zip.file(path, xml);
   }
 
+  // Removing calcChain.xml leaves dangling part references behind — strip
+  // them too, or strict consumers prompt to "repair" the workbook.
   zip.remove("xl/calcChain.xml");
+  const ct = zip.file("[Content_Types].xml");
+  if (ct) {
+    const ctXml: string = await ct.async("string");
+    zip.file("[Content_Types].xml", ctXml.replace(/<Override[^>]*PartName="\/xl\/calcChain\.xml"[^>]*\/>/g, ""));
+  }
+  const wbRels = zip.file("xl/_rels/workbook.xml.rels");
+  if (wbRels) {
+    const relXml: string = await wbRels.async("string");
+    zip.file("xl/_rels/workbook.xml.rels", relXml.replace(/<Relationship\b[^>]*Target="calcChain\.xml"[^>]*\/>/g, ""));
+  }
   const wbXml: string = await zip.file("xl/workbook.xml").async("string");
   zip.file("xl/workbook.xml", forceRecalc(wbXml));
   return report;
@@ -163,7 +175,9 @@ export async function resolveTemplateRows(
     );
   }
 
-  const labelByRow = new Map<number, string>();
+  // Labels keyed by (column, row) — the query names its label column, and a
+  // stray match in some other column must not move a write.
+  const labels = new Map<string, string>();
   for (const cm of xml.matchAll(/<c r="([A-Z]+)(\d+)"([^>]*)>([\s\S]*?)<\/c>/g)) {
     const [, col, rowStr, attrs, body] = cm;
     const tm = /t="([^"]+)"/.exec(attrs);
@@ -174,18 +188,17 @@ export async function resolveTemplateRows(
     } else if (tm && tm[1] === "inlineStr") {
       text = [...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((t) => t[1]).join("");
     }
-    if (text) {
-      const row = parseInt(rowStr, 10);
-      if (!labelByRow.has(row) || col === "B") labelByRow.set(row, text);
-    }
+    if (text) labels.set(`${col}:${rowStr}`, text);
   }
 
   return queries.map((q) => {
     const want = q.contains.toLowerCase();
     const not = q.excludes?.toLowerCase();
-    for (const [row, text] of labelByRow) {
+    const col = (q.col || "B").toUpperCase();
+    for (const [key, text] of labels) {
+      if (!key.startsWith(col + ":")) continue;
       const t = text.toLowerCase();
-      if (t.includes(want) && (!not || !t.includes(not))) return row;
+      if (t.includes(want) && (!not || !t.includes(not))) return parseInt(key.slice(col.length + 1), 10);
     }
     return null;
   });

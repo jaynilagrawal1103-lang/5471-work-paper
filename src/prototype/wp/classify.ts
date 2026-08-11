@@ -104,15 +104,19 @@ function classifyPdfPage(doc: PdfDoc, page: number): PageInfo {
   if (/dividend and interest schedule/.test(head)) return mk("ato-dividend-schedule", 3);
   if (/calculation statement/.test(head)) return mk("ato-calc-statement", 2);
 
-  // Statutory financial statements: entity + ABN band, section title.
-  const fsBand = /\babn\b/.test(head) || /page \d+ of \d+/.test(foot);
+  // Statutory financial statements: entity + ABN/ACN band, section title.
+  const fsBand = /\babn\b|\bacn\b|\ba\.\s?b\.\s?n\.?\b|company (number|registration)/.test(head) || /page \d+ of \d+/.test(foot);
   if (fsBand) {
     // Cover/administrative pages mention every section name — test them first.
     if (/\bcontents\b|directors'? statement|compilation report|independent auditor/.test(head)) return mk("fs-cover", 3);
     if (/trading account/.test(head)) return mk("fs-trading", 3);
-    if (/retained profits|movements? in equity/.test(all) && /opening retained profits|dividends/.test(all)) return mk("fs-equity", 3);
+    // A balance-sheet TITLE wins over equity-movement content: a balance sheet
+    // may mention retained profits in a note, but never carries the movement.
     if (/statement of financial position|balance sheet/.test(head)) return mk("fs-balance-sheet", 3);
-    if (/statement of financial performance|profit and loss|income statement/.test(head)) return mk("fs-pnl", 3);
+    // Equity movements need the strong anchor — a P&L-titled page carrying the
+    // retained-profits roll-forward is the equity statement, not a P&L.
+    if (/opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
+    if (/statement of financial performance|profit (and|or) loss|income statement|statement of comprehensive income/.test(head)) return mk("fs-pnl", 3);
     if (/accounting policies|notes to /.test(head)) return mk("fs-notes", 2);
     if (/financial statements/.test(head)) return mk("fs-cover", 2);
   }
@@ -123,7 +127,8 @@ function classifyPdfPage(doc: PdfDoc, page: number): PageInfo {
 /** Kinds that legitimately continue onto anchor-less following pages. */
 const CONTINUABLE = new Set<PageKind>([
   "us-5471-schJ", "us-5471-schE", "us-5471-schM", "us-5471-schP",
-  "fs-balance-sheet", "us-statements", "ato-return", "tandc",
+  "fs-balance-sheet", "fs-pnl", "fs-trading", "fs-equity",
+  "us-statements", "ato-return", "tandc",
 ]);
 
 export function classifyPages(doc: PdfDoc): PageInfo[] {
@@ -264,12 +269,17 @@ const LEDGER_HEADERS = ["date", "details", "reference", "currency", "total"];
 
 function looksLikeLedger(parsed: ParsedDoc, fileName: string): boolean {
   if (/expenses? by contact|by contact/i.test(fileName)) return true;
+  if (parsed.sheetNames?.some((n) => /expenses? by contact/i.test(n))) return true;
   for (const row of parsed.grid.slice(0, 8)) {
     const cells = row.map((c) => String(c || "").toLowerCase().trim());
     const hits = LEDGER_HEADERS.filter((h) => cells.some((c) => c === h || c.startsWith(h + " ("))).length;
-    if (hits >= 3) return true;
+    // Generic date/reference headers are not enough — a transaction ledger
+    // must carry a currency column or the Total (Source)/(USD) pair, or a
+    // dated trial balance would be silently diverted away from mapping.
+    const hasCurrency = cells.includes("currency");
+    const hasTotals = cells.some((c) => c.startsWith("total (source)")) || cells.some((c) => c.startsWith("total (usd)"));
+    if (hits >= 3 && (hasCurrency || hasTotals)) return true;
   }
-  if (parsed.sheetNames?.some((n) => /expenses? by contact/i.test(n))) return true;
   return false;
 }
 
@@ -298,8 +308,10 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
   const has = (pre: string) => [...kinds].some((k) => k.startsWith(pre));
 
   let kind: DocKind = "unknown";
-  if (has("fs-")) kind = "cfc-financial-statements";
-  else if (has("us-")) kind = "prior-year-us-return";
+  // US-form pages dominate: a prior-year 5471 client copy often staples the
+  // old financial statements behind it — those must NOT feed current mapping.
+  if (has("us-")) kind = "prior-year-us-return";
+  else if (has("fs-")) kind = "cfc-financial-statements";
   else if (has("ato-")) kind = "cfc-tax-return";
   else if (kinds.size === 1 && kinds.has("tandc")) kind = "terms-and-conditions";
 
@@ -329,64 +341,89 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
 
 function valueFingerprint(parsed: ParsedDoc, pages: Set<number> | null): Set<number> {
   const out = new Set<number>();
+  const add = (raw: string) => {
+    // Cells with letters are captions/codes; parsing their digit residue
+    // ("Item 8J") pollutes the fingerprint and inflates similarity.
+    if (/[A-Za-z]{2,}/.test(raw)) return;
+    const n = numeric(raw);
+    if (n !== null && Math.abs(n) >= 100) out.add(Math.round(Math.abs(n)));
+  };
   if (parsed.pdf && pages) {
     for (const r of parsed.pdf.rows) {
       if (!pages.has(r.page)) continue;
-      for (const c of r.cells) {
-        const n = numeric(c.text);
-        if (n !== null && Math.abs(n) >= 100) out.add(Math.round(Math.abs(n)));
-      }
+      for (const c of r.cells) add(c.text);
     }
   } else {
-    for (const row of parsed.grid) for (const c of row) {
-      const n = numeric(c);
-      if (n !== null && Math.abs(n) >= 100) out.add(Math.round(Math.abs(n)));
-    }
+    for (const row of parsed.grid) for (const c of row) add(String(c ?? ""));
   }
   return out;
 }
 
-/** Mark documents that duplicate a page-range of another (the standalone AU
-    return vs pages 11-23 of the combined client copy). The composite wins. */
+/** Pages whose contents actually feed mapping — the comparison surface. */
+const feedablePages = (cls: DocClass): Set<number> | null => {
+  const pages = new Set(
+    cls.pages.filter((p) => p.kind.startsWith("ato-") || p.kind.startsWith("fs-")).map((p) => p.page),
+  );
+  return pages.size ? pages : null;
+};
+
+/** Mark documents that duplicate another's feedable content: the standalone
+    AU return vs the client-copy composite, a re-uploaded statements PDF, or
+    the same trial-balance workbook twice. The wider document wins. */
 export function markDuplicates(classes: DocClass[], parsedByFile: Map<string, ParsedDoc>): void {
-  const atoPages = (cls: DocClass) =>
-    new Set(cls.pages.filter((p) => p.kind.startsWith("ato-")).map((p) => p.page));
-  const withAto = classes.filter((c) => atoPages(c).size > 0 && !c.duplicateOf);
-  for (let i = 0; i < withAto.length; i++) {
-    for (let j = i + 1; j < withAto.length; j++) {
-      const a = withAto[i];
-      const b = withAto[j];
+  // Prior-year returns are excluded: their figures legitimately overlap the
+  // statements' comparative columns, and their feed policy already contains them.
+  const candidates = classes.filter((c) =>
+    !c.duplicateOf &&
+    (c.kind === "cfc-financial-statements" || c.kind === "cfc-tax-return" ||
+     c.kind === "trial-balance" || c.kind === "related-party-ledger"));
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = i + 1; j < candidates.length; j++) {
+      const a = candidates[i];
+      const b = candidates[j];
+      if (a.duplicateOf || b.duplicateOf) continue;
       if (a.statementYear && b.statementYear && a.statementYear !== b.statementYear) continue;
-      const fa = valueFingerprint(parsedByFile.get(a.fileId)!, atoPages(a));
-      const fb = valueFingerprint(parsedByFile.get(b.fileId)!, atoPages(b));
-      if (!fa.size || !fb.size) continue;
+      const pa = parsedByFile.get(a.fileId);
+      const pb = parsedByFile.get(b.fileId);
+      if (!pa || !pb) continue;
+      // A PDF with no feedable pages has nothing to duplicate — never fall
+      // back to fingerprinting its whole text.
+      if (pa.pdf && !feedablePages(a)) continue;
+      if (pb.pdf && !feedablePages(b)) continue;
+      const fa = valueFingerprint(pa, pa.pdf ? feedablePages(a) : null);
+      const fb = valueFingerprint(pb, pb.pdf ? feedablePages(b) : null);
+      if (fa.size < 5 || fb.size < 5) continue;   // too little data to judge
       let inter = 0;
       for (const v of fa) if (fb.has(v)) inter++;
       const jaccard = inter / (fa.size + fb.size - inter);
-      if (jaccard >= 0.8) {
-        // Prefer the doc with the wider page mix (the client-copy composite).
+      // The smaller fingerprint fully contained in the larger also counts —
+      // a standalone return IS a page-range of the composite.
+      const containment = inter / Math.min(fa.size, fb.size);
+      if (jaccard >= 0.8 || containment >= 0.9) {
         const [keep, dup] = a.pages.length >= b.pages.length ? [a, b] : [b, a];
         dup.duplicateOf = keep.fileId;
         dup.notes.push({
           level: "info",
-          message: `${dup.fileName} duplicates the tax-return pages of ${keep.fileName} — the combined client copy is used; the standalone file feeds nothing.`,
+          message: `${dup.fileName} duplicates the content of ${keep.fileName} — the wider document is used; the duplicate feeds nothing.`,
         });
       }
     }
   }
 }
 
-export function deriveCaseYears(classes: DocClass[]): { cy: number | null; py: number | null } {
+export function deriveCaseYears(classes: DocClass[]): { cy: number | null; py: number | null; dissent: number[] } {
   const votes = new Map<number, number>();
   for (const c of classes) {
-    if ((c.kind === "cfc-financial-statements" || c.kind === "cfc-tax-return") && c.statementYear) {
+    if ((c.kind === "cfc-financial-statements" || c.kind === "cfc-tax-return") && !c.duplicateOf && c.statementYear) {
       votes.set(c.statementYear, (votes.get(c.statementYear) || 0) + 1);
     }
   }
-  let cy: number | null = null;
-  let n = 0;
-  for (const [y, v] of votes) if (v > n || (v === n && (cy === null || y > cy))) { cy = y; n = v; }
-  return { cy, py: cy ? cy - 1 : null };
+  // The NEWEST voted year is the case year: older statements in the pile are
+  // reference material, and majority counting would let two stale copies
+  // outvote the current file. Dissenting years are surfaced for review.
+  const years = [...votes.keys()].sort((a, b) => b - a);
+  const cy = years[0] ?? null;
+  return { cy, py: cy ? cy - 1 : null, dissent: years.slice(1) };
 }
 
 /* ---------- the feed policy ---------- */

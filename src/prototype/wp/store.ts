@@ -7,8 +7,8 @@ import {
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import {
-  classifyParsedDoc, deriveCaseYears, feedsForPage, markDuplicates, pagesForFeed,
-  type DocClass, type FeedTarget,
+  classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
+  type DocClass,
 } from "./classify";
 import { extractCarryForward, type CarryForward } from "./carryForward";
 import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
@@ -433,14 +433,18 @@ export const actions = {
     if (!ent || !target) return;
     const row = ent.unmatched[index];
     if (!row) return;
-    logEvent("Unmatched label assigned", `"${row.label}" → ${target}`, ent.name);
-    const sourceLabels = { ...ent.sourceLabels, [target]: { label: row.label, values: row.values } };
     const lines = { ...ent.lines };
     const contributions = { ...ent.contributions };
-    manualApply(lines, contributions, target, row, "manual");
+    const relabels = { ...ent.relabels };
+    if (!manualApply(ent, lines, contributions, relabels, target, row, "manual")) {
+      toast(`"${row.label}" could not be booked to ${target} — the row's year columns don't identify a current-year value. Enter it directly on the line instead.`, "bad");
+      return;
+    }
+    logEvent("Unmatched label assigned", `"${row.label}" → ${target}`, ent.name);
     updateEntity(entityId, {
       lines,
-      sourceLabels,
+      relabels,
+      sourceLabels: { ...ent.sourceLabels, [target]: { label: row.label, values: row.values } },
       contributions,
       unmatched: ent.unmatched.filter((_, i) => i !== index),
     });
@@ -478,6 +482,14 @@ export const actions = {
 
     logEvent("Processing started", `${start.files.length} document(s)`, start.name);
     // A re-run starts clean: mapped lines, provenance and review state rebuild.
+    // Snapshot what the wipe destroys so a mid-run failure can restore it,
+    // and so sign-offs survive a re-process.
+    const before = {
+      lines: start.lines, relabels: start.relabels, sourceLabels: start.sourceLabels,
+      contributions: start.contributions, unmatched: start.unmatched,
+      reviewItems: start.reviewItems, extraWrites: start.extraWrites,
+      dividends: start.dividends, docClasses: start.docClasses,
+    };
     updateEntity(entityId, {
       status: "processing", progress: 0, log: [],
       lines: {}, relabels: {}, sourceLabels: {}, contributions: {}, unmatched: [],
@@ -521,10 +533,31 @@ export const actions = {
           }
         }
         markDuplicates(bundles.map((b) => b.cls), parsedByFile);
-        caseYears = deriveCaseYears(bundles.map((b) => b.cls));
+        const derived = deriveCaseYears(bundles.map((b) => b.cls));
+        caseYears = { cy: derived.cy, py: derived.py };
+        if (derived.dissent.length) {
+          rv({
+            id: "case-year-dissent", level: "warn", category: "consistency",
+            message: `Documents report on different years: ${derived.cy} was taken as the case year; ${derived.dissent.join(", ")} document(s) were treated as reference material. Confirm the engagement year.`,
+          });
+        }
         for (const b of bundles) {
           log.push(`${b.file.name}: classified as ${b.cls.kind}${b.cls.statementYear ? ` (${b.cls.statementYear})` : ""}${b.cls.duplicateOf ? " — duplicate, excluded" : ""}`);
           for (const n of b.cls.notes) rv({ level: n.level, category: "process", message: n.message, source: b.file.name });
+          if (b.cls.kind === "unknown" && !b.cls.duplicateOf) {
+            rv({
+              level: "warn", category: "process",
+              message: `${b.file.name} could not be classified and fed NOTHING into the work paper. If it belongs to this entity, tell me what it is — or map its lines manually.`,
+              source: b.file.name,
+            });
+          }
+          if (b.cls.kind === "prior-year-us-return" && caseYears.cy && b.cls.statementYear === caseYears.cy) {
+            rv({
+              level: "warn", category: "consistency",
+              message: `${b.file.name} is a US return for the CURRENT year (${caseYears.cy}) — expected a prior-year reference copy. Its carry-forward figures were NOT used.`,
+              source: b.file.name,
+            });
+          }
         }
         if (bundles.some((b) => b.cls.pages.some((p) => p.kind === "us-1120"))) {
           rv({
@@ -562,7 +595,25 @@ export const actions = {
             const atoPages = pagesForFeed(cls, "targeted-ato");
             if (atoPages.size) ato = { ...pullAtoFacts(parsed.pdf, atoPages), ...ato };
             const cfPages = pagesForFeed(cls, "carry-forward");
-            if (cfPages.size && !cf) { cf = extractCarryForward(cls, parsed); cfSource = file.name; }
+            if (cfPages.size && !cf && !(caseYears.cy && cls.statementYear === caseYears.cy)) {
+              const candidate = extractCarryForward(cls, parsed);
+              // Identity gate: the prior return's foreign corporation must be
+              // THIS entity, or a sister CFC's return would seed the numbers.
+              const knownName =
+                (state.entities.find((e) => e.id === entityId)?.profile.legalName || "") ||
+                bundles.find((x) => x.cls.kind === "cfc-financial-statements" && x.cls.entityName)?.cls.entityName || "";
+              const cfName = cls.foreignCorpName || candidate.cfcName || "";
+              if (knownName && cfName && entitySimilarity(knownName, cfName) < 0.5) {
+                rv({
+                  level: "warn", category: "carry-forward",
+                  message: `${file.name} names "${cfName}" as the foreign corporation, but this work paper's entity is "${knownName}" — its carry-forward figures were NOT used.`,
+                  source: file.name,
+                });
+              } else {
+                cf = candidate;
+                cfSource = file.name;
+              }
+            }
             const profilePages = pagesForFeed(cls, "profile");
             if (profilePages.size) {
               profileGrids.push(parsed.pdf.rows.filter((r) => profilePages.has(r.page)).map((r) => r.cells.map((c) => c.text)));
@@ -626,6 +677,22 @@ export const actions = {
           if (resolved.overflowNote) rv({ level: "info", category: "mapping", message: resolved.overflowNote, source: m.docName });
 
           for (const r of routed) {
+            // Summary and detailed statements in one document repeat the same
+            // figures — the identical caption+value from another PAGE of the
+            // same document counts once, not twice.
+            const dupe = (contributions[resolved.target] || []).some((c) =>
+              c.docId === m.docId && c.page !== m.row.page &&
+              c.label.toLowerCase() === m.row.label.toLowerCase() &&
+              c.value === r.value && c.field === r.field,
+            );
+            if (dupe) {
+              rv({
+                level: "info", category: "mapping",
+                message: `"${m.row.label}" (${r.value.toLocaleString()}) appears on two pages of ${m.docName} — counted once.`,
+                source: m.docName,
+              });
+              continue;
+            }
             const cur = lines[resolved.target] || {};
             if (r.field === "amount") lines[resolved.target] = { amount: (typeof cur.amount === "number" ? cur.amount : 0) + r.value };
             else if (r.field === "eoy") lines[resolved.target] = { ...cur, eoy: (typeof cur.eoy === "number" ? cur.eoy : 0) + r.value };
@@ -724,7 +791,16 @@ export const actions = {
         if (!ent) return;   // removed mid-run
         const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, ledger, rv });
         log.push(`${writes.list.length} schedule cell(s) prepared beyond the core statements`);
-        updateEntity(entityId, { extraWrites: writes.list, dividends: writes.dividends, reviewItems: review, log: [...log] });
+        // Sign-offs survive re-processing: re-apply dismissals by stable id.
+        const priorDismissed = new Map(before.reviewItems.filter((r) => r.dismissed).map((r) => [r.id, r]));
+        const merged = review.map((r) => {
+          const p = priorDismissed.get(r.id);
+          return p ? { ...r, dismissed: true, dismissedNote: p.dismissedNote } : r;
+        });
+        for (const p of before.reviewItems) {
+          if (p.dismissed && DERIVED_IDS.has(p.id) && !merged.some((r) => r.id === p.id)) merged.push(p);
+        }
+        updateEntity(entityId, { extraWrites: writes.list, dividends: writes.dividends, reviewItems: merged, log: [...log] });
       }
     }
 
@@ -740,7 +816,9 @@ export const actions = {
       toast(`${done.name} processed — ${Object.keys(done.lines).length} lines mapped`, "ok");
     }
     } catch (err) {
-      updateEntity(entityId, { status: "error" });
+      // Restore the pre-run state — a failed re-process must not leave the
+      // entity stripped of everything it had before.
+      updateEntity(entityId, { ...before, status: "error" });
       toast("Processing failed: " + (err as Error).message, "bad");
     }
   },
@@ -785,18 +863,22 @@ export const actions = {
       const lines = { ...fresh.lines };
       const sourceLabels = { ...fresh.sourceLabels };
       const contributions = { ...fresh.contributions };
+      const relabels = { ...fresh.relabels };
       const still: (ExtractedRow & { docId?: string; docName?: string })[] = [];
       let n = 0;
       fresh.unmatched.forEach((u, i) => {
         const t = parsed && parsed.map ? parsed.map[String(i)] : null;
-        if (!t || typeof t !== "string" || !/^(IS|BS):\d+$/.test(t)) { still.push(u); return; }
-        manualApply(lines, contributions, t, u, "groq");
+        if (!t || typeof t !== "string" || !manualApply(fresh, lines, contributions, relabels, t, u, "groq")) {
+          still.push(u);
+          return;
+        }
         sourceLabels[t] = { label: u.label, values: u.values };
         n++;
       });
       logEvent("Groq mapping applied", `${n} label(s) resolved with ${state.groq.model}`, fresh.name, "groq");
       updateEntity(entityId, {
         lines,
+        relabels,
         sourceLabels,
         contributions,
         unmatched: still,
@@ -1044,10 +1126,14 @@ function routeRow(
   const hasYears = !!row.years && row.years.some((y) => y !== null);
   const out: Routed[] = [];
 
-  if (hasYears && years.cy) {
+  if (hasYears) {
+    // When the case years are unknown (grid-only engagements), the row's own
+    // detected header years still identify the columns: newest = current.
+    const cy = years.cy ?? Math.max(...vals.filter((x) => x.y !== null).map((x) => x.y as number));
+    const py = years.cy ? years.py : cy - 1;
     for (const { v, y } of vals) {
-      if (y === years.cy) out.push(isBS ? { field: "eoy", value: v, year: y } : { field: "amount", value: v, year: y });
-      else if (y === years.py && isBS) out.push({ field: "boy", value: v, year: y });
+      if (y === cy) out.push(isBS ? { field: "eoy", value: v, year: y } : { field: "amount", value: v, year: y });
+      else if (y === py && isBS) out.push({ field: "boy", value: v, year: y });
       // Prior-year income and un-snapped values are correctly ignored.
     }
     return out;
@@ -1121,28 +1207,44 @@ function groupNameStems(names: string[]): Set<string> {
   return stems;
 }
 
-/** A balance-sheet caption naming a group entity is a related-party balance:
-    debit → loans to related persons, credit → loans from related persons. */
+/** A balance-sheet caption naming a group entity AND carrying receivable/
+    payable context is a related-party balance. A bare name hit is not enough
+    — common words leak into name stems, and defaulting to an asset would
+    fabricate balances. */
 function relatedPartyTarget(label: string, stems: Set<string>): "BS:19" | "BS:52" | null {
   const l = label.toLowerCase();
   if (![...stems].some((s) => new RegExp(`\\b${s}\\b`).test(l))) return null;
-  if (/\bdr\b|debtor|receivable|owed by/.test(l)) return "BS:19";
-  if (/\bcr\b|creditor|payable|owed to|loan from/.test(l)) return "BS:52";
-  return "BS:19";
+  if (/\bdr\b|debtor|receivable|owed by|due from|loan to/.test(l)) return "BS:19";
+  if (/\bcr\b|creditor|payable|owed to|due to|loan from/.test(l)) return "BS:52";
+  return null;
 }
 
 const daysInYear = (y: number) => ((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 366 : 365);
 
-/** Apply an explicitly assigned row (manual or Groq) with provenance. */
+/** Valid explicit-assignment targets — a hallucinated "IS:9" (subtotal) or
+    "IS:99" from Groq must never reach the write path. */
+const VALID_TARGETS = new Set([
+  ...IS_LINES.map((l) => `IS:${l.row}`),
+  ...BS_LINES.map((l) => `BS:${l.row}`),
+]);
+
+/** Apply an explicitly assigned row (manual or Groq) with provenance.
+    Returns false when the assignment could not be applied safely. */
 function manualApply(
+  ent: Entity,
   lines: Record<string, LineValue>,
   contributions: Record<string, Contribution[]>,
+  relabels: Record<string, string>,
   target: string,
   row: ExtractedRow & { docId?: string; docName?: string },
   via: "manual" | "groq",
-) {
-  const routed = routeRow(row, target.startsWith("BS"), { cy: null, py: null }, "grid");
-  if (routed === "ambiguous") return;
+): boolean {
+  if (!VALID_TARGETS.has(target)) return false;
+  // Year identity survives into unmatched rows — honour it, never guess the
+  // prior-year column into the current year.
+  const caseYears = deriveCaseYears(Object.values(ent.docClasses));
+  const routed = routeRow(row, target.startsWith("BS"), caseYears, row.years?.some((y) => y !== null) ? "pdf" : "grid");
+  if (routed === "ambiguous" || !routed.length) return false;
   for (const r of routed) {
     const cur = lines[target] || {};
     if (r.field === "amount") lines[target] = { amount: (typeof cur.amount === "number" ? cur.amount : 0) + r.value };
@@ -1153,6 +1255,12 @@ function manualApply(
       label: row.label, value: r.value, field: r.field, year: r.year, via,
     });
   }
+  // Relabel-capable rows carry the source caption into the workbook.
+  const spec = target.startsWith("IS")
+    ? IS_LINES.find((l) => `IS:${l.row}` === target)
+    : BS_LINES.find((l) => `BS:${l.row}` === target);
+  if (spec?.relabel && !relabels[target]) relabels[target] = row.label;
+  return true;
 }
 
 /* ---------------- targeted document facts ---------------- */
@@ -1178,10 +1286,13 @@ function pullEquityFacts(pdf: NonNullable<ParsedDoc["pdf"]>, pages: Set<number>,
     const l = r.label.toLowerCase();
     const v = cyVal(r);
     if (v === null) continue;
-    if (out.openingCY === null && /opening retained (profits|earnings)/.test(l)) out.openingCY = v;
-    else if (out.closingCY === null && /closing retained (profits|earnings)/.test(l)) out.closingCY = v;
+    if (out.openingCY === null && /(opening|beginning of).*retained (profits|earnings)|retained (profits|earnings).*(beginning|start) of/.test(l)) out.openingCY = v;
+    else if (out.closingCY === null && /(closing|end of).*retained (profits|earnings)|retained (profits|earnings).*end of/.test(l)) out.closingCY = v;
     else if (out.dividendsCY === null && /dividend/.test(l)) out.dividendsCY = Math.abs(v);
-    else if (out.profitCY === null && /(net )?(profit|loss)/.test(l)) out.profitCY = v;
+    else if (out.profitCY === null && /(net )?(profit|loss)/.test(l) && !/retained/.test(l)) {
+      // "Loss for the year 25,164" prints positive; a loss-only caption means negative.
+      out.profitCY = /\bloss\b/.test(l) && !/\bprofit\b/.test(l) ? -Math.abs(v) : v;
+    }
   }
   return out;
 }
@@ -1210,13 +1321,19 @@ function pullAtoFacts(pdf: NonNullable<ParsedDoc["pdf"]>, pages: Set<number>): A
     }
     return undefined;
   };
-  out.totalDebt = val(/^total debt\b/i);
-  out.paygRefundable = val(/total amount of tax refundable|payg instalments raised/i);
-  out.taxPayable = val(/^tax payable\b/i);
-  out.frankedDividendsPaid = val(/franked (dividends|distributions) paid/i);
-  out.frankingOpening = val(/opening franking account balance/i);
-  out.frankingClosing = val(/closing franking account balance/i);
-  out.frankingCredit = val(/franking credit\b/i);
+  // Assign only when found — an undefined-valued property would override a
+  // fact found in an earlier document when the objects are spread-merged.
+  const setFact = (k: keyof AtoFacts, re: RegExp) => {
+    const v = val(re);
+    if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+  };
+  setFact("totalDebt", /^total debt\b/i);
+  setFact("paygRefundable", /total amount of tax refundable|payg instalments raised/i);
+  setFact("taxPayable", /^tax payable\b/i);
+  setFact("frankedDividendsPaid", /franked (dividends|distributions) paid/i);
+  setFact("frankingOpening", /opening franking account balance/i);
+  setFact("frankingClosing", /closing franking account balance/i);
+  setFact("frankingCredit", /franking credit\b/i);
   if (rows.some((r) => /international related parties/i.test(r.cells.join(" ")))) out.relatedPartyYes = true;
 
   // The dividend payment date: the franking worksheet logs "Dividend Paid"
@@ -1403,7 +1520,12 @@ async function materializeCaseWrites(
   }
 
   /* ---- related-party ledger → Schedule M services ---- */
-  if (ledger && avgRate) {
+  if (ledger && avgRate && ledger.invoiceCount + ledger.creditNoteCount === 0) {
+    rv({
+      level: "warn", category: "related-party",
+      message: `A related-party ledger was read but no functional-currency invoice amounts could be parsed${ledger.ledgerTotalUSD ? ` (its own USD total shows ${ledger.ledgerTotalUSD.toLocaleString()})` : ""} — Schedule M was NOT pre-filled; check the ledger's column layout.`,
+    });
+  } else if (ledger && avgRate) {
     const services = Math.round(ledger.invoicesFunctional / avgRate);
     w({
       sheet: SHEET.schM, ref: "G15", value: services,
@@ -1586,11 +1708,6 @@ export function buildWrites(ent: Entity): Writes {
     const rl = ent.relabels[`IS:${l.row}`];
     if (l.relabel && rl) is[`C${l.row}`] = rl;
   });
-  // Leftover demo captions on unused relabel rows are cleared, never shipped.
-  for (const ref of DEMO_RELABELS[SHEET.is] || []) {
-    const row = Number(ref.slice(1));
-    if (is[`F${row}`] === undefined && is[`C${row}`] === undefined) is[ref] = "";
-  }
 
   const bs: Record<string, string | number> = {};
   BS_LINES.forEach((l) => {
@@ -1602,23 +1719,35 @@ export function buildWrites(ent: Entity): Writes {
     const rl = ent.relabels[`BS:${l.row}`];
     if (l.relabel && rl) bs[`B${l.row}`] = rl;
   });
-  for (const ref of DEMO_RELABELS[SHEET.bs] || []) {
-    const row = Number(ref.slice(1));
-    if (bs[`D${row}`] === undefined && bs[`F${row}`] === undefined && bs[`B${row}`] === undefined) bs[ref] = "";
-  }
 
   const writes: Writes = {};
   if (Object.keys(basic).length) writes[SHEET.basic] = basic;
-  if (Object.keys(is).length) writes[SHEET.is] = is;
-  if (Object.keys(bs).length) writes[SHEET.bs] = bs;
+  writes[SHEET.is] = is;
+  writes[SHEET.bs] = bs;
 
   // Schedule writes prepared during processing (J, M, R, E, Dividends, …),
-  // refused when they would land on a formula cell.
+  // refused when they would land on a formula cell — and never allowed to
+  // overwrite a value the user staged on the line itself.
   for (const w of ent.extraWrites) {
     const guard = FORMULA_REFS[w.sheet];
     if (guard && guard(w.ref)) continue;
-    (writes[w.sheet] ||= {})[w.ref] = w.value;
+    const sheet = (writes[w.sheet] ||= {});
+    if (sheet[w.ref] !== undefined && sheet[w.ref] !== "" && sheet[w.ref] !== w.value) continue;
+    sheet[w.ref] = w.value;
   }
+
+  // Leftover demo captions on unused relabel rows are cleared, never shipped.
+  // This runs LAST so it can never blank a cell some other source filled.
+  for (const ref of DEMO_RELABELS[SHEET.is] || []) {
+    const row = Number(ref.slice(1));
+    if (is[`F${row}`] === undefined && is[ref] === undefined) is[ref] = "";
+  }
+  for (const ref of DEMO_RELABELS[SHEET.bs] || []) {
+    const row = Number(ref.slice(1));
+    if (bs[`D${row}`] === undefined && bs[`F${row}`] === undefined && bs[ref] === undefined) bs[ref] = "";
+  }
+  if (!Object.keys(is).length) delete writes[SHEET.is];
+  if (!Object.keys(bs).length) delete writes[SHEET.bs];
   return writes;
 }
 
@@ -1662,15 +1791,23 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   return out;
 }
 
+/** Ids validateEntity can produce — stored dismissal tombstones for these
+    must vanish once the underlying condition is resolved. */
+const DERIVED_IDS = new Set([
+  "fx-avg-missing", "fx-cy-missing", "fx-py-missing",
+  "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
+]);
+
 /** Everything the reviewer should see: derived checks + stored case items. */
 export function allReviewItems(ent: Entity): ReviewItem[] {
-  const dismissed = new Map(ent.reviewItems.map((r) => [r.id, r]));
+  const stored = new Map(ent.reviewItems.map((r) => [r.id, r]));
   const derived = validateEntity(ent).map((d) => {
-    const stored = dismissed.get(d.id);
-    return stored ? { ...d, dismissed: stored.dismissed, dismissedNote: stored.dismissedNote } : d;
+    const s = stored.get(d.id);
+    return s ? { ...d, dismissed: s.dismissed, dismissedNote: s.dismissedNote } : d;
   });
-  const derivedIds = new Set(derived.map((d) => d.id));
-  return [...derived, ...ent.reviewItems.filter((r) => !derivedIds.has(r.id))];
+  const currentIds = new Set(derived.map((d) => d.id));
+  // A dismissal of a derived item whose condition no longer holds is a ghost.
+  return [...derived, ...ent.reviewItems.filter((r) => !currentIds.has(r.id) && !DERIVED_IDS.has(r.id))];
 }
 
 export function blockingIssues(ent: Entity): ReviewItem[] {
@@ -1739,10 +1876,12 @@ export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffe
       const col = (/^[A-Z]+/.exec(w.ref) || ["A"])[0];
       const newRef = `${col}${row}`;
       const sheet = writes[sheetName];
-      if (sheet && newRef !== w.ref && sheet[w.ref] !== undefined) {
-        sheet[newRef] = sheet[w.ref];
-        delete sheet[w.ref];
-      }
+      if (!sheet || newRef === w.ref || sheet[w.ref] === undefined) return;
+      // The re-resolved ref must pass the same formula guard as the original.
+      const guard = FORMULA_REFS[sheetName];
+      if (guard && guard(newRef)) { delete sheet[w.ref]; return; }
+      sheet[newRef] = sheet[w.ref];
+      delete sheet[w.ref];
     });
   }
 
