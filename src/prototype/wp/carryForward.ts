@@ -202,6 +202,23 @@ export function extractCarryForward(cls: DocClass, parsed: ParsedDoc): CarryForw
     }
   }
 
-  out.referenceIds = cls.entityIds.filter((id) => /^\d{9}$/.test(id));
+  // Reference IDs only from "Reference ID number" captions — an EIN is a
+  // 9-digit number too, and the filer's EIN must never masquerade as the
+  // CFC's reference ID. The 5471 pages come first, so the CFC's own ID leads.
+  const refIds: string[] = [];
+  for (let i = 0; i < all.length; i++) {
+    const t = all[i].cells.join(" ");
+    if (!/reference id/i.test(t)) continue;
+    const near = /\b(\d{9})\b/.exec(t);
+    if (near && !refIds.includes(near[1])) refIds.push(near[1]);
+    const nxt = all[i + 1];
+    if (nxt && nxt.page === all[i].page) {
+      for (const c of nxt.cells) {
+        const m = /^(\d{9})$/.exec((c || "").trim());
+        if (m && !refIds.includes(m[1])) refIds.push(m[1]);
+      }
+    }
+  }
+  out.referenceIds = refIds;
   return out;
 }

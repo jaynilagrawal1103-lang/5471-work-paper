@@ -661,13 +661,9 @@ export const actions = {
           if (caseYears.cy) propose(profile, "cyEnd", `12/31/${String(caseYears.cy).slice(2)}`, "statement year");
           if (caseYears.py) propose(profile, "pyEnd", `12/31/${String(caseYears.py).slice(2)}`, "statement year");
 
-          for (const rows of profileGrids) {
-            const found = detectProfile(rows);
-            for (const d of found.profile) propose(profile, d.key, d.value, d.sourceLabel);
-            for (const d of found.ownership) propose(ownership, d.key, d.value, d.sourceLabel);
-            for (const cat of found.categories) if (!categories[cat]) { categories[cat] = true; filled++; }
-          }
-
+          // The prior-year 5471's identity block is more authoritative for the
+          // CFC's particulars than generic caption detection — propose it FIRST
+          // so a cover page can't claim the address with the accountant's.
           if (cf) {
             propose(profile, "legalName", cf.cfcName || "", `${cfSource} · 5471 face`);
             propose(profile, "addr1", cf.cfcAddress[0] || "", `${cfSource} · 5471 face`);
@@ -695,6 +691,13 @@ export const actions = {
                 target: `${SHEET.basic}!B42:B50`, source: cfSource, applied: true,
               });
             }
+          }
+
+          for (const rows of profileGrids) {
+            const found = detectProfile(rows);
+            for (const d of found.profile) propose(profile, d.key, d.value, d.sourceLabel);
+            for (const d of found.ownership) propose(ownership, d.key, d.value, d.sourceLabel);
+            for (const cat of found.categories) if (!categories[cat]) { categories[cat] = true; filled++; }
           }
 
           if (!profile.currency) {
@@ -1216,15 +1219,16 @@ function pullAtoFacts(pdf: NonNullable<ParsedDoc["pdf"]>, pages: Set<number>): A
   out.frankingCredit = val(/franking credit\b/i);
   if (rows.some((r) => /international related parties/i.test(r.cells.join(" ")))) out.relatedPartyYes = true;
 
-  // The dividend payment date: a row that carries both a date and the
-  // dividend amount (dividend schedule or franking worksheet).
+  // The dividend payment date: the franking worksheet logs "Dividend Paid"
+  // with its date; the dividend schedule may carry the amount and a date too.
   if (out.frankedDividendsPaid) {
     for (const r of rows) {
       const t = r.cells.join(" ");
       const dm = /\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/.exec(t);
       if (!dm) continue;
-      const hasAmount = r.cells.some((c) => numericLoose(c) === out.frankedDividendsPaid);
-      if (hasAmount) {
+      const isDividendRow =
+        /dividend/i.test(t) || r.cells.some((c) => numericLoose(c) === out.frankedDividendsPaid);
+      if (isDividendRow) {
         out.dividendDate = `${parseInt(dm[2], 10)}/${parseInt(dm[1], 10)}/${dm[3].slice(2)}`;   // AU d/m/y → m/d/yy
         break;
       }
