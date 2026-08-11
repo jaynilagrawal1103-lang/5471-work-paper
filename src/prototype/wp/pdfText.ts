@@ -374,31 +374,50 @@ function extractItems(content: string, fonts: Record<string, FontInfo>): Item[] 
   return items;
 }
 
-/** Group positioned runs into rows and cells. */
-function itemsToRows(items: Item[]): string[][] {
+/* ---------- positional row model (shared by both extractors) ----------
+
+   Rows carry their page and each cell its x-range so downstream code can
+   tell WHICH printed column a number sat in. This is what makes a 2023-only
+   comparative row distinguishable from a current-year row when the other
+   column is blank — the blankness itself is invisible in plain text. */
+
+export type PdfCell = { text: string; x0: number; x1: number };
+export type PdfRow = { page: number; y: number; cells: PdfCell[] };
+export type PdfDoc = { pageCount: number; rows: PdfRow[]; approxWidths?: boolean };
+
+/** Group positioned runs into rows and cells (legacy path; x1 is estimated). */
+function itemsToPdfRows(items: Item[], page: number): PdfRow[] {
   if (!items.length) return [];
   const sorted = [...items].sort((a, b) => (b.y - a.y) || (a.x - b.x));
-  const rows: string[][] = [];
+  const rows: PdfRow[] = [];
   let current: Item[] = [];
   let baseline = sorted[0].y;
 
   const flush = () => {
     if (!current.length) return;
     current.sort((a, b) => a.x - b.x);
-    const cells: string[] = [];
+    const cells: PdfCell[] = [];
     let buf = current[0].text;
+    let x0 = current[0].x;
     let prevX = current[0].x;
     for (let i = 1; i < current.length; i++) {
       const it = current[i];
       // A wide horizontal gap means a new cell, not a new word.
-      if (it.x - prevX > 26) { cells.push(buf.trim()); buf = it.text; }
-      else buf += (it.x - prevX > 2 && !/\s$/.test(buf) ? " " : "") + it.text;
+      if (it.x - prevX > 26) {
+        cells.push({ text: buf.trim(), x0, x1: Math.max(prevX, x0 + buf.length * 5.5) });
+        buf = it.text;
+        x0 = it.x;
+      } else {
+        buf += (it.x - prevX > 2 && !/\s$/.test(buf) ? " " : "") + it.text;
+      }
       prevX = it.x;
     }
-    cells.push(buf.trim());
-    // Keep runs of plain spaces — they mark column boundaries for splitWideCells.
-    const cleaned = cells.map((c) => c.replace(/[^\S ]+/g, "  ").trim()).filter((c, i, a) => c !== "" || i < a.length - 1);
-    if (cleaned.some((c) => c !== "")) rows.push(cleaned);
+    cells.push({ text: buf.trim(), x0, x1: Math.max(prevX, x0 + buf.length * 5.5) });
+    // Keep runs of plain spaces — they mark column boundaries for the splitter.
+    const cleaned = cells
+      .map((c) => ({ ...c, text: c.text.replace(/[^\S ]+/g, "  ").trim() }))
+      .filter((c, i, a) => c.text !== "" || i < a.length - 1);
+    if (cleaned.some((c) => c.text !== "")) rows.push({ page, y: baseline, cells: cleaned });
     current = [];
   };
 
@@ -414,15 +433,89 @@ function itemsToRows(items: Item[]): string[][] {
    columns are separated by padded spaces ("Revenue      1,250,000"), which
    would otherwise read as a single textual cell and yield no number. Two or
    more consecutive spaces only ever come from column alignment, so split
-   there; single spaces (words, "1 250 000" digit grouping) are preserved. */
-function splitWideCells(rows: string[][]): string[][] {
-  return rows.map((row) =>
-    row.flatMap((cell) => cell.split(/\s{2,}/).map((c) => c.trim()).filter(Boolean)),
-  ).filter((row) => row.length);
+   there, interpolating each fragment's x-range from its character offsets;
+   single spaces (words, "1 250 000" digit grouping) are preserved. */
+function splitWideCellsPos(doc: PdfDoc): PdfDoc {
+  const rows = doc.rows
+    .map((row) => {
+      const cells = row.cells.flatMap((cell) => {
+        if (!/\s{2,}/.test(cell.text)) return cell.text.trim() ? [cell] : [];
+        const span = Math.max(1, cell.x1 - cell.x0);
+        const len = Math.max(1, cell.text.length);
+        const out: PdfCell[] = [];
+        let offset = 0;
+        for (const part of cell.text.split(/(\s{2,})/)) {
+          if (!/^\s+$/.test(part) && part.trim()) {
+            out.push({
+              text: part.trim(),
+              x0: cell.x0 + (offset / len) * span,
+              x1: cell.x0 + ((offset + part.length) / len) * span,
+            });
+          }
+          offset += part.length;
+        }
+        return out;
+      });
+      return { ...row, cells };
+    })
+    .filter((r) => r.cells.length);
+  return { ...doc, rows };
+}
+
+/* A caption that wraps across two printed lines arrives as a label-only row
+   followed by the continuation row that carries the numbers ("Profit (Loss)
+   from Ordinary Activities before" / "income tax  (25,164)  29,092").
+   Merge the orphaned label into its continuation. */
+const NUMERIC_TEXT = /^\(?\s*-?[\d,.'\s ]+\s*\)?$/;
+function mergeWrappedLabels(doc: PdfDoc): PdfDoc {
+  const rows = doc.rows;
+  const out: PdfRow[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const s = rows[i + 1];
+    if (
+      s && r.page === s.page &&
+      r.cells.length === 1 &&
+      /[A-Za-z]/.test(r.cells[0].text) && !NUMERIC_TEXT.test(r.cells[0].text) &&
+      r.y - s.y > 0 && r.y - s.y < 15 &&
+      s.cells.length > 0 &&
+      /[A-Za-z]/.test(s.cells[0].text) && !NUMERIC_TEXT.test(s.cells[0].text) &&
+      Math.abs(r.cells[0].x0 - s.cells[0].x0) <= 30 &&
+      (/^[a-z]/.test(s.cells[0].text) ||
+        /(?:\b(?:and|of|or|for|to|in|the|from|on|before|per|not)|[-–,])$/i.test(r.cells[0].text.trim()))
+    ) {
+      s.cells[0] = { ...s.cells[0], text: r.cells[0].text.trim() + " " + s.cells[0].text, x0: r.cells[0].x0 };
+      continue;   // drop the orphan; the continuation row is pushed on its turn
+    }
+    out.push(r);
+  }
+  return { ...doc, rows: out };
+}
+
+/* Producer artifacts that corrupt caption matching: IRS dot leaders
+   ("Cash. . . . . ."), underscore rules glued onto numbers ("____2,194"),
+   and Drake's statement references ("Other current assetsStatement#Z015"). */
+function cleanCellText(s: string): string {
+  return s
+    .replace(/(?:\s?[.·•]){3,}/g, " ")
+    .replace(/_{2,}/g, " ")
+    .replace(/\s*Statement\s*#\s*[A-Za-z0-9]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanDoc(doc: PdfDoc): PdfDoc {
+  const rows = doc.rows
+    .map((row) => ({
+      ...row,
+      cells: row.cells.map((c) => ({ ...c, text: cleanCellText(c.text) })).filter((c) => c.text),
+    }))
+    .filter((r) => r.cells.length);
+  return { ...doc, rows };
 }
 
 /** Primary extractor: pdf.js, worker inlined, positional rows per page. */
-async function pdfjsToRows(buffer: ArrayBuffer): Promise<string[][]> {
+async function pdfjsToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
   const task = getDocument({
     data: new Uint8Array(buffer.slice(0)),   // pdf.js may transfer the buffer
     isEvalSupported: false,
@@ -431,16 +524,24 @@ async function pdfjsToRows(buffer: ArrayBuffer): Promise<string[][]> {
     verbosity: 0,
   });
   const doc = await task.promise;
-  const rows: string[][] = [];
+  const rows: PdfRow[] = [];
+  let pageCount = 0;
   try {
+    pageCount = doc.numPages;
     for (let p = 1; p <= doc.numPages; p++) {
       const page = await doc.getPage(p);
       const content = await page.getTextContent();
       const items: (Item & { w: number; h: number })[] = [];
+      // Some producers (Kofax) draw the same run twice at the same spot;
+      // keep only the first occurrence or the copies concatenate.
+      const seen = new Set<string>();
       for (const it of content.items) {
         if (!("str" in it) || !it.str || !it.str.trim()) continue;
         const t = it.transform;                       // [a b c d e f]
         const h = Math.hypot(t[1], t[3]) || Math.abs(t[3]) || 10;
+        const key = `${Math.round(t[4] * 2)}|${Math.round(t[5] * 2)}|${it.str}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         items.push({ x: t[4], y: t[5], text: it.str, w: it.width || 0, h });
       }
       if (!items.length) continue;
@@ -452,21 +553,33 @@ async function pdfjsToRows(buffer: ArrayBuffer): Promise<string[][]> {
       const flush = () => {
         if (!line.length) return;
         line.sort((a, b) => a.x - b.x);
-        const cells: string[] = [];
+        const cells: PdfCell[] = [];
         let buf = line[0].text;
+        let x0 = line[0].x;
         let end = line[0].x + line[0].w;
+        const close = () => cells.push({ text: buf, x0, x1: end });
         for (let i = 1; i < line.length; i++) {
           const it = line[i];
           const gap = it.x - end;
-          // Gaps are in points here, so thresholds can be absolute:
-          // beyond ~1.2 em it is a column boundary, beyond a hairline a space.
-          if (gap > Math.max(12, it.h * 1.2)) { cells.push(buf); buf = it.text; }
-          else buf += (gap > it.h * 0.12 && !/\s$/.test(buf) ? " " : "") + it.text;
-          end = Math.max(end, it.x + it.w);
+          if (it.x < end - Math.max(2, it.h * 0.3)) {
+            // Item starts INSIDE the previous run — an overlay (form-field
+            // value stamped over static text). Start a new cell, no space.
+            close();
+            buf = it.text; x0 = it.x; end = it.x + it.w;
+          } else if (gap > Math.max(12, it.h * 1.2)) {
+            // Gaps are in points here: beyond ~1.2 em it is a column boundary.
+            close();
+            buf = it.text; x0 = it.x; end = it.x + it.w;
+          } else {
+            buf += (gap > it.h * 0.12 && !/\s$/.test(buf) ? " " : "") + it.text;
+            end = Math.max(end, it.x + it.w);
+          }
         }
-        cells.push(buf);
-        const cleaned = cells.map((c) => c.trim());
-        if (cleaned.some(Boolean)) rows.push(cleaned);
+        close();
+        const cleaned = cells
+          .map((c) => ({ ...c, text: c.text.trim() }))
+          .filter((c) => c.text !== "");
+        if (cleaned.length) rows.push({ page: p, y: baseline, cells: cleaned });
         line = [];
       };
       for (const it of items) {
@@ -479,22 +592,34 @@ async function pdfjsToRows(buffer: ArrayBuffer): Promise<string[][]> {
   } finally {
     await doc.destroy();
   }
-  return rows;
+  return { pageCount, rows };
 }
 
-/** Read a PDF into positional rows. Returns [] when the file has no text layer. */
-export async function pdfToRows(buffer: ArrayBuffer): Promise<string[][]> {
+const finalizeDoc = (d: PdfDoc): PdfDoc => cleanDoc(mergeWrappedLabels(splitWideCellsPos(d)));
+
+/** Read a PDF into a positional document. Empty rows ⇒ no text layer. */
+export async function pdfToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
   try {
-    const rows = splitWideCells(await pdfjsToRows(buffer));
-    if (rows.length) return rows;
+    const doc = await pdfjsToDoc(buffer);
+    if (doc.rows.length) return finalizeDoc(doc);
   } catch {
     /* fall through to the built-in parser */
   }
-  return splitWideCells(await legacyPdfToRows(buffer));
+  return finalizeDoc(await legacyPdfToDoc(buffer));
+}
+
+/** Back-compat projection: rows of cell text, all pages concatenated. */
+export async function pdfToRows(buffer: ArrayBuffer): Promise<string[][]> {
+  return (await pdfToDoc(buffer)).rows.map((r) => r.cells.map((c) => c.text));
+}
+
+/** The dependency-free parser, kept callable directly (tests, diagnostics). */
+export async function legacyPdfToRows(buffer: ArrayBuffer): Promise<string[][]> {
+  return finalizeDoc(await legacyPdfToDoc(buffer)).rows.map((r) => r.cells.map((c) => c.text));
 }
 
 /** Fallback extractor: the original dependency-free parser. */
-export async function legacyPdfToRows(buffer: ArrayBuffer): Promise<string[][]> {
+async function legacyPdfToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
   const bytes = new Uint8Array(buffer);
   const raw = LATIN1(bytes);
   if (!raw.startsWith("%PDF")) throw new Error("not a PDF file");
@@ -542,7 +667,7 @@ export async function legacyPdfToRows(buffer: ArrayBuffer): Promise<string[][]> 
   };
 
   const pages = [...objects.values()].filter((o) => /\/Type\s*\/Page\b/.test(o.dict));
-  const rows: string[][] = [];
+  const rows: PdfRow[] = [];
 
   /** Resolve the font map for a resource dictionary. */
   const fontsFor = async (resources: string): Promise<Record<string, FontInfo>> => {
@@ -570,9 +695,9 @@ export async function legacyPdfToRows(buffer: ArrayBuffer): Promise<string[][]> 
 
   /* Text is frequently wrapped in Form XObjects that carry their own fonts,
      so walk into them rather than only reading the page content stream. */
-  const walkContent = async (content: string, resources: string, depth: number) => {
+  const walkContent = async (content: string, resources: string, depth: number, pageNo: number) => {
     if (!content.trim() || depth > 6) return;
-    rows.push(...itemsToRows(extractItems(content, await fontsFor(resources))));
+    rows.push(...itemsToPdfRows(extractItems(content, await fontsFor(resources)), pageNo));
 
     const xBlock = /\/XObject\s*<<([\s\S]*?)>>/.exec(resources);
     if (!xBlock) return;
@@ -580,11 +705,11 @@ export async function legacyPdfToRows(buffer: ArrayBuffer): Promise<string[][]> 
       if (!new RegExp("/" + x[1] + "\\s+Do").test(content)) continue;   // only if drawn
       const xo = objects.get(parseInt(x[2], 10));
       if (!xo || !/\/Subtype\s*\/Form/.test(xo.dict)) continue;
-      await walkContent(await decodeStream(xo), resolveResources(xo.dict), depth + 1);
+      await walkContent(await decodeStream(xo), resolveResources(xo.dict), depth + 1, pageNo);
     }
   };
 
-  const handlePage = async (pageDict: string) => {
+  const handlePage = async (pageDict: string, pageNo: number) => {
     const resources = resolveResources(pageDict);
     const contentsMatch = /\/Contents\s+(\[[^\]]*\]|\d+\s+\d+\s+R)/.exec(pageDict);
     let content = "";
@@ -594,10 +719,10 @@ export async function legacyPdfToRows(buffer: ArrayBuffer): Promise<string[][]> 
         if (co) content += (await decodeStream(co)) + "\n";
       }
     }
-    await walkContent(content, resources, 0);
+    await walkContent(content, resources, 0, pageNo);
   };
 
-  for (const page of pages) await handlePage(page.dict);
+  for (let i = 0; i < pages.length; i++) await handlePage(pages[i].dict, i + 1);
 
   // No /Type /Page found (unusual producers): fall back to every text stream.
   if (!rows.length) {
@@ -605,8 +730,8 @@ export async function legacyPdfToRows(buffer: ArrayBuffer): Promise<string[][]> 
       if (!obj.stream) continue;
       const content = await decodeStream(obj);
       if (!/BT[\s\S]*?(Tj|TJ)/.test(content)) continue;
-      rows.push(...itemsToRows(extractItems(content, {})));
+      rows.push(...itemsToPdfRows(extractItems(content, {}), 1));
     }
   }
-  return rows;
+  return { pageCount: pages.length || 1, rows, approxWidths: true };
 }
