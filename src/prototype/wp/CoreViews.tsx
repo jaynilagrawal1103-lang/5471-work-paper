@@ -5,7 +5,7 @@ import { Callout, SectionHeader, StatusPill } from "../primitives";
 import type { ViewId } from "../Shell";
 import { BS_LINES, CATEGORY_CELLS, IS_LINES, OWNERSHIP_FIELDS } from "./engine";
 import {
-  actions, buildWrites, cellCount, getSnapshot, subscribe, validateEntity,
+  actions, allReviewItems, buildWrites, cellCount, getSnapshot, subscribe, validateEntity,
   PROCESS_STEPS, type Entity,
 } from "./store";
 
@@ -52,7 +52,7 @@ export function OverviewView({ onNavigate }: { onNavigate: (v: ViewId) => void }
   const docs = state.entities.reduce((n, e) => n + e.files.length, 0);
   const lines = state.entities.reduce((n, e) => n + Object.keys(e.lines).length, 0);
   const cells = state.entities.reduce((n, e) => n + cellCount(e), 0);
-  const blockers = state.entities.reduce((n, e) => n + validateEntity(e).filter((b) => b.level === "block").length, 0);
+  const blockers = state.entities.reduce((n, e) => n + allReviewItems(e).filter((b) => b.level === "block" && !b.dismissed).length, 0);
 
   return (
     <div className="view-stack">
@@ -130,7 +130,7 @@ export function PortfolioView({ onNavigate }: { onNavigate: (v: ViewId) => void 
             </thead>
             <tbody>
               {state.entities.map((e) => {
-                const block = validateEntity(e).filter((b) => b.level === "block").length;
+                const block = allReviewItems(e).filter((b) => b.level === "block" && !b.dismissed).length;
                 return (
                   <tr key={e.id} className={e.id === state.activeEntityId ? "row-active" : ""}>
                     <td><strong>{e.name}</strong><br /><small style={{ color: "var(--muted)" }}>{e.profile.legalName || "legal name not set"}</small></td>
@@ -158,7 +158,7 @@ export function WorkspaceView({ onNavigate }: { onNavigate: (v: ViewId) => void 
   const state = useWp();
   const ent = active(state);
   if (!ent) return null;
-  const issues = validateEntity(ent);
+  const issues = allReviewItems(ent).filter((b) => !b.dismissed);
   return (
     <div className="view-stack">
       <SectionHeader
@@ -338,12 +338,21 @@ export function MappingView() {
                 {rows.map(({ kind, l, key }) => {
                   const d = ent.lines[key];
                   const src = ent.sourceLabels[key];
+                  const contribs = ent.contributions[key] || [];
                   const val = kind === "Sch C" ? d.amount : d.eoy;
                   return (
                     <tr key={key}>
                       <td className="ref-cell">{kind}</td>
                       <td><strong>{ent.relabels[key] || l.label}</strong></td>
-                      <td style={{ color: "var(--muted)" }}>{src ? src.label : "entered manually"}</td>
+                      <td style={{ color: "var(--muted)" }}>
+                        {contribs.length ? (
+                          contribs.map((c, i) => (
+                            <div key={i}>
+                              {c.label} <small>({c.docName}{c.page ? ` p.${c.page}` : ""}{c.year ? ` · ${c.year}` : ""} → {c.field} {c.value.toLocaleString()}{c.via !== "rule" ? ` · ${c.via}` : ""})</small>
+                            </div>
+                          ))
+                        ) : src ? src.label : "entered manually"}
+                      </td>
                       <td className="numeric">{typeof val === "number" ? val.toLocaleString() : "—"}</td>
                       <td className="ref-cell">{kind === "Sch C" ? `F${l.row}` : `D/F${l.row}`}</td>
                     </tr>
@@ -363,7 +372,7 @@ export function ReadinessView({ onNavigate }: { onNavigate: (v: ViewId) => void 
   const state = useWp();
   const ent = active(state);
   if (!ent) return null;
-  const issues = validateEntity(ent);
+  const issues = allReviewItems(ent).filter((b) => !b.dismissed);
   const blocking = issues.filter((i) => i.level === "block");
   const writes = buildWrites(ent);
   return (
@@ -414,8 +423,10 @@ export function ReadinessView({ onNavigate }: { onNavigate: (v: ViewId) => void 
 export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void }) {
   const state = useWp();
   const all = state.entities.flatMap((e) =>
-    validateEntity(e).map((b) => ({ entity: e.name, id: e.id, ...b })));
-  const unmatched = state.entities.flatMap((e) => e.unmatched.map((u, i) => ({ entity: e.name, id: e.id, index: i, ...u })));
+    allReviewItems(e).map((b) => ({ ...b, entity: e.name, entityId: e.id })));
+  const open = all.filter((b) => !b.dismissed);
+  const dismissed = all.filter((b) => b.dismissed);
+  const unmatched = state.entities.flatMap((e) => e.unmatched.map((u, i) => ({ entity: e.name, entityId: e.id, index: i, ...u })));
   return (
     <div className="view-stack">
       <SectionHeader
@@ -425,28 +436,47 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
         action={<button type="button" className="button" onClick={() => onNavigate("entities")}>Open workspace</button>}
       />
       <div className="metric-grid">
-        <div className="metric-card warn"><strong>{all.filter((b) => b.level === "block").length}</strong><span>Blocking</span><em>output refused</em></div>
-        <div className="metric-card"><strong>{all.filter((b) => b.level === "warn").length}</strong><span>Advisory</span><em>review recommended</em></div>
+        <div className="metric-card warn"><strong>{open.filter((b) => b.level === "block").length}</strong><span>Blocking</span><em>output refused</em></div>
+        <div className="metric-card"><strong>{open.filter((b) => b.level === "warn").length}</strong><span>Review</span><em>judgment required</em></div>
+        <div className="metric-card"><strong>{open.filter((b) => b.level === "info").length}</strong><span>Informational</span><em>decisions on record</em></div>
         <div className="metric-card"><strong>{unmatched.length}</strong><span>Unassigned captions</span><em>not yet bound to a line</em></div>
-        <div className="metric-card"><strong>{state.entities.length}</strong><span>Entities checked</span><em>live validation</em></div>
       </div>
 
-      {all.length ? (
+      {open.length ? (
         <section className="panel">
-          <div className="panel-heading"><div><span className="section-kicker">{all.length} findings</span><h2>Validation findings</h2></div></div>
+          <div className="panel-heading"><div><span className="section-kicker">{open.length} open items</span><h2>Exceptions and review items</h2></div></div>
           <div className="wp-table">
             <table>
-              <thead><tr><th style={{ width: 90 }}>Level</th><th style={{ width: 170 }}>Entity</th><th>Finding</th><th style={{ width: 130 }} /></tr></thead>
+              <thead><tr><th style={{ width: 76 }}>Level</th><th style={{ width: 130 }}>Entity</th><th style={{ width: 110 }}>Category</th><th>Finding</th><th style={{ width: 170 }}>Target</th><th style={{ width: 170 }} /></tr></thead>
               <tbody>
-                {all.map((b, i) => (
-                  <tr key={i}>
-                    <td><span className={b.level === "block" ? "actor-tag groq" : "actor-tag user"}>{b.level}</span></td>
+                {open.map((b) => (
+                  <tr key={b.entityId + b.id}>
+                    <td><span className={b.level === "block" ? "actor-tag groq" : b.level === "warn" ? "actor-tag user" : "actor-tag system"}>{b.level}</span></td>
                     <td>{b.entity}</td>
-                    <td>{b.message}</td>
+                    <td>{b.category}</td>
                     <td>
-                      {b.message.includes("rate") ? (
-                        <button type="button" className="button" onClick={() => { actions.setActiveEntity(b.id); actions.autoFillRates(b.id); }}>Apply rates</button>
-                      ) : null}
+                      {b.message}
+                      {b.source ? <small style={{ display: "block", opacity: 0.7 }}>Source: {b.source}</small> : null}
+                    </td>
+                    <td>{b.target || "—"}{b.applied ? <small style={{ display: "block", opacity: 0.7 }}>pre-filled</small> : null}</td>
+                    <td>
+                      {b.message.includes("rate (C") ? (
+                        <button type="button" className="button" onClick={() => { actions.setActiveEntity(b.entityId); actions.autoFillRates(b.entityId); }}>Apply rates</button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="button"
+                          onClick={() => {
+                            const note = b.level === "block"
+                              ? window.prompt("Acknowledging a blocking exception is a documented sign-off. Add a note for the audit trail:") ?? undefined
+                              : undefined;
+                            if (b.level === "block" && note === undefined) return;
+                            actions.dismissReviewItem(b.entityId, b.id, note);
+                          }}
+                        >
+                          {b.level === "block" ? "Acknowledge & unblock" : "Sign off"}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -458,6 +488,27 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
         <div className="empty-state"><span>✓</span><strong>No exceptions</strong><p>Every entity passes validation.</p></div>
       )}
 
+      {dismissed.length ? (
+        <section className="panel">
+          <div className="panel-heading"><div><span className="section-kicker">{dismissed.length} signed off</span><h2>Acknowledged items</h2></div></div>
+          <div className="wp-table">
+            <table>
+              <thead><tr><th style={{ width: 76 }}>Level</th><th style={{ width: 130 }}>Entity</th><th>Finding</th><th style={{ width: 120 }} /></tr></thead>
+              <tbody>
+                {dismissed.map((b) => (
+                  <tr key={b.entityId + b.id} style={{ opacity: 0.55 }}>
+                    <td><span className="actor-tag system">{b.level}</span></td>
+                    <td>{b.entity}</td>
+                    <td>{b.message}{b.dismissedNote ? <small style={{ display: "block" }}>Note: {b.dismissedNote}</small> : null}</td>
+                    <td><button type="button" className="button" onClick={() => actions.restoreReviewItem(b.entityId, b.id)}>Restore</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       {unmatched.length ? (
         <section className="panel">
           <div className="panel-heading"><div><span className="section-kicker">{unmatched.length} captions</span><h2>Unassigned captions</h2></div></div>
@@ -466,12 +517,12 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
               <thead><tr><th>Caption</th><th>Entity</th><th className="numeric">Values</th><th style={{ width: 200 }}>Assign to</th></tr></thead>
               <tbody>
                 {unmatched.map((u, i) => (
-                  <tr key={u.id + u.label + i}>
-                    <td><strong>{u.label}</strong></td>
+                  <tr key={u.entityId + u.label + i}>
+                    <td><strong>{u.label}</strong>{u.docName ? <small style={{ display: "block", opacity: 0.7 }}>{u.docName}{u.page ? ` · p.${u.page}` : ""}</small> : null}</td>
                     <td>{u.entity}</td>
                     <td className="numeric">{u.values.map((v) => v.toLocaleString()).join(" · ")}</td>
                     <td>
-                      <select value="" onChange={(e) => actions.assignUnmatched(u.id, u.index, e.target.value)}>
+                      <select value="" onChange={(e) => actions.assignUnmatched(u.entityId, u.index, e.target.value)}>
                         <option value="">—</option>
                         {IS_LINES.map((l) => <option key={`is${l.row}`} value={`IS:${l.row}`}>Sch C · {l.label}</option>)}
                         {BS_LINES.map((l) => <option key={`bs${l.row}`} value={`BS:${l.row}`}>Sch F · {l.label}</option>)}
@@ -493,7 +544,7 @@ export function SignoffView({ onNavigate }: { onNavigate: (v: ViewId) => void })
   const state = useWp();
   const ent = active(state);
   if (!ent) return null;
-  const issues = validateEntity(ent);
+  const issues = allReviewItems(ent).filter((b) => !b.dismissed);
   const blocking = issues.filter((i) => i.level === "block");
   const ready = blocking.length === 0 && cellCount(ent) > 0;
   return (

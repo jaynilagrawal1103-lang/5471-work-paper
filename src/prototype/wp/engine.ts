@@ -512,7 +512,13 @@ export function detectRulers(doc: PdfDoc): ColumnRuler[] {
 export function extractPositionedRows(
   doc: PdfDoc,
   rulers: ColumnRuler[],
-  opts?: { pages?: Set<number>; inheritRulerFrom?: Map<number, number> },
+  opts?: {
+    pages?: Set<number>;
+    inheritRulerFrom?: Map<number, number>;
+    /** Skip ledger-line hygiene — for narrative pages (equity movements)
+        where long captions still carry the values that matter. */
+    raw?: boolean;
+  },
 ): ExtractedRow[] {
   const out: ExtractedRow[] = [];
   const byPage = new Map<number, ColumnRuler[]>();
@@ -579,7 +585,9 @@ export function extractPositionedRows(
       });
     }
 
-    const cleaned = applyRowHygiene({ label, values: kept.map((x) => x.v), years, page: row.page });
+    const candidate: ExtractedRow = { label, values: kept.map((x) => x.v), years, page: row.page };
+    if (opts?.raw) { out.push(candidate); continue; }
+    const cleaned = applyRowHygiene(candidate);
     if (cleaned) out.push(cleaned);
   }
   return out;
