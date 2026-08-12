@@ -1261,6 +1261,44 @@ export const actions = {
     toast("Mapping rules reset to defaults");
   },
 
+  /* ---------------- exception policies ---------------- */
+  addPolicyRule(rule: Omit<PolicyRule, "id">) {
+    const full: PolicyRule = { ...rule, id: uid() };
+    logEvent("Policy rule added", describePolicyRule(full));
+    set({ policies: [...state.policies, full] });
+    toast("Policy rule added — edit it under Settings ▸ Policies", "ok");
+  },
+
+  updatePolicyRule(id: string, patch: Partial<Omit<PolicyRule, "id">>) {
+    const cur = state.policies.find((p) => p.id === id);
+    if (!cur) return;
+    const next = { ...cur, ...patch, match: { ...cur.match, ...(patch.match || {}) } };
+    logEvent("Policy rule updated", describePolicyRule(next));
+    set({ policies: state.policies.map((p) => (p.id === id ? next : p)) });
+  },
+
+  removePolicyRule(id: string) {
+    const cur = state.policies.find((p) => p.id === id);
+    if (!cur) return;
+    logEvent("Policy rule removed", describePolicyRule(cur));
+    set({ policies: state.policies.filter((p) => p.id !== id) });
+  },
+
+  movePolicyRule(id: string, dir: -1 | 1) {
+    const i = state.policies.findIndex((p) => p.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= state.policies.length) return;
+    const next = [...state.policies];
+    [next[i], next[j]] = [next[j], next[i]];
+    set({ policies: next });
+  },
+
+  resetPolicies() {
+    logEvent("Exception policies cleared", `${state.policies.length} rule(s) removed — every exception keeps its computed level`);
+    set({ policies: [] });
+    toast("Policies cleared", "ok");
+  },
+
   /* ---------------- generation ---------------- */
   async generateOne(entityId: string) {
     const ent = state.entities.find((e) => e.id === entityId);
@@ -1272,6 +1310,7 @@ export const actions = {
       toast(blockers[0].message, "bad");
       return;
     }
+    logPolicyOverriddenBlocks(ent);
     set({ busy: true });
     try {
       const { blob, report } = await buildWorkbook(ent);
@@ -1304,6 +1343,7 @@ export const actions = {
       toast(`${blocked[0].name}: ${first.message}`, "bad");
       return;
     }
+    for (const t of targets) logPolicyOverriddenBlocks(t);
     set({ busy: true });
     try {
       if (targets.length === 1) {
@@ -2090,8 +2130,13 @@ const DERIVED_IDS = new Set([
   "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
 ]);
 
-/** Everything the reviewer should see: derived checks + stored case items. */
-export function allReviewItems(ent: Entity): ReviewItem[] {
+const describePolicyRule = (p: PolicyRule) =>
+  `${p.match.id ? `id=${p.match.id}` : p.match.category ? `category=${p.match.category}` : `message~"${p.match.message}"`} → ${p.action}`;
+
+/** Everything the reviewer should see: derived checks + stored case items.
+    Policies apply at READ time — reversible, and the audit export keeps the
+    raw levels (pass {raw: true} to bypass). */
+export function allReviewItems(ent: Entity, opts?: { raw?: boolean }): ReviewItem[] {
   const stored = new Map(ent.reviewItems.map((r) => [r.id, r]));
   const derived = validateEntity(ent).map((d) => {
     const s = stored.get(d.id);
@@ -2099,11 +2144,25 @@ export function allReviewItems(ent: Entity): ReviewItem[] {
   });
   const currentIds = new Set(derived.map((d) => d.id));
   // A dismissal of a derived item whose condition no longer holds is a ghost.
-  return [...derived, ...ent.reviewItems.filter((r) => !currentIds.has(r.id) && !DERIVED_IDS.has(r.id))];
+  const merged = [...derived, ...ent.reviewItems.filter((r) => !currentIds.has(r.id) && !DERIVED_IDS.has(r.id))];
+  if (opts?.raw || !state.policies.length) return merged;
+  return merged.map((r) => applyPolicy(r, state.policies)).filter((r): r is ReviewItem => r !== null);
 }
 
 export function blockingIssues(ent: Entity): ReviewItem[] {
   return allReviewItems(ent).filter((b) => b.level === "block" && !b.dismissed);
+}
+
+/** The load-bearing audit line: generating over a policy-downgraded or
+    policy-suppressed block must leave a trail every single time. */
+function logPolicyOverriddenBlocks(ent: Entity) {
+  if (!state.policies.length) return;
+  const gating = new Set(blockingIssues(ent).map((b) => b.id));
+  const overridden = allReviewItems(ent, { raw: true })
+    .filter((r) => r.level === "block" && !r.dismissed && !gating.has(r.id));
+  for (const r of overridden) {
+    logEvent("Blocking exception overridden by policy", `${r.id}: ${r.message.slice(0, 140)}`, ent.name, "system");
+  }
 }
 
 export function cellCount(ent: Entity): number {

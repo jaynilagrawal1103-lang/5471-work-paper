@@ -457,6 +457,13 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
     }));
   const open = all.filter((b) => !b.dismissed);
   const dismissed = all.filter((b) => b.dismissed);
+  // Items a policy removed entirely — kept visible so suppression is auditable.
+  const suppressed = state.entities.flatMap((e) => {
+    const visible = new Set(allReviewItems(e).map((r) => r.id));
+    return allReviewItems(e, { raw: true })
+      .filter((r) => !visible.has(r.id) && !r.dismissed)
+      .map((r) => ({ ...r, entity: e.name, entityId: e.id }));
+  });
   const [drafts, setDrafts] = useState<Record<string, { value: string; note: string }>>({});
   const draftKey = (b: { entityId: string; id: string }) => b.entityId + "|" + b.id;
   const unmatched = state.entities.flatMap((e) => e.unmatched.map((u, i) => ({ entity: e.name, entityId: e.id, index: i, ...u })));
@@ -484,9 +491,27 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
               <tbody>
                 {open.map((b) => (
                   <tr key={b.entityId + b.id}>
-                    <td><span className={b.level === "block" ? "actor-tag groq" : b.level === "warn" ? "actor-tag user" : "actor-tag system"}>{b.level}</span></td>
+                    <td>
+                      <span className={b.level === "block" ? "actor-tag groq" : b.level === "warn" ? "actor-tag user" : "actor-tag system"}>{b.level}</span>
+                      {b.policy && b.policy.from !== b.level ? (
+                        <small style={{ display: "block", opacity: 0.7 }}>policy: {b.policy.from}→{b.level}</small>
+                      ) : null}
+                    </td>
                     <td>{b.entity}</td>
-                    <td>{b.category}</td>
+                    <td>
+                      {b.category}
+                      {!b.policy ? (
+                        <button
+                          type="button"
+                          className="button"
+                          style={{ display: "block", marginTop: 4, fontSize: 11, padding: "1px 6px" }}
+                          title="Create a policy rule matching this exception so future runs level it the same way"
+                          onClick={() => actions.addPolicyRule({ match: { id: b.id }, action: b.level, note: "created from the exception center" })}
+                        >
+                          + policy
+                        </button>
+                      ) : null}
+                    </td>
                     <td>
                       {b.message}
                       {b.source ? <small style={{ display: "block", opacity: 0.7 }}>Source: {b.source}</small> : null}
@@ -549,6 +574,30 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
       ) : (
         <div className="empty-state"><span>✓</span><strong>No exceptions</strong><p>Every entity passes validation.</p></div>
       )}
+
+      {suppressed.length ? (
+        <section className="panel">
+          <div className="panel-heading"><div><span className="section-kicker">{suppressed.length} suppressed</span><h2>Suppressed by policy</h2></div></div>
+          <p className="hint">
+            These exceptions were computed but a policy rule removes them from the open list. Suppressing a blocking
+            exception is a standing acknowledgement — it is logged on every generation. Manage rules in Settings ▸ Policies.
+          </p>
+          <div className="wp-table">
+            <table>
+              <thead><tr><th style={{ width: 76 }}>Level</th><th style={{ width: 130 }}>Entity</th><th>Finding</th></tr></thead>
+              <tbody>
+                {suppressed.map((b) => (
+                  <tr key={b.entityId + b.id} style={{ opacity: 0.55 }}>
+                    <td><span className="actor-tag system">{b.level}</span></td>
+                    <td>{b.entity}</td>
+                    <td>{b.message}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       {dismissed.length ? (
         <section className="panel">

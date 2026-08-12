@@ -5,12 +5,13 @@ import { Callout, SectionHeader, StatusPill } from "../primitives";
 import { DOC_TYPES, GROQ_MODELS, MAX_FILE_MB, NATIVE_PARSE, PROCESS_STEPS, QUOTA, actions, getSnapshot, subscribe } from "./store";
 import { PROVIDERS } from "./providers";
 
-type Tab = "methodology" | "technical" | "config" | "ai" | "services" | "usage";
+type Tab = "methodology" | "technical" | "config" | "policies" | "ai" | "services" | "usage";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "methodology", label: "Methodologies" },
   { id: "technical", label: "Technical information" },
   { id: "config", label: "Tool configuration" },
+  { id: "policies", label: "Policies" },
   { id: "ai", label: "AI platform" },
   { id: "services", label: "Free services" },
   { id: "usage", label: "Usage & quota" },
@@ -193,6 +194,131 @@ export function SettingsView() {
             </div>
           </section>
         </div>
+      ) : null}
+
+      {tab === "policies" ? (
+        <section className="panel">
+          <div className="panel-heading">
+            <div><span className="section-kicker">Exception policies</span><h2>How exceptions are levelled</h2></div>
+            <div className="signoff-actions">
+              <button
+                type="button"
+                className="button"
+                onClick={() => actions.addPolicyRule({ match: { category: "consistency" }, action: "keep" })}
+              >
+                + Add rule
+              </button>
+              <button type="button" className="button" onClick={() => actions.resetPolicies()}>Clear all</button>
+            </div>
+          </div>
+          <p className="hint">
+            Ordered rules — the first match decides. An empty list means every exception keeps its computed level.
+            Suppressing or downgrading a <strong>blocking</strong> exception is a standing acknowledgement: the audit
+            trail records it on every generation. New warnings that are not covered can be added from the
+            Exception center with one click.
+          </p>
+          <div className="wp-table rules-table">
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: 26 }}>#</th>
+                  <th style={{ width: 120 }}>Match on</th>
+                  <th>Pattern</th>
+                  <th style={{ width: 140 }}>Action</th>
+                  <th style={{ width: 110 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {state.policies.map((p, i) => {
+                  const kind = p.match.id !== undefined ? "id" : p.match.category !== undefined ? "category" : "message";
+                  const pattern = p.match.id ?? p.match.category ?? p.match.message ?? "";
+                  let badPattern = false;
+                  if (kind === "message" && p.match.regex) {
+                    try { new RegExp(p.match.message || ""); } catch { badPattern = true; }
+                  }
+                  return (
+                    <tr key={p.id}>
+                      <td className="ref-cell">{i + 1}</td>
+                      <td>
+                        <select
+                          className="stake-input"
+                          value={kind}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            actions.updatePolicyRule(p.id, {
+                              match: v === "id" ? { id: pattern } : v === "category" ? { category: pattern as never } : { message: pattern, regex: p.match.regex },
+                            });
+                          }}
+                        >
+                          <option value="id">exception id</option>
+                          <option value="category">category</option>
+                          <option value="message">message text</option>
+                        </select>
+                      </td>
+                      <td>
+                        {kind === "category" ? (
+                          <select
+                            className="stake-input"
+                            value={pattern}
+                            onChange={(e) => actions.updatePolicyRule(p.id, { match: { category: e.target.value as never } })}
+                          >
+                            {["fx", "mapping", "carry-forward", "related-party", "source-gap", "profile", "consistency", "process"].map((c) => (
+                              <option key={c} value={c}>{c}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            className="rule-input"
+                            value={pattern}
+                            placeholder={kind === "id" ? "e.g. cash-paid-total" : "text the message contains"}
+                            onChange={(e) =>
+                              actions.updatePolicyRule(p.id, {
+                                match: kind === "id" ? { id: e.target.value } : { message: e.target.value, regex: p.match.regex },
+                              })
+                            }
+                          />
+                        )}
+                        {kind === "message" ? (
+                          <label style={{ display: "inline-flex", gap: 4, alignItems: "center", fontSize: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={!!p.match.regex}
+                              onChange={(e) => actions.updatePolicyRule(p.id, { match: { message: p.match.message || "", regex: e.target.checked } })}
+                            />
+                            regex{badPattern ? <span className="actor-tag groq">invalid pattern</span> : null}
+                          </label>
+                        ) : null}
+                      </td>
+                      <td>
+                        <select
+                          className="stake-input"
+                          value={p.action}
+                          onChange={(e) => actions.updatePolicyRule(p.id, { action: e.target.value as never })}
+                        >
+                          <option value="keep">keep level</option>
+                          <option value="block">raise to block</option>
+                          <option value="warn">set to warn</option>
+                          <option value="info">set to info</option>
+                          <option value="suppress">suppress</option>
+                        </select>
+                      </td>
+                      <td>
+                        <button type="button" className="button" onClick={() => actions.movePolicyRule(p.id, -1)}>↑</button>{" "}
+                        <button type="button" className="button" onClick={() => actions.movePolicyRule(p.id, 1)}>↓</button>{" "}
+                        <button type="button" className="button" onClick={() => actions.removePolicyRule(p.id)}>✕</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!state.policies.length ? (
+              <p className="hint" style={{ padding: "10px 4px" }}>
+                No rules yet — every processed return generates exceptions at their computed levels.
+              </p>
+            ) : null}
+          </div>
+        </section>
       ) : null}
 
       {tab === "ai" ? (
