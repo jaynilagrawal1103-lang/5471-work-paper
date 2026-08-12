@@ -339,18 +339,39 @@ export function MappingView() {
                   const d = ent.lines[key];
                   const src = ent.sourceLabels[key];
                   const contribs = ent.contributions[key] || [];
+                  const captions = [...new Set(contribs.map((c) => c.label))];
                   const val = kind === "Sch C" ? d.amount : d.eoy;
                   return (
                     <tr key={key}>
                       <td className="ref-cell">{kind}</td>
                       <td><strong>{ent.relabels[key] || l.label}</strong></td>
                       <td style={{ color: "var(--muted)" }}>
-                        {contribs.length ? (
-                          contribs.map((c, i) => (
-                            <div key={i}>
-                              {c.label} <small>({c.docName}{c.page ? ` p.${c.page}` : ""}{c.year ? ` · ${c.year}` : ""} → {c.field} {c.value.toLocaleString()}{c.via !== "rule" ? ` · ${c.via}` : ""})</small>
-                            </div>
-                          ))
+                        {captions.length ? (
+                          captions.map((caption) => {
+                            const group = contribs.filter((c) => c.label === caption);
+                            return (
+                              <div key={caption} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3, flexWrap: "wrap" }}>
+                                <span>
+                                  {caption}{" "}
+                                  <small>
+                                    ({group.map((c) => `${c.field} ${c.value.toLocaleString()}${c.year ? ` · ${c.year}` : ""}`).join(", ")}
+                                    {group[0].docName ? ` · ${group[0].docName}${group[0].page ? ` p.${group[0].page}` : ""}` : ""}
+                                    {group[0].via !== "rule" ? ` · ${group[0].via}` : ""})
+                                  </small>
+                                </span>
+                                <select
+                                  className="stake-input"
+                                  style={{ maxWidth: 220, padding: "2px 6px" }}
+                                  value={key}
+                                  onChange={(e) => actions.remapCaption(ent.id, key, caption, e.target.value || null)}
+                                >
+                                  <option value="">— unassign —</option>
+                                  {IS_LINES.map((x) => <option key={`is${x.row}`} value={`IS:${x.row}`}>Sch C · {x.label}</option>)}
+                                  {BS_LINES.map((x) => <option key={`bs${x.row}`} value={`BS:${x.row}`}>Sch F · {x.label}</option>)}
+                                </select>
+                              </div>
+                            );
+                          })
                         ) : src ? src.label : "entered manually"}
                       </td>
                       <td className="numeric">{typeof val === "number" ? val.toLocaleString() : "—"}</td>

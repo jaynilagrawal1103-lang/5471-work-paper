@@ -471,7 +471,97 @@ export const actions = {
       sourceLabels: { ...ent.sourceLabels, [target]: { label: row.label, values: row.values, years: row.years } },
       contributions,
       unmatched: ent.unmatched.filter((_, i) => i !== index),
+      // The assignment is a standing decision — it now survives re-processing.
+      mapOverrides: { ...ent.mapOverrides, [norm(row.label)]: { to: target } },
     });
+  },
+
+  /** Move every contribution of a caption to another template line (or back
+      to the review queue). The decision persists as a mapOverride, so it
+      survives re-processing. */
+  remapCaption(entityId: string, fromTarget: string, label: string, to: string | null) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    if (to !== null && (!VALID_TARGETS.has(to) || to === fromTarget)) return;
+    const all = ent.contributions[fromTarget] || [];
+    const moved = all.filter((c) => c.label === label);
+    if (!moved.length) return;
+
+    // Honest-arithmetic guard: if the line no longer equals the sum of its
+    // contributions, the user edited it by hand — refuse rather than guess.
+    const cur = ent.lines[fromTarget] || {};
+    const { total, has } = sumContribs(all);
+    const mismatch = (["amount", "boy", "eoy"] as const).some((f) => {
+      const lineV = typeof cur[f] === "number" ? (cur[f] as number) : null;
+      return has[f] ? lineV === null || Math.abs(lineV - total[f]) > 0.01 : lineV !== null;
+    });
+    if (mismatch) {
+      toast(`${fromTarget} was edited by hand — clear the manual value or re-process before remapping.`, "bad");
+      return;
+    }
+
+    const lines = { ...ent.lines };
+    const contributions = { ...ent.contributions };
+    const sourceLabels = { ...ent.sourceLabels };
+    const relabels = { ...ent.relabels };
+    const unmatched = [...ent.unmatched];
+
+    // Detach from the origin; recompute the origin line from what remains.
+    const remaining = all.filter((c) => c.label !== label);
+    if (remaining.length) contributions[fromTarget] = remaining; else delete contributions[fromTarget];
+    const next = remaining.length ? linesFromContribs(remaining) : null;
+    if (next) lines[fromTarget] = next; else delete lines[fromTarget];
+    if (sourceLabels[fromTarget]?.label === label) {
+      const first = remaining[0];
+      if (first) sourceLabels[fromTarget] = { label: first.label, values: first.srcValues ?? [first.value], years: first.srcYears };
+      else delete sourceLabels[fromTarget];
+    }
+    if (specFor(fromTarget)?.relabel && relabels[fromTarget] === label) delete relabels[fromTarget];
+
+    let droppedBoy = 0;
+    if (to === null) {
+      const c0 = moved[0];
+      unmatched.push({
+        label,
+        values: c0.srcValues ?? moved.map((c) => c.value),
+        years: c0.srcYears,
+        page: c0.page,
+        docId: c0.docId || undefined,
+        docName: c0.docName || undefined,
+      });
+    } else {
+      const toIsBS = to.startsWith("BS");
+      const added: Contribution[] = [];
+      for (const c of moved) {
+        let field = c.field;
+        if (!toIsBS && c.field === "boy") { droppedBoy++; continue; }   // prior year never books to income
+        if (!toIsBS && c.field === "eoy") field = "amount";
+        if (toIsBS && c.field === "amount") field = "eoy";
+        const curTo = lines[to] || {};
+        if (field === "amount") lines[to] = { amount: (typeof curTo.amount === "number" ? curTo.amount : 0) + c.value };
+        else if (field === "eoy") lines[to] = { ...curTo, eoy: (typeof curTo.eoy === "number" ? curTo.eoy : 0) + c.value };
+        else lines[to] = { ...curTo, boy: (typeof curTo.boy === "number" ? curTo.boy : 0) + c.value };
+        added.push({ ...c, field });
+      }
+      contributions[to] = [...(contributions[to] || []), ...added];
+      const c0 = moved[0];
+      sourceLabels[to] = { label, values: c0.srcValues ?? moved.map((c) => c.value), years: c0.srcYears };
+      if (specFor(to)?.relabel && !relabels[to]) relabels[to] = label;
+    }
+
+    const mapOverrides = { ...ent.mapOverrides, [norm(label)]: { to } };
+    logEvent(
+      "Caption remapped",
+      `"${label}": ${fromTarget} → ${to ?? "unassigned"}${droppedBoy ? ` · ${droppedBoy} prior-year value(s) not carried` : ""}`,
+      ent.name,
+    );
+    updateEntity(entityId, { lines, contributions, sourceLabels, relabels, unmatched, mapOverrides });
+    toast(
+      to === null
+        ? `"${label}" unassigned — back in the review queue`
+        : `"${label}" moved to ${to}${droppedBoy ? " · prior-year value dropped (income lines take current year only)" : ""}`,
+      "ok",
+    );
   },
 
   dismissReviewItem(entityId: string, id: string, note?: string) {
@@ -666,6 +756,19 @@ export const actions = {
         const contributions: Record<string, Contribution[]> = {};
         const unmatched: (ExtractedRow & { docId?: string; docName?: string })[] = [];
         const pools = makePoolState();
+        // Standing user remaps survive re-processing. Pre-reserve their pool
+        // rows so auto-allocation cannot collide onto a user-chosen slot.
+        const overrides = ent.mapOverrides || {};
+        for (const ov of Object.values(overrides)) {
+          if (!ov.to) continue;
+          const row = Number(ov.to.split(":")[1]);
+          const prefix = ov.to.startsWith("IS") ? "is" : "bs";
+          for (const [poolKey, st] of Object.entries(pools)) {
+            if (POOLS[poolKey].sheet !== prefix) continue;
+            const i = st.free.indexOf(row);
+            if (i >= 0) st.free.splice(i, 1);
+          }
+        }
         const groupStems = groupNameStems([
           state.stakeholder, ent.profile.clientName, ent.profile.legalName,
           ledger?.counterparty || "", ledger?.subjectEntity || "", cf?.holderName || "",
@@ -674,20 +777,27 @@ export const actions = {
         for (const m of mapRows) {
           let target = matchRule(m.row.label, state.rules);
           if (target === "SKIP") continue;
-          // Feed scoping: a P&L page may only hit IS lines, a balance-sheet
-          // page only BS lines. A related-party balance is recognized by the
-          // group name in its caption.
-          if (target && m.feed === "is" && !target.startsWith("IS")) target = null;
-          if (target && m.feed === "bs" && !target.startsWith("BS")) target = null;
-          if (!target && m.feed === "bs") {
-            const rp = relatedPartyTarget(m.row.label, groupStems);
-            if (rp) {
-              target = rp;
-              rv({
-                level: "warn", category: "related-party",
-                message: `"${m.row.label}" was routed to ${rp === "BS:19" ? "loans to related persons (Sch F line 6)" : "loans from related persons (Sch F line 18)"} because the caption names a group entity — confirm, and consider Schedule M.`,
-                target: `${SHEET.bs}!${rp === "BS:19" ? "D/F19" : "D/F52"}`, source: m.docName,
-              });
+          const ov = overrides[norm(m.row.label)];
+          if (ov !== undefined) {
+            // The user's standing decision wins over rules and feed scoping.
+            if (ov.to === null) { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName }); continue; }
+            target = ov.to;
+          } else {
+            // Feed scoping: a P&L page may only hit IS lines, a balance-sheet
+            // page only BS lines. A related-party balance is recognized by the
+            // group name in its caption.
+            if (target && m.feed === "is" && !target.startsWith("IS")) target = null;
+            if (target && m.feed === "bs" && !target.startsWith("BS")) target = null;
+            if (!target && m.feed === "bs") {
+              const rp = relatedPartyTarget(m.row.label, groupStems);
+              if (rp) {
+                target = rp;
+                rv({
+                  level: "warn", category: "related-party",
+                  message: `"${m.row.label}" was routed to ${rp === "BS:19" ? "loans to related persons (Sch F line 6)" : "loans from related persons (Sch F line 18)"} because the caption names a group entity — confirm, and consider Schedule M.`,
+                  target: `${SHEET.bs}!${rp === "BS:19" ? "D/F19" : "D/F52"}`, source: m.docName,
+                });
+              }
             }
           }
           if (!target) { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName }); continue; }
@@ -696,7 +806,9 @@ export const actions = {
           if (routed === "ambiguous") { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName }); continue; }
           if (!routed.length) continue;   // prior-year-only income row etc — correctly ignored
 
-          const resolved = resolvePool(pools, target, m.row.label);
+          const isOverride = ov !== undefined && ov.to !== null;
+          const resolved = isOverride ? { target, relabel: undefined, overflowNote: undefined } : resolvePool(pools, target, m.row.label);
+          if (isOverride && specFor(target)?.relabel && !relabels[target]) relabels[target] = m.row.label;
           if (resolved.relabel) relabels[resolved.target] = resolved.relabel;
           if (resolved.overflowNote) rv({ level: "info", category: "mapping", message: resolved.overflowNote, source: m.docName });
 
@@ -889,6 +1001,7 @@ export const actions = {
       const sourceLabels = { ...fresh.sourceLabels };
       const contributions = { ...fresh.contributions };
       const relabels = { ...fresh.relabels };
+      const mapOverrides = { ...fresh.mapOverrides };
       const still: (ExtractedRow & { docId?: string; docName?: string })[] = [];
       let n = 0;
       fresh.unmatched.forEach((u, i) => {
@@ -898,6 +1011,7 @@ export const actions = {
           return;
         }
         sourceLabels[t] = { label: u.label, values: u.values, years: u.years };
+        mapOverrides[norm(u.label)] = { to: t };
         n++;
       });
       logEvent("Groq mapping applied", `${n} label(s) resolved with ${state.groq.model}`, fresh.name, "groq");
@@ -906,6 +1020,7 @@ export const actions = {
         relabels,
         sourceLabels,
         contributions,
+        mapOverrides,
         unmatched: still,
         log: [...fresh.log, `Groq resolved ${n} unmatched labels (${state.groq.model})`],
       });
@@ -1291,6 +1406,28 @@ const VALID_TARGETS = new Set([
   ...IS_LINES.map((l) => `IS:${l.row}`),
   ...BS_LINES.map((l) => `BS:${l.row}`),
 ]);
+
+const specFor = (target: string) =>
+  target.startsWith("IS")
+    ? IS_LINES.find((l) => `IS:${l.row}` === target)
+    : BS_LINES.find((l) => `BS:${l.row}` === target);
+
+/** Sum contributions per field; used to keep line values honest. */
+function sumContribs(list: Contribution[]) {
+  const total = { amount: 0, boy: 0, eoy: 0 };
+  const has = { amount: false, boy: false, eoy: false };
+  for (const c of list) { total[c.field] += c.value; has[c.field] = true; }
+  return { total, has };
+}
+
+function linesFromContribs(list: Contribution[]): LineValue | null {
+  const { total, has } = sumContribs(list);
+  const out: LineValue = {};
+  if (has.amount) out.amount = total.amount;
+  if (has.boy) out.boy = total.boy;
+  if (has.eoy) out.eoy = total.eoy;
+  return Object.keys(out).length ? out : null;
+}
 
 /** Apply an explicitly assigned row (manual or Groq) with provenance.
     Returns false when the assignment could not be applied safely. */
