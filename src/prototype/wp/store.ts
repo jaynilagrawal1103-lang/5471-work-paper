@@ -14,7 +14,7 @@ import { extractCarryForward, type CarryForward } from "./carryForward";
 import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
 import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
-import { lookupRates } from "./fxRates";
+import { lookupRates, yearFromPeriod } from "./fxRates";
 import { PROVIDERS, fetchLiveRate, sourceLangHint, translateFree, type LiveRate } from "./providers";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
@@ -25,6 +25,8 @@ export type LineValue = { amount?: number | null; boy?: number | null; eoy?: num
 export type EntityStatus = "idle" | "processing" | "ready" | "error";
 
 /** One source row's contribution to a mapped line — full provenance. */
+export type SourceLabel = { label: string; values: number[]; years?: (number | null)[] };
+
 export type Contribution = {
   docId: string;
   docName: string;
@@ -34,7 +36,19 @@ export type Contribution = {
   field: "amount" | "boy" | "eoy";
   year?: number | null;
   via: "rule" | "groq" | "manual";
+  /** The document's original row values/years (pre-sign, pre-routing) —
+      what unassign needs to reconstruct the unmatched row faithfully. */
+  srcValues?: number[];
+  srcYears?: (number | null)[];
 };
+
+/** A user's standing decision about where a caption maps; survives
+    re-processing because it is keyed by caption, not by run state. */
+export type MapOverride = { to: string | null };   // null = force-unassign
+
+export type PolicyMatch = { id?: string; category?: ReviewItem["category"]; message?: string; regex?: boolean };
+export type PolicyAction = "keep" | "block" | "warn" | "info" | "suppress";
+export type PolicyRule = { id: string; match: PolicyMatch; action: PolicyAction; note?: string };
 
 /** A cell write outside the IS/BS/Basic maps (Schedule J, M, R, …). */
 export type CellWrite = {
@@ -59,6 +73,12 @@ export type ReviewItem = {
   applied?: boolean;                  // suggestion was pre-filled into a write
   dismissed?: boolean;
   dismissedNote?: string;
+  /** "edited" = the reviewer changed the value and resubmitted. */
+  resolution?: "signed-off" | "edited";
+  editedValue?: string | number;
+  priorValue?: string | number;       // pre-edit value — enables Restore
+  /** Set at read time when a policy changed or would change this item. */
+  policy?: { ruleId: string; from: ReviewItem["level"] };
 };
 
 export type DividendRec = {
@@ -83,8 +103,9 @@ export type Entity = {
   detected: Record<string, DetectedField>;
   lines: Record<string, LineValue>;
   relabels: Record<string, string>;
-  sourceLabels: Record<string, { label: string; values: number[] }>;
+  sourceLabels: Record<string, SourceLabel>;
   contributions: Record<string, Contribution[]>;
+  mapOverrides: Record<string, MapOverride>;
   docClasses: Record<string, DocClass>;
   reviewItems: ReviewItem[];
   extraWrites: CellWrite[];
@@ -128,6 +149,7 @@ export type WpState = {
   entities: Entity[];
   activeEntityId: string | null;
   rules: MappingRule[];
+  policies: PolicyRule[];
   groq: GroqState;
   usage: { docs: number; storage: number; api: number; generated: number };
   busy: boolean;
@@ -184,6 +206,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     relabels: {},
     sourceLabels: {},
     contributions: {},
+    mapOverrides: {},
     docClasses: {},
     reviewItems: [],
     extraWrites: [],
@@ -203,6 +226,7 @@ let state: WpState = {
   entities: [makeEntity("Entity 1", initialStakeholder)],
   activeEntityId: null,
   rules: DEFAULT_RULES.map((r) => ({ t: r.t, kw: [...r.kw] })),
+  policies: [],
   groq: { key: "", model: GROQ_MODELS[0], status: "not configured", latency: null, calls: 0, tokens: 0, lastError: "" },
   usage: { docs: 0, storage: 0, api: 0, generated: 0 },
   busy: false,
@@ -444,7 +468,7 @@ export const actions = {
     updateEntity(entityId, {
       lines,
       relabels,
-      sourceLabels: { ...ent.sourceLabels, [target]: { label: row.label, values: row.values } },
+      sourceLabels: { ...ent.sourceLabels, [target]: { label: row.label, values: row.values, years: row.years } },
       contributions,
       unmatched: ent.unmatched.filter((_, i) => i !== index),
     });
@@ -638,7 +662,7 @@ export const actions = {
         if (!ent) return;   // removed mid-run
         const lines: Record<string, LineValue> = {};
         const relabels: Record<string, string> = { ...ent.relabels };
-        const sourceLabels: Record<string, { label: string; values: number[] }> = {};
+        const sourceLabels: Record<string, SourceLabel> = {};
         const contributions: Record<string, Contribution[]> = {};
         const unmatched: (ExtractedRow & { docId?: string; docName?: string })[] = [];
         const pools = makePoolState();
@@ -700,9 +724,10 @@ export const actions = {
             (contributions[resolved.target] ||= []).push({
               docId: m.docId, docName: m.docName, page: m.row.page,
               label: m.row.label, value: r.value, field: r.field, year: r.year, via: "rule",
+              srcValues: m.row.values, srcYears: m.row.years,
             });
           }
-          sourceLabels[resolved.target] = { label: m.row.label, values: m.row.values };
+          sourceLabels[resolved.target] = { label: m.row.label, values: m.row.values, years: m.row.years };
         }
 
         log.push(`${Object.keys(lines).length} schedule lines populated · ${unmatched.length} unmatched`);
@@ -872,7 +897,7 @@ export const actions = {
           still.push(u);
           return;
         }
-        sourceLabels[t] = { label: u.label, values: u.values };
+        sourceLabels[t] = { label: u.label, values: u.values, years: u.years };
         n++;
       });
       logEvent("Groq mapping applied", `${n} label(s) resolved with ${state.groq.model}`, fresh.name, "groq");
@@ -1105,6 +1130,45 @@ export const actions = {
 
 /* ---------------- mapping helpers ---------------- */
 
+/** Caption key for user overrides — case/whitespace insensitive. */
+const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** The entity's current year: profile cyEnd first, classified years second. */
+export function entityCaseCy(ent: Entity): number | null {
+  const y = yearFromPeriod(ent.profile.cyEnd || "");
+  if (y) {
+    const n = Number(y);
+    if (isFinite(n) && n > 1990) return n;
+  }
+  return deriveCaseYears(Object.values(ent.docClasses)).cy;
+}
+
+/** First matching policy rule decides; "suppress" removes the item. Pure. */
+export function applyPolicy(item: ReviewItem, policies: PolicyRule[]): ReviewItem | null {
+  for (const rule of policies) {
+    const m = rule.match;
+    let hit = false;
+    if (m.id) hit = item.id === m.id;
+    else if (m.category) hit = item.category === m.category;
+    else if (m.message) {
+      try {
+        hit = m.regex
+          ? new RegExp(m.message, "i").test(item.message)
+          : item.message.toLowerCase().includes(m.message.toLowerCase());
+      } catch {
+        hit = false;   // a bad user regex must never break the render
+      }
+    }
+    if (!hit) continue;
+    if (rule.action === "suppress") return null;
+    if (rule.action === "keep" || rule.action === item.level) {
+      return { ...item, policy: { ruleId: rule.id, from: item.level } };
+    }
+    return { ...item, level: rule.action, policy: { ruleId: rule.id, from: item.level } };
+  }
+  return item;
+}
+
 type Routed = { field: "amount" | "boy" | "eoy"; value: number; year: number | null };
 
 /** Year-aware routing: a current-year value books to the income statement or
@@ -1253,6 +1317,7 @@ function manualApply(
     (contributions[target] ||= []).push({
       docId: row.docId || "", docName: row.docName || "manual entry", page: row.page,
       label: row.label, value: r.value, field: r.field, year: r.year, via,
+      srcValues: row.values, srcYears: row.years,
     });
   }
   // Relabel-capable rows carry the source caption into the workbook.

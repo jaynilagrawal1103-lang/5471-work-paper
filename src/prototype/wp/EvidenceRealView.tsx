@@ -3,7 +3,7 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader } from "../primitives";
 import { BS_LINES, IS_LINES } from "./engine";
-import { actions, getSnapshot, subscribe } from "./store";
+import { actions, entityCaseCy, getSnapshot, subscribe } from "./store";
 
 const SCRIPTS: Array<{ name: string; re: RegExp }> = [
   { name: "Arabic", re: /[\u0600-\u06FF]/ },
@@ -69,21 +69,71 @@ export function EvidenceView() {
   const rows = useMemo(() => {
     const out: Array<{
       entity: string; entityId: string; label: string; language: string;
-      target: string | null; values: number[]; translation: string | null;
+      target: string | null;
+      cyValue: number | null;                       // the current-year figure
+      allValues: string;                            // full multi-year audit string
+      ambiguous: boolean;
+      translation: string | null;
     }> = [];
+    const fmt = (values: number[], years?: (number | null)[]) =>
+      values.map((v, i) => years?.[i] ? `${v.toLocaleString()} (${years[i]})` : v.toLocaleString()).join(" · ");
     for (const ent of state.entities) {
+      const cy = entityCaseCy(ent);
+
+      // Bound rows come from contributions: routed, year-resolved, and — unlike
+      // sourceLabels — complete when several captions feed one line.
+      const seen = new Set<string>();
+      for (const [target, list] of Object.entries(ent.contributions || {})) {
+        const byLabel = new Map<string, typeof list>();
+        for (const c of list) {
+          if (!byLabel.has(c.label)) byLabel.set(c.label, []);
+          byLabel.get(c.label)!.push(c);
+        }
+        for (const [label, contribs] of byLabel) {
+          seen.add(label);
+          // amount (IS) and eoy (BS) are current-year by routing construction.
+          const cyValue = contribs
+            .filter((c) => c.field === "amount" || c.field === "eoy")
+            .reduce<number | null>((s, c) => (s ?? 0) + c.value, null);
+          const src = contribs.find((c) => c.srcValues?.length);
+          out.push({
+            entity: ent.name, entityId: ent.id, label,
+            language: detectLanguage(label), target,
+            cyValue,
+            allValues: src ? fmt(src.srcValues!, src.srcYears) : fmt(contribs.map((c) => c.value)),
+            ambiguous: false,
+            translation: ent.translations?.[label] ?? null,
+          });
+        }
+      }
+      // Legacy fallback: lines whose provenance predates contributions.
       for (const [target, src] of Object.entries(ent.sourceLabels || {})) {
+        if (seen.has(src.label)) continue;
+        const idx = cy && src.years ? src.years.findIndex((y) => y === cy) : -1;
         out.push({
           entity: ent.name, entityId: ent.id, label: src.label,
           language: detectLanguage(src.label), target,
-          values: src.values, translation: ent.translations?.[src.label] ?? null,
+          cyValue: idx >= 0 ? src.values[idx] : src.values.length === 1 ? src.values[0] : src.values[src.values.length - 1],
+          allValues: fmt(src.values, src.years),
+          ambiguous: false,
+          translation: ent.translations?.[src.label] ?? null,
         });
       }
+
       for (const u of ent.unmatched) {
+        const idx = cy && u.years ? u.years.findIndex((y) => y === cy) : -1;
+        const cyValue =
+          idx >= 0 ? u.values[idx]
+          : u.values.length === 1 ? u.values[0]
+          : !u.years ? u.values[u.values.length - 1]     // grid rows: right-most is current
+          : null;                                        // multi-year, none matches — ambiguous
         out.push({
           entity: ent.name, entityId: ent.id, label: u.label,
           language: detectLanguage(u.label), target: null,
-          values: u.values, translation: ent.translations?.[u.label] ?? null,
+          cyValue,
+          allValues: fmt(u.values, u.years),
+          ambiguous: cyValue === null,
+          translation: ent.translations?.[u.label] ?? null,
         });
       }
     }
@@ -166,7 +216,7 @@ export function EvidenceView() {
                   <th>Caption in the document</th>
                   <th style={{ width: 90 }}>Language</th>
                   <th>English</th>
-                  <th className="numeric" style={{ width: 150 }}>Values read</th>
+                  <th className="numeric" style={{ width: 170 }}>Value (current year)</th>
                   <th style={{ width: 210 }}>Bound to</th>
                 </tr>
               </thead>
@@ -176,7 +226,16 @@ export function EvidenceView() {
                     <td><strong>{r.label}</strong><br /><small style={{ color: "var(--muted)" }}>{r.entity}</small></td>
                     <td><span className={r.language === "English" ? "actor-tag system" : "actor-tag groq"}>{r.language}</span></td>
                     <td style={{ color: "var(--muted)" }}>{r.translation || (r.language === "English" ? "—" : "not translated")}</td>
-                    <td className="numeric">{r.values.map((v) => v.toLocaleString()).join(" · ")}</td>
+                    <td className="numeric" title={`Values read: ${r.allValues}`}>
+                      {r.ambiguous ? (
+                        <span className="actor-tag user">ambiguous</span>
+                      ) : (
+                        <strong>{r.cyValue !== null ? r.cyValue.toLocaleString() : "—"}</strong>
+                      )}
+                      {r.allValues && (r.ambiguous || r.allValues.includes("·")) ? (
+                        <small style={{ display: "block", color: "var(--muted)" }}>all: {r.allValues}</small>
+                      ) : null}
+                    </td>
                     <td>{r.target ? lineLabel(r.target) : <span className="actor-tag user">unassigned</span>}</td>
                   </tr>
                 ))}
