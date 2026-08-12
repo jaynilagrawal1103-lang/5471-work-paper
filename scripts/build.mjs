@@ -17,7 +17,10 @@ await build({
   target: "es2022",
   jsx: "automatic",
   minify: true,
-  define: { "process.env.NODE_ENV": '"production"' },
+  define: {
+    "process.env.NODE_ENV": '"production"',
+    __API_BASE__: JSON.stringify(process.env.API_BASE || ""),
+  },
   outfile: path.join(out, "bundle.js"),
   logLevel: "warning",
 });

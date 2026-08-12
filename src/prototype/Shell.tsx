@@ -5,9 +5,11 @@ import { useSyncExternalStore } from "react";
 import { BrandMark } from "./wp/BrandMark";
 import { Toaster } from "./wp/Toaster";
 import { getSnapshot, subscribe } from "./wp/store";
+import { sessionSnapshot, sessionSubscribe } from "./session";
 
 export type ViewId =
   | "overview"
+  | "tasks"
   | "portfolio"
   | "entities"
   | "workspace"
@@ -24,19 +26,20 @@ export type ViewId =
 
 export const NAV_ITEMS: Array<{ id: ViewId; label: string; marker: string }> = [
   { id: "overview", label: "Executive overview", marker: "01" },
-  { id: "portfolio", label: "Portfolio dashboard", marker: "02" },
-  { id: "entities", label: "Entities & documents", marker: "03" },
-  { id: "workspace", label: "Entity workspace", marker: "04" },
-  { id: "intake", label: "Document intake", marker: "05" },
-  { id: "evidence", label: "Multilingual evidence", marker: "06" },
-  { id: "category", label: "Ownership & category", marker: "07" },
-  { id: "mapping", label: "Mapping & adjustments", marker: "08" },
-  { id: "fx", label: "FX policy & rates", marker: "09" },
-  { id: "workpaper", label: "Workpaper readiness", marker: "10" },
-  { id: "exceptions", label: "Exception center", marker: "11" },
-  { id: "audit", label: "Audit trail", marker: "12" },
-  { id: "signoff", label: "Review & sign-off", marker: "13" },
-  { id: "settings", label: "Settings", marker: "14" },
+  { id: "tasks", label: "Task management", marker: "02" },
+  { id: "portfolio", label: "Portfolio dashboard", marker: "03" },
+  { id: "entities", label: "Entities & documents", marker: "04" },
+  { id: "workspace", label: "Entity workspace", marker: "05" },
+  { id: "intake", label: "Document intake", marker: "06" },
+  { id: "evidence", label: "Multilingual evidence", marker: "07" },
+  { id: "category", label: "Ownership & category", marker: "08" },
+  { id: "mapping", label: "Mapping & adjustments", marker: "09" },
+  { id: "fx", label: "FX policy & rates", marker: "10" },
+  { id: "workpaper", label: "Workpaper readiness", marker: "11" },
+  { id: "exceptions", label: "Exception center", marker: "12" },
+  { id: "audit", label: "Audit trail", marker: "13" },
+  { id: "signoff", label: "Review & sign-off", marker: "14" },
+  { id: "settings", label: "Settings", marker: "15" },
 ];
 
 type ShellProps = {
@@ -48,6 +51,7 @@ type ShellProps = {
 export function Shell({ activeView, onNavigate, children }: ShellProps) {
   const activeLabel = NAV_ITEMS.find((item) => item.id === activeView)?.label;
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const session = useSyncExternalStore(sessionSubscribe, sessionSnapshot, sessionSnapshot);
   const stakeholder = state.stakeholder;
   const entityCount = state.entities.length;
   const docCount = state.entities.reduce((n, e) => n + e.files.length, 0);
@@ -78,7 +82,17 @@ export function Shell({ activeView, onNavigate, children }: ShellProps) {
         </nav>
         <div className="sidebar-foot">
           <span className="status-dot" />
-          Runs locally · no data leaves this browser
+          {session.remote
+            ? session.connected === false
+              ? "Backend unreachable · working locally"
+              : session.saveState === "saved"
+                ? `Synced · saved ${session.lastSavedAt ?? ""}`
+                : session.saveState === "dirty" || session.saveState === "saving"
+                  ? "Syncing…"
+                  : session.saveState === "conflict"
+                    ? "Sync conflict · reload"
+                    : "Connected to backend"
+            : "Runs locally · no data leaves this browser"}
         </div>
       </aside>
       <div className="workspace-shell">

@@ -291,9 +291,25 @@ export function subscribe(fn: () => void) {
 }
 export function getSnapshot(): WpState { return state; }
 
+/* Persistence seam: the store never imports the backend client. persist.ts
+   registers hooks; in local mode nothing is registered and nothing changes. */
+type StoreHooks = {
+  onMutate?: (patch: Partial<WpState>) => void;
+  onFilesAdded?: (entityId: string, files: EntityFile[]) => void;
+};
+let hooks: StoreHooks = {};
+export function registerStoreHooks(h: StoreHooks) { hooks = h; }
+
+/** Replace the whole state (hydration from the backend). */
+export function loadState(next: WpState) {
+  state = next;
+  listeners.forEach((fn) => fn());
+}
+
 function set(patch: Partial<WpState>) {
   state = { ...state, ...patch };
   listeners.forEach((fn) => fn());
+  hooks.onMutate?.(patch);
 }
 
 function updateEntity(id: string, patch: Partial<Entity>) {
@@ -373,6 +389,7 @@ export const actions = {
     updateEntity(id, { files: [...ent.files, ...added], status: "idle" });
     set({ usage: { ...state.usage, storage: state.usage.storage + bytesAdded } });
     toast(`${added.length} document${added.length === 1 ? "" : "s"} added to ${ent.name}`, "ok");
+    hooks.onFilesAdded?.(id, added);
   },
 
   removeFile(entityId: string, fileId: string) {
@@ -1359,6 +1376,8 @@ export const actions = {
           const { blob, report } = await buildWorkbook(ent);
           total += report.written;
           bundle.file(`5471_Workpaper_${safeName(state.stakeholder)}_${safeName(ent.name)}.xlsx`, blob);
+          // Per-entity event: task auto-advance keys on the entity name.
+          logEvent("Work paper generated", `${report.written} cells written (bundled)`, ent.name, "system");
         }
         const outBuf: ArrayBuffer = await bundle.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
         downloadBlob(new Blob([outBuf], { type: "application/zip" }), `5471_Workpapers_${safeName(state.stakeholder)}.zip`);

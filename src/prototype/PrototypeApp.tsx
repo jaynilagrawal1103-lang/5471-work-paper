@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NAV_ITEMS, Shell, type ViewId } from "./Shell";
+import { TasksView } from "./wp/TasksView";
+import { initPersistence } from "./wp/persist";
 import {
   CategoryView, ExceptionsView, IntakeView, MappingView, OverviewView,
   PortfolioView, ReadinessView, SignoffView, WorkspaceView,
@@ -23,12 +25,16 @@ function normalizeView(value: string): ViewId {
 export function PrototypeApp({ initialView }: AppProps) {
   const [activeView, setActiveView] = useState<ViewId>(normalizeView(initialView));
 
+  // Remote mode boots once: probe, hydrate, register autosave. No-op locally.
+  useEffect(() => { void initPersistence(); }, []);
+
   const navigate = (view: ViewId) => {
     setActiveView(view);
     safeReplaceState(`?view=${view}`);
   };
 
   let content = <OverviewView onNavigate={navigate} />;
+  if (activeView === "tasks") content = <TasksView onNavigate={navigate} />;
   if (activeView === "portfolio") content = <PortfolioView onNavigate={navigate} />;
   if (activeView === "entities") content = <EntitiesView />;
   if (activeView === "workspace") content = <WorkspaceView onNavigate={navigate} />;

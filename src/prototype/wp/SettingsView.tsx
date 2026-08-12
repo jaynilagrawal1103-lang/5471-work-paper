@@ -3,6 +3,8 @@
 import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader, StatusPill } from "../primitives";
 import { DOC_TYPES, GROQ_MODELS, MAX_FILE_MB, NATIVE_PARSE, PROCESS_STEPS, QUOTA, actions, getSnapshot, subscribe } from "./store";
+import { apiBase, isRemote, setApiBaseOverride } from "../api";
+import { sessionSnapshot, sessionSubscribe } from "../session";
 import { PROVIDERS } from "./providers";
 
 type Tab = "methodology" | "technical" | "config" | "policies" | "ai" | "services" | "usage";
@@ -131,7 +133,7 @@ export function SettingsView() {
             <Row label="Workbook engine" value="JSZip with targeted OOXML cell patching" />
             <Row label="Spreadsheet reader" value="Built-in sharedStrings and sheet XML parser" />
             <Row label="AI provider" value="Groq Cloud — OpenAI-compatible API" />
-            <Row label="Data residency" value="Documents parsed in-browser, never uploaded" />
+            <Row label="Data residency" value={isRemote() ? "Parsed in-browser · stored on your backend" : "Documents parsed in-browser, never uploaded"} />
           </section>
           <section className="panel">
             <div className="panel-heading"><div><span className="section-kicker">Documents</span><h2>Processing engine</h2></div></div>
@@ -159,7 +161,9 @@ export function SettingsView() {
       {tab === "config" ? (
         <div className="two-column">
           <section className="panel">
-            <div className="panel-heading"><div><span className="section-kicker">Inputs</span><h2>Supported document types</h2></div></div>
+            <div className="panel-heading"><div><span className="section-kicker">Backend</span><h2>Persistence & tasks</h2></div></div>
+            <BackendCard />
+            <div className="panel-heading" style={{ marginTop: 18 }}><div><span className="section-kicker">Inputs</span><h2>Supported document types</h2></div></div>
             <div className="chip-row">{DOC_TYPES.map((d) => <span key={d} className="type-chip">{d}</span>)}</div>
             <h3 className="wp-subhead">Processing parameters</h3>
             <Row label="Amount column" value="Right-most numeric in the row" />
@@ -533,6 +537,51 @@ export function SettingsView() {
             </section>
           </div>
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BackendCard() {
+  const session = useSyncExternalStore(sessionSubscribe, sessionSnapshot, sessionSnapshot);
+  const [url, setUrl] = useState(() => {
+    const b = apiBase();
+    return b === "__local__" || b === "" ? "" : b;
+  });
+  return (
+    <div>
+      <Row
+        label="Mode"
+        value={session.remote
+          ? session.connected === false ? "Remote — backend unreachable" : "Remote — state, documents and tasks persist on the server"
+          : "Local — everything stays in this tab"}
+      />
+      {session.remote ? <Row label="Sync" value={session.saveState === "saved" ? `saved ${session.lastSavedAt ?? ""}` : session.saveState} /> : null}
+      <p className="hint" style={{ marginTop: 8 }}>
+        Backend URL (leave empty when the app is served by the backend itself; set it to attach a static build to a
+        remote server). Changing it takes effect after a reload.
+      </p>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          className="stake-input"
+          style={{ maxWidth: 320 }}
+          placeholder="https://your-backend.up.railway.app"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <button
+          type="button"
+          className="button"
+          onClick={() => { setApiBaseOverride(url); window.location.reload(); }}
+        >
+          Save & reload
+        </button>
+      </div>
+      {!isRemote() ? (
+        <p className="hint" style={{ marginTop: 8 }}>
+          Task management and cross-session persistence need the backend; the standalone build keeps working fully
+          offline without it.
+        </p>
       ) : null}
     </div>
   );
