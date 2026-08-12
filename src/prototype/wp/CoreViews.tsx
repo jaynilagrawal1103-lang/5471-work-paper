@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader, StatusPill } from "../primitives";
 import type { ViewId } from "../Shell";
 import { BS_LINES, CATEGORY_CELLS, IS_LINES, OWNERSHIP_FIELDS } from "./engine";
@@ -444,9 +444,21 @@ export function ReadinessView({ onNavigate }: { onNavigate: (v: ViewId) => void 
 export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void }) {
   const state = useWp();
   const all = state.entities.flatMap((e) =>
-    allReviewItems(e).map((b) => ({ ...b, entity: e.name, entityId: e.id })));
+    allReviewItems(e).map((b) => {
+      const linked = e.extraWrites.find((w) => w.reviewId === b.id);
+      return {
+        ...b,
+        entity: e.name,
+        entityId: e.id,
+        // The value a reviewer may edit: the linked workbook write's current
+        // value, else the item's suggestion.
+        currentValue: linked !== undefined ? linked.value : b.suggestedValue,
+      };
+    }));
   const open = all.filter((b) => !b.dismissed);
   const dismissed = all.filter((b) => b.dismissed);
+  const [drafts, setDrafts] = useState<Record<string, { value: string; note: string }>>({});
+  const draftKey = (b: { entityId: string; id: string }) => b.entityId + "|" + b.id;
   const unmatched = state.entities.flatMap((e) => e.unmatched.map((u, i) => ({ entity: e.name, entityId: e.id, index: i, ...u })));
   return (
     <div className="view-stack">
@@ -484,19 +496,48 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
                       {b.message.includes("rate (C") ? (
                         <button type="button" className="button" onClick={() => { actions.setActiveEntity(b.entityId); actions.autoFillRates(b.entityId); }}>Apply rates</button>
                       ) : (
-                        <button
-                          type="button"
-                          className="button"
-                          onClick={() => {
-                            const note = b.level === "block"
-                              ? window.prompt("Acknowledging a blocking exception is a documented sign-off. Add a note for the audit trail:") ?? undefined
-                              : undefined;
-                            if (b.level === "block" && note === undefined) return;
-                            actions.dismissReviewItem(b.entityId, b.id, note);
-                          }}
-                        >
-                          {b.level === "block" ? "Acknowledge & unblock" : "Sign off"}
-                        </button>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {b.level !== "block" && b.currentValue !== undefined ? (
+                            <>
+                              <input
+                                className="stake-input"
+                                style={{ maxWidth: 150, padding: "2px 6px" }}
+                                value={drafts[draftKey(b)]?.value ?? String(b.currentValue)}
+                                onChange={(e) => setDrafts((d) => ({ ...d, [draftKey(b)]: { value: e.target.value, note: d[draftKey(b)]?.note ?? "" } }))}
+                              />
+                              <input
+                                className="stake-input"
+                                style={{ maxWidth: 150, padding: "2px 6px" }}
+                                placeholder="note (optional)"
+                                value={drafts[draftKey(b)]?.note ?? ""}
+                                onChange={(e) => setDrafts((d) => ({ ...d, [draftKey(b)]: { value: d[draftKey(b)]?.value ?? String(b.currentValue), note: e.target.value } }))}
+                              />
+                              <button
+                                type="button"
+                                className="button primary"
+                                onClick={() => {
+                                  const d = drafts[draftKey(b)];
+                                  actions.resubmitReviewItem(b.entityId, b.id, d?.value ?? String(b.currentValue), d?.note || undefined);
+                                }}
+                              >
+                                Save & sign off
+                              </button>
+                            </>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="button"
+                            onClick={() => {
+                              const note = b.level === "block"
+                                ? window.prompt("Acknowledging a blocking exception is a documented sign-off. Add a note for the audit trail:") ?? undefined
+                                : undefined;
+                              if (b.level === "block" && note === undefined) return;
+                              actions.dismissReviewItem(b.entityId, b.id, note);
+                            }}
+                          >
+                            {b.level === "block" ? "Acknowledge & unblock" : "Sign off"}
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -520,7 +561,16 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
                   <tr key={b.entityId + b.id} style={{ opacity: 0.55 }}>
                     <td><span className="actor-tag system">{b.level}</span></td>
                     <td>{b.entity}</td>
-                    <td>{b.message}{b.dismissedNote ? <small style={{ display: "block" }}>Note: {b.dismissedNote}</small> : null}</td>
+                    <td>
+                      {b.message}
+                      {b.resolution === "edited" ? (
+                        <small style={{ display: "block" }}>
+                          <span className="actor-tag groq">edited → {typeof b.editedValue === "number" ? b.editedValue.toLocaleString() : b.editedValue}</span>
+                          {b.priorValue !== undefined ? <> was {typeof b.priorValue === "number" ? b.priorValue.toLocaleString() : b.priorValue}</> : null}
+                        </small>
+                      ) : null}
+                      {b.dismissedNote ? <small style={{ display: "block" }}>Note: {b.dismissedNote}</small> : null}
+                    </td>
                     <td><button type="button" className="button" onClick={() => actions.restoreReviewItem(b.entityId, b.id)}>Restore</button></td>
                   </tr>
                 ))}

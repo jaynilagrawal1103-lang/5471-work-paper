@@ -578,15 +578,84 @@ export const actions = {
     );
   },
 
+  /** Edit an exception's value and resubmit: the linked workbook cells take
+      the reviewer's number, and the item is signed off as "edited". */
+  resubmitReviewItem(entityId: string, id: string, rawValue: string, note?: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const item = ent.reviewItems.find((r) => r.id === id) || allReviewItems(ent).find((r) => r.id === id);
+    if (!item) return;
+    const numeric = Number(String(rawValue).replace(/,/g, ""));
+    const value: string | number = rawValue !== "" && isFinite(numeric) ? numeric : rawValue;
+
+    let priorValue: string | number | undefined;
+    let landed = false;
+
+    // (a) Every schedule write linked by reviewId takes the new value.
+    const linked = ent.extraWrites.filter((w) => w.reviewId === id);
+    let extraWrites = ent.extraWrites;
+    if (linked.length) {
+      priorValue = linked[0].value;
+      extraWrites = ent.extraWrites.map((w) => (w.reviewId === id ? { ...w, value } : w));
+      landed = true;
+    }
+
+    // (b) No linked write, but the target names an IS/BS input cell: stage
+    // the value on the line itself.
+    let lines = ent.lines;
+    if (!landed && item.target) {
+      const m = new RegExp(`^(${SHEET.is}|${SHEET.bs})!([DF])(\\d+)$`).exec(item.target);
+      if (m && typeof value === "number") {
+        const key = `${m[1] === SHEET.is ? "IS" : "BS"}:${m[3]}`;
+        const field = m[1] === SHEET.is ? "amount" : m[2] === "D" ? "boy" : "eoy";
+        priorValue = (ent.lines[key] as Record<string, number | null | undefined> | undefined)?.[field] ?? undefined;
+        lines = { ...ent.lines, [key]: { ...(ent.lines[key] || {}), [field]: value } };
+        landed = true;
+      }
+    }
+    // (c) Neither: the edit is recorded on the item itself (documentation).
+
+    const stamped: ReviewItem = {
+      ...item,
+      resolution: "edited",
+      editedValue: value,
+      priorValue,
+      dismissed: true,
+      dismissedNote: note || "",
+    };
+    const rest = ent.reviewItems.filter((r) => r.id !== id);
+    updateEntity(entityId, { reviewItems: [...rest, stamped], extraWrites, lines });
+    logEvent(
+      "Exception resolved by edit",
+      `${id}: ${priorValue !== undefined ? `${priorValue} → ` : ""}${value}${note ? ` — "${note}"` : ""}${landed ? "" : " (recorded on the item; no linked cell)"}`,
+      ent.name,
+    );
+    toast(landed ? "Value updated — the workbook will carry it on the next generate" : "Edit recorded on the exception", "ok");
+  },
+
   restoreReviewItem(entityId: string, id: string) {
     const ent = state.entities.find((e) => e.id === entityId);
     if (!ent) return;
     const item = ent.reviewItems.find((r) => r.id === id);
     if (!item) return;
+    // An edited item reverts its value along with its sign-off.
+    let extraWrites = ent.extraWrites;
+    if (item.resolution === "edited" && item.priorValue !== undefined) {
+      extraWrites = ent.extraWrites.map((w) => (w.reviewId === id ? { ...w, value: item.priorValue as string | number } : w));
+    }
     updateEntity(entityId, {
-      reviewItems: ent.reviewItems.map((r) => (r.id === id ? { ...r, dismissed: false, dismissedNote: "" } : r)),
+      extraWrites,
+      reviewItems: ent.reviewItems.map((r) =>
+        r.id === id
+          ? { ...r, dismissed: false, dismissedNote: "", resolution: undefined, editedValue: undefined, priorValue: undefined }
+          : r,
+      ),
     });
-    logEvent("Review item restored", item.message.slice(0, 160), ent.name);
+    logEvent(
+      item.resolution === "edited" ? "Review item restored — edited value reverted" : "Review item restored",
+      item.message.slice(0, 160),
+      ent.name,
+    );
   },
 
   async processEntity(entityId: string) {
@@ -928,14 +997,35 @@ export const actions = {
         if (!ent) return;   // removed mid-run
         const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, ledger, rv });
         log.push(`${writes.list.length} schedule cell(s) prepared beyond the core statements`);
-        // Sign-offs survive re-processing: re-apply dismissals by stable id.
-        const priorDismissed = new Map(before.reviewItems.filter((r) => r.dismissed).map((r) => [r.id, r]));
+        // Sign-offs AND value edits survive re-processing, keyed by stable id.
+        const prior = new Map(
+          before.reviewItems.filter((r) => r.dismissed || r.resolution).map((r) => [r.id, r]),
+        );
         const merged = review.map((r) => {
-          const p = priorDismissed.get(r.id);
-          return p ? { ...r, dismissed: true, dismissedNote: p.dismissedNote } : r;
+          const p = prior.get(r.id);
+          return p
+            ? {
+                ...r,
+                dismissed: p.dismissed,
+                dismissedNote: p.dismissedNote,
+                resolution: p.resolution,
+                editedValue: p.editedValue,
+                priorValue: p.priorValue,
+              }
+            : r;
         });
         for (const p of before.reviewItems) {
           if (p.dismissed && DERIVED_IDS.has(p.id) && !merged.some((r) => r.id === p.id)) merged.push(p);
+        }
+        // Re-apply edited values onto the regenerated writes. reviewId-keyed,
+        // so labelKey row re-resolution at generation time cannot detach it.
+        for (const w of writes.list) {
+          const p = w.reviewId ? prior.get(w.reviewId) : undefined;
+          if (p?.resolution === "edited" && p.editedValue !== undefined) {
+            const m = merged.find((r) => r.id === w.reviewId);
+            if (m) m.priorValue = w.value;      // Restore reverts to the FRESH computed number
+            w.value = p.editedValue;
+          }
         }
         updateEntity(entityId, { extraWrites: writes.list, dividends: writes.dividends, reviewItems: merged, log: [...log] });
       }
@@ -1683,7 +1773,7 @@ async function materializeCaseWrites(
 
     w({ sheet: SHEET.dividends, ref: "B3", value: date, source: "equity movement / AU return" });
     w({ sheet: SHEET.dividends, ref: "C3", value: divAmount, source: "equity movement / AU return" });
-    if (usdPerUnit !== null) w({ sheet: SHEET.dividends, ref: "D3", value: usdPerUnit, source: rateSource === "frankfurter" ? `ECB reference rate ${iso}` : "1 ÷ year-end spot (fallback)" });
+    if (usdPerUnit !== null) w({ sheet: SHEET.dividends, ref: "D3", value: usdPerUnit, reviewId: "dividend-rate", source: rateSource === "frankfurter" ? `ECB reference rate ${iso}` : "1 ÷ year-end spot (fallback)" });
     rv({
       id: "dividend-rate", level: rateSource === "frankfurter" ? "info" : "warn", category: "fx", applied: true,
       message: rateSource === "frankfurter"
