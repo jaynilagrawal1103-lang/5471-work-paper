@@ -37,6 +37,7 @@ on any static host.
 | **Validates** | Refuses to generate while an exchange rate is missing |
 | **Writes** | Only designated input cells; flags the workbook to recalculate on open |
 | **Records** | A full audit trail, exportable as JSON |
+| **Reviews** | Editable mappings and exceptions, policy-driven levelling, task board |
 
 Multiple entities are supported. Each keeps its own documents and produces its own
 workbook — Form 5471 is filed per foreign corporation, so nothing is consolidated.
@@ -55,6 +56,49 @@ streams, text inside Form XObjects, and Identity-H CID fonts with no ToUnicode m
 
 Scanned PDFs have no text layer; the tool reports that plainly rather than returning
 an empty result.
+
+### Review workflow
+
+Every caption can be re-bound to a different template line from **Mapping &
+adjustments** (or sent back to the review queue) — the decision persists and
+survives re-processing. Exceptions in the **Exception center** can be signed
+off, or **edited and resubmitted**: the linked workbook cell takes the
+reviewer's number and the audit trail records old → new. **Settings ▸
+Policies** holds ordered rules that decide each exception's level (or
+suppress it); suppressing a blocking exception is a standing acknowledgement
+and is logged on every generation. The **Multilingual evidence** table leads
+with the current-year value and keeps the full multi-year figures as audit
+subtext.
+
+---
+
+## Backend (optional)
+
+The standalone `dist/index.html` needs no backend. Add one and the app gains
+persistence (state, documents, sign-offs survive reloads and machines), the
+**Task management** board (pending → in progress → completed, auto-advancing
+as workpapers are processed and generated), and shared policies.
+
+```bash
+npm run build            # builds dist/index.html AND dist-server/server.cjs
+DATABASE_URL=postgres://… node dist-server/server.cjs
+```
+
+One service serves both the API and the app (default port 8471). Env:
+`DATABASE_URL` (Postgres), optional `PORT`, `MAX_UPLOAD_MB` (default 25),
+`CORS_ORIGINS` (only for split hosting). SQL migrations in
+`server/migrations/` run at boot.
+
+**Railway**: create a project with a Postgres plugin, set the build command
+to `npm ci && npm run build` and the start command to `npm run start:server`,
+and reference the plugin's `DATABASE_URL`. A static Netlify/Pages build can
+attach to it via Settings ▸ Tool configuration ▸ Backend URL.
+
+**Sign-in is deliberately absent for now** — one shared workspace, task
+assignees are plain names. The schema and the auth seam are ready for
+Microsoft Entra ID: registering a *Web* app (redirect
+`https://<host>/api/auth/oidc/callback`) and adding the OIDC routes turns on
+per-user isolation without restructuring.
 
 ---
 
