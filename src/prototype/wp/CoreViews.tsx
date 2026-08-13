@@ -354,7 +354,7 @@ export function MappingView() {
                                 <span>
                                   {caption}{" "}
                                   <small>
-                                    ({group.map((c) => `${c.field} ${c.value.toLocaleString()}${c.year ? ` · ${c.year}` : ""}`).join(", ")}
+                                    ({group.map((c) => `${c.field} ${c.value.toLocaleString()}${c.year ? ` · ${c.year}` : ""}${c.period ? ` · ${c.period}` : ""}`).join(", ")}
                                     {group[0].docName ? ` · ${group[0].docName}${group[0].page ? ` p.${group[0].page}` : ""}` : ""}
                                     {group[0].via !== "rule" ? ` · ${group[0].via}` : ""})
                                   </small>

@@ -362,7 +362,82 @@ export type ExtractedRow = {
   years?: (number | null)[];
   /** Leading form line number stripped off the label ("1a", "15"). */
   formLine?: string;
+  /** The period column the value was taken from ("本年累计数 · YTD"). */
+  period?: string;
+  /** Why the row could not be booked (surfaces in the review queue). */
+  reason?: string;
 };
+
+/* ---------- statement column roles (line numbers, period columns) ---------- */
+
+const LINE_NO_HEADER = /^(行次|序号|項次|line\s*(no\.?|number)?|no\.?|s\.?\s*no\.?|sr\.?\s*no\.?|item\s*no\.?|ref\.?)$/i;
+const MONTH_HEADER = /^(本月数|本月數|当月数|本月发生额|本期发生额|current\s*month|month(ly)?\s*(amount|total)?|mtd)$/i;
+const YTD_HEADER = /^(本年累计数?|本年累計數?|年累计数?|累计数?|累計數?|year[\s-]*to[\s-]*date|ytd|cumulative(\s*amount)?)$/i;
+
+export type ColumnRoles = {
+  lineNoCols: Set<number>;
+  monthCol?: number;
+  ytdCol?: number;
+  ytdHeader?: string;
+};
+
+/** Read the header band for column semantics: a 行次/序号/Line-No. column is
+    never money, and 本月数/本年累计数 mark period columns — the YTD column is
+    chosen deliberately, not by right-most accident. */
+export function detectColumnRoles(rows: string[][]): ColumnRoles {
+  const roles: ColumnRoles = { lineNoCols: new Set() };
+  for (const r of rows.slice(0, 10)) {
+    if (!r) continue;
+    let hits = 0;
+    const found: ColumnRoles = { lineNoCols: new Set() };
+    for (let i = 0; i < r.length; i++) {
+      const cell = String(r[i] ?? "").trim();
+      if (!cell) continue;
+      if (LINE_NO_HEADER.test(cell)) { found.lineNoCols.add(i); hits++; }
+      else if (MONTH_HEADER.test(cell)) { found.monthCol = i; hits++; }
+      else if (YTD_HEADER.test(cell)) { found.ytdCol = i; found.ytdHeader = cell; hits++; }
+    }
+    if (hits) {
+      // One header row wins; merge line-number columns across candidates.
+      found.lineNoCols.forEach((c) => roles.lineNoCols.add(c));
+      if (found.monthCol !== undefined) roles.monthCol = found.monthCol;
+      if (found.ytdCol !== undefined) { roles.ytdCol = found.ytdCol; roles.ytdHeader = found.ytdHeader; }
+      if (found.ytdCol !== undefined || found.monthCol !== undefined) break;
+    }
+  }
+  return roles;
+}
+
+/** Header-less fallback: a column whose numbers are small ascending integers
+    while another column carries money is a line-number column. */
+export function detectLineNoColumnByStats(rows: string[][]): number | null {
+  const byCol = new Map<number, number[]>();
+  const moneyCols = new Set<number>();
+  for (const r of rows) {
+    if (!r) continue;
+    let labelSeen = false;
+    for (let i = 0; i < r.length; i++) {
+      const cell = String(r[i] ?? "").trim();
+      if (!cell) continue;
+      if (textualCell(cell)) { labelSeen = true; continue; }
+      const n = numericCell(cell);
+      if (n === null || !labelSeen) continue;
+      if (!byCol.has(i)) byCol.set(i, []);
+      byCol.get(i)!.push(n);
+      if (Math.abs(n) >= 1000 || !Number.isInteger(n)) moneyCols.add(i);
+    }
+  }
+  if (!moneyCols.size) return null;
+  for (const [col, vals] of byCol) {
+    if (moneyCols.has(col) || vals.length < 5) continue;
+    const smallInts = vals.filter((v) => Number.isInteger(v) && v >= 1 && v <= 999).length;
+    if (smallInts / vals.length < 0.8) continue;
+    let ascending = 0;
+    for (let i = 1; i < vals.length; i++) if (vals[i] >= vals[i - 1]) ascending++;
+    if (ascending / Math.max(1, vals.length - 1) >= 0.8) return col;
+  }
+  return null;
+}
 
 /* A cell is numeric when it parses and carries no words \u2014 but ledger
    suffixes like "1,234 CR" must still count as numbers. */
@@ -431,12 +506,19 @@ export function extractRows(rows: string[][] | null): ExtractedRow[] {
   const out: ExtractedRow[] = [];
   if (!rows) return out;
   const colYears = detectGridYearHeader(rows);
+  const roles = detectColumnRoles(rows);
+  // Header-less documents still get line-number protection, by column shape.
+  if (!roles.lineNoCols.size) {
+    const statCol = detectLineNoColumnByStats(rows);
+    if (statCol !== null) roles.lineNoCols.add(statCol);
+  }
   for (const r of rows) {
     if (!r || !r.length) continue;
     let label: string | null = null;
     let labelCol = -1;
     const nums: { v: number; col: number }[] = [];
     for (let i = 0; i < r.length; i++) {
+      if (roles.lineNoCols.has(i)) continue;              // 行次/序号/Line No. — never money
       const cell = r[i];
       if (cell === "" || cell === undefined) continue;
       const n = numericCell(String(cell));
@@ -448,13 +530,28 @@ export function extractRows(rows: string[][] | null): ExtractedRow[] {
     }
     if (!label) continue;
     // A number to the left of the caption is an account code, not a balance.
-    const kept = nums.filter((x) => x.col > labelCol);
+    let kept = nums.filter((x) => x.col > labelCol);
+    let period: string | undefined;
+    if (roles.ytdCol !== undefined) {
+      // The YTD column is the authoritative period figure. A row without one
+      // has no bookable value — a month-only figure must not masquerade as YTD.
+      kept = kept.filter((x) => x.col === roles.ytdCol);
+      period = `${roles.ytdHeader} · YTD`;
+    } else if (kept.length >= 2) {
+      // No header knowledge: a small leading integer glued to the caption,
+      // followed by real money, is a line number.
+      const first = kept[0];
+      const restMoney = kept.slice(1).some((x) => Math.abs(x.v) >= 1000 || !Number.isInteger(x.v));
+      if (first.col === labelCol + 1 && Number.isInteger(first.v) && first.v >= 1 && first.v <= 999 && restMoney) {
+        kept = kept.slice(1);
+      }
+    }
     const values = kept.map((x) => x.v);
     if (!values.length) continue;
     // A row whose numbers are all bare years is a column header, not data.
     if (kept.length >= 2 && kept.every((x) => /^(19|20)\d{2}$/.test(String(r[x.col]).trim()))) continue;
     const years = colYears ? kept.map((x) => colYears[x.col] ?? null) : undefined;
-    const cleaned = applyRowHygiene({ label, values, years });
+    const cleaned = applyRowHygiene({ label, values, years, period });
     if (cleaned) out.push(cleaned);
   }
   return out;

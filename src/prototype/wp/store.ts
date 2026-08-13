@@ -40,6 +40,8 @@ export type Contribution = {
       what unassign needs to reconstruct the unmatched row faithfully. */
   srcValues?: number[];
   srcYears?: (number | null)[];
+  /** Period column the value came from ("本年累计数 · YTD"). */
+  period?: string;
 };
 
 /** A user's standing decision about where a caption maps; survives
@@ -922,7 +924,7 @@ export const actions = {
             (contributions[resolved.target] ||= []).push({
               docId: m.docId, docName: m.docName, page: m.row.page,
               label: m.row.label, value: r.value, field: r.field, year: r.year, via: "rule",
-              srcValues: m.row.values, srcYears: m.row.years,
+              srcValues: m.row.values, srcYears: m.row.years, period: m.row.period,
             });
           }
           sourceLabels[resolved.target] = { label: m.row.label, values: m.row.values, years: m.row.years };
@@ -1603,7 +1605,7 @@ function manualApply(
     (contributions[target] ||= []).push({
       docId: row.docId || "", docName: row.docName || "manual entry", page: row.page,
       label: row.label, value: r.value, field: r.field, year: r.year, via,
-      srcValues: row.values, srcYears: row.years,
+      srcValues: row.values, srcYears: row.years, period: row.period,
     });
   }
   // Relabel-capable rows carry the source caption into the workbook.
