@@ -7,12 +7,19 @@ import { actions, entityCaseCy, getSnapshot, subscribe } from "./store";
 
 const SCRIPTS: Array<{ name: string; re: RegExp }> = [
   { name: "Arabic", re: /[\u0600-\u06FF]/ },
-  { name: "Chinese", re: /[\u4E00-\u9FFF]/ },
   { name: "Japanese", re: /[\u3040-\u30FF]/ },
+  { name: "Chinese", re: /[\u4E00-\u9FFF]/ },
   { name: "Korean", re: /[\uAC00-\uD7AF]/ },
   { name: "Cyrillic", re: /[\u0400-\u04FF]/ },
   { name: "Greek", re: /[\u0370-\u03FF]/ },
   { name: "Hebrew", re: /[\u0590-\u05FF]/ },
+  { name: "Devanagari", re: /[\u0900-\u097F]/ },
+  { name: "Bengali", re: /[\u0980-\u09FF]/ },
+  { name: "Tamil", re: /[\u0B80-\u0BFF]/ },
+  { name: "Telugu", re: /[\u0C00-\u0C7F]/ },
+  { name: "Gujarati", re: /[\u0A80-\u0AFF]/ },
+  { name: "Thai", re: /[\u0E00-\u0E7F]/ },
+  { name: "Vietnamese", re: /[ăâđêôơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i },
 ];
 
 const HINTS: Array<{ name: string; words: string[] }> = [
@@ -74,6 +81,7 @@ export function EvidenceView() {
       allValues: string;                            // full multi-year audit string
       ambiguous: boolean;
       translation: string | null;
+      failure: string | null;                       // why translation was refused
     }> = [];
     const fmt = (values: number[], years?: (number | null)[]) =>
       values.map((v, i) => years?.[i] ? `${v.toLocaleString()} (${years[i]})` : v.toLocaleString()).join(" · ");
@@ -103,6 +111,7 @@ export function EvidenceView() {
             allValues: src ? fmt(src.srcValues!, src.srcYears) : fmt(contribs.map((c) => c.value)),
             ambiguous: false,
             translation: ent.translations?.[label] ?? null,
+            failure: ent.translationFailures?.[label] ?? null,
           });
         }
       }
@@ -117,6 +126,7 @@ export function EvidenceView() {
           allValues: fmt(src.values, src.years),
           ambiguous: false,
           translation: ent.translations?.[src.label] ?? null,
+          failure: ent.translationFailures?.[src.label] ?? null,
         });
       }
 
@@ -134,6 +144,7 @@ export function EvidenceView() {
           allValues: fmt(u.values, u.years),
           ambiguous: cyValue === null,
           translation: ent.translations?.[u.label] ?? null,
+          failure: ent.translationFailures?.[u.label] ?? null,
         });
       }
     }
@@ -144,6 +155,21 @@ export function EvidenceView() {
   const shown = filter === "all" ? rows : rows.filter((r) => r.language === filter);
   const nonEnglish = rows.filter((r) => r.language !== "English");
   const untranslated = nonEnglish.filter((r) => !r.translation);
+  const failedRows = rows.filter((r) => r.failure && !r.translation);
+  const pct = (n: number) => (rows.length ? Math.round((n / rows.length) * 100) : 0);
+  // Documents the parser refused to read (scanned images etc.) — surfaced
+  // here because their evidence never made it into the table at all.
+  const unreadable = state.entities.flatMap((e) =>
+    e.log
+      .filter((l) => /could not be read|no text layer/.test(l))
+      .map((l) => ({
+        entity: e.name,
+        line: l,
+        reason: /no text layer|scanned image/.test(l)
+          ? "Poor or unclear scan — the PDF has no text layer, and OCR is not attempted so nothing is guessed."
+          : "The file could not be parsed — unsupported or corrupted format.",
+      })),
+  );
 
   return (
     <div className="view-stack">
@@ -181,6 +207,27 @@ export function EvidenceView() {
         <div className="metric-card"><strong>{nonEnglish.length}</strong><span>Non-English captions</span><em>{nonEnglish.length - untranslated.length} translated</em></div>
         <div className="metric-card"><strong>{rows.filter((r) => r.target).length}</strong><span>Bound to a template line</span><em>{rows.filter((r) => !r.target).length} unassigned</em></div>
       </div>
+
+      {rows.length ? (
+        <p className="hint">
+          <strong>{pct(nonEnglish.length)}% non-English</strong>
+          {" → "}
+          <strong>{pct(nonEnglish.length - untranslated.length)}% translated</strong>
+          {" → "}
+          <strong>{pct(untranslated.length)}% remaining</strong>
+          {failedRows.length ? <> · {failedRows.length} caption{failedRows.length === 1 ? "" : "s"} could not be translated — highlighted below with the reason</> : null}
+        </p>
+      ) : null}
+
+      {unreadable.length ? (
+        <Callout title={`${unreadable.length} document(s) could not be read`} tone="amber">
+          {unreadable.map((u, i) => (
+            <div key={i} style={{ marginBottom: 4 }}>
+              <strong>{u.line.split(":")[0]}</strong> ({u.entity}) — {u.reason}
+            </div>
+          ))}
+        </Callout>
+      ) : null}
 
       {rows.length === 0 ? (
         <Callout title="No evidence yet" tone="amber">
@@ -225,7 +272,13 @@ export function EvidenceView() {
                   <tr key={r.entityId + r.label + i}>
                     <td><strong>{r.label}</strong><br /><small style={{ color: "var(--muted)" }}>{r.entity}</small></td>
                     <td><span className={r.language === "English" ? "actor-tag system" : "actor-tag groq"}>{r.language}</span></td>
-                    <td style={{ color: "var(--muted)" }}>{r.translation || (r.language === "English" ? "—" : "not translated")}</td>
+                    <td style={{ color: "var(--muted)" }}>
+                      {r.translation
+                        ? r.translation
+                        : r.failure
+                          ? <span className="actor-tag groq" style={{ whiteSpace: "normal" }}>{r.failure}</span>
+                          : r.language === "English" ? "—" : "not translated"}
+                    </td>
                     <td className="numeric" title={`Values read: ${r.allValues}`}>
                       {r.ambiguous ? (
                         <span className="actor-tag user">ambiguous</span>

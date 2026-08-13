@@ -15,7 +15,7 @@ import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
 import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod } from "./fxRates";
-import { PROVIDERS, fetchLiveRate, sourceLangHint, translateFree, type LiveRate } from "./providers";
+import { PROVIDERS, fetchLiveRate, isMostlyNonLatin, sourceLangHint, translateFree, type LiveRate } from "./providers";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
 declare const JSZip: any;
@@ -113,6 +113,9 @@ export type Entity = {
   extraWrites: CellWrite[];
   dividends: DividendRec[];
   translations: Record<string, string>;
+  /** Captions the translators could NOT handle, with the specific reason —
+      shown highlighted in the evidence table; nothing is ever guessed. */
+  translationFailures: Record<string, string>;
   unmatched: (ExtractedRow & { docId?: string; docName?: string })[];
   log: string[];
   processedAt: string | null;
@@ -214,6 +217,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     extraWrites: [],
     dividends: [],
     translations: {},
+    translationFailures: {},
     unmatched: [],
     log: [],
     processedAt: null,
@@ -1190,12 +1194,22 @@ export const actions = {
         ], true);
         const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
         const translations = { ...ent.translations };
+        const failures = { ...ent.translationFailures };
         let n = 0;
         w.labels.forEach((label, i) => {
           const v = parsed?.t?.[String(i)];
-          if (typeof v === "string" && v.trim()) { translations[label] = v.trim(); n++; }
+          const value = typeof v === "string" ? v.trim() : "";
+          if (value && !(isMostlyNonLatin(label) && isMostlyNonLatin(value))) {
+            translations[label] = value;
+            delete failures[label];
+            n++;
+          } else {
+            failures[label] = value
+              ? "Unreadable characters or unsupported text — the model stayed in the source script."
+              : "The model returned no translation — unsupported text or missing context.";
+          }
         });
-        updateEntity(w.entityId, { translations });
+        updateEntity(w.entityId, { translations, translationFailures: failures });
         logEvent("Captions translated", `${n} caption(s) via ${state.groq.model}`, ent.name, "groq");
       }
       toast("Translation complete", "ok");
@@ -1225,24 +1239,43 @@ export const actions = {
       const ent = state.entities.find((e) => e.id === w.entityId);
       if (!ent) continue;
       const translations = { ...ent.translations };
+      const failures = { ...ent.translationFailures };
       for (const label of w.labels) {
+        // Never guess: a caption too short to carry meaning is not sent out.
+        if (label.trim().length < 3) {
+          failures[label] = "Missing context — the caption is too short to translate reliably.";
+          continue;
+        }
         const t0 = Date.now();
         const { result, attempts } = await translateFree(label, state.translateOrder, sourceLangHint(label));
         const latency = Date.now() - t0;
         for (const a of attempts) recordProvider(a.provider, 0, false, a.error, null);
         if (result.ok) {
-          recordProvider(result.provider, result.units, true, "", latency);
-          translations[label] = result.value;
-          done++;
+          const value = result.value.trim();
+          const unusable =
+            !value ||
+            (isMostlyNonLatin(label) && (value === label.trim() || isMostlyNonLatin(value)));
+          if (unusable) {
+            // The service echoed the input or stayed in the source script —
+            // that is not a translation, and storing it would be a guess.
+            failures[label] = "Unreadable characters or unsupported text — the service returned nothing usable.";
+            recordProvider(result.provider, result.units, true, "", latency);
+          } else {
+            recordProvider(result.provider, result.units, true, "", latency);
+            translations[label] = value;
+            delete failures[label];
+            done++;
+          }
         } else {
           recordProvider("mymemory", 0, false, result.error, latency);
+          failures[label] = `Translation service unavailable (${result.error}) — retry later.`;
           lastError = result.error;
           failed++;
           break;   // a failing provider will keep failing; stop burning the quota
         }
         set({ usage: { ...state.usage, api: state.usage.api + 1 } });
       }
-      updateEntity(w.entityId, { translations });
+      updateEntity(w.entityId, { translations, translationFailures: failures });
       if (done) logEvent("Captions translated", `${done} caption(s) via free service`, ent.name, "system");
     }
 

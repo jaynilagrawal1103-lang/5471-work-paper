@@ -253,5 +253,21 @@ export function sourceLangHint(text: string): string {
   if (/[\u0400-\u04FF]/.test(text)) return "ru";
   if (/[\u0370-\u03FF]/.test(text)) return "el";
   if (/[\u0590-\u05FF]/.test(text)) return "he";
+  if (/[\u0900-\u097F]/.test(text)) return "hi";
+  if (/[\u0980-\u09FF]/.test(text)) return "bn";
+  if (/[\u0B80-\u0BFF]/.test(text)) return "ta";
+  if (/[\u0C00-\u0C7F]/.test(text)) return "te";
+  if (/[\u0A80-\u0AFF]/.test(text)) return "gu";
+  if (/[\u0E00-\u0E7F]/.test(text)) return "th";
+  if (/[ăâđêôơưĂÂĐÊÔƠƯạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/.test(text)) return "vi";
   return "auto";
+}
+
+/** True when the text is dominated by non-Latin script — a "translation"
+    still in that script is not a translation. */
+export function isMostlyNonLatin(text: string): boolean {
+  const letters = [...text].filter((c) => /\p{L}/u.test(c));
+  if (!letters.length) return false;
+  const nonLatin = letters.filter((c) => !/[A-Za-z\u00C0-\u024F]/.test(c)).length;
+  return nonLatin / letters.length > 0.5;
 }
