@@ -122,7 +122,11 @@ export function FxRatesView() {
                       />
                     </td>
                     <td className="numeric">{r.pub ?? "—"}</td>
-                    <td style={{ color: "var(--muted)", fontSize: 10.5 }}>{r.src}</td>
+                    <td style={{ color: "var(--muted)", fontSize: 10.5 }}>
+                      {active?.fxMeta?.[r.k]
+                        ? <>{active.fxMeta[r.k].source}<br />as of {active.fxMeta[r.k].asOf}</>
+                        : r.src}
+                    </td>
                   </tr>
                 );
               })}

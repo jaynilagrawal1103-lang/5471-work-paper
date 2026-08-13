@@ -4,6 +4,8 @@ import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader, StatusPill } from "../primitives";
 import { DOC_TYPES, GROQ_MODELS, MAX_FILE_MB, NATIVE_PARSE, PROCESS_STEPS, QUOTA, actions, getSnapshot, subscribe } from "./store";
 import { apiBase, isRemote, setApiBaseOverride } from "../api";
+import { generateRatesWorkbook, parseRatesWorkbook, rateDbYears, readWorkbookSheets } from "./rateDb";
+import { safeDownload } from "./safeBrowser";
 import { sessionSnapshot, sessionSubscribe } from "../session";
 import { PROVIDERS } from "./providers";
 
@@ -378,6 +380,7 @@ export function SettingsView() {
 
       {tab === "services" ? (
         <div>
+          <RateDbCard />
           <Callout title="Keyless by default" tone="teal">
             Translation and live rates run through public endpoints that need no account. They are tried in order and
             fall through on failure. Nothing here is required: the work paper itself uses the offline IRS and US
@@ -584,5 +587,107 @@ function BackendCard() {
         </p>
       ) : null}
     </div>
+  );
+}
+
+function RateDbCard() {
+  const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const db = state.rateDb;
+  const years = rateDbYears(db);
+  const [code, setCode] = useState("AUD");
+  const [uploadReport, setUploadReport] = useState<string[]>([]);
+  const codes = db.codes.map((c) => c.code).sort();
+  const chosen = codes.includes(code) ? code : codes[0] || "";
+
+  const onUpload = async (file: File) => {
+    try {
+      const sheets = await readWorkbookSheets(await file.arrayBuffer());
+      const parsed = parseRatesWorkbook(sheets, file.name);
+      if (!parsed.db) {
+        setUploadReport(["The workbook was NOT applied:", ...parsed.errors, ...parsed.warnings]);
+        return;
+      }
+      actions.replaceRateDb(parsed.db);
+      setUploadReport(parsed.warnings.length ? ["Applied with warnings:", ...parsed.warnings] : [`Applied: ${file.name}`]);
+    } catch (err) {
+      setUploadReport([`Could not read the workbook: ${(err as Error).message}`]);
+    }
+  };
+
+  const onDownload = async () => {
+    const blob = await generateRatesWorkbook(db);
+    if (!safeDownload(blob, "Rates.xlsx")) {
+      /* toast happens via store paths elsewhere; keep it simple here */
+      window.alert("Download was blocked by the browser");
+    }
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div><span className="section-kicker">Currency Rate Database</span><h2>IRS averages & Treasury spot rates</h2></div>
+        <div className="signoff-actions">
+          <label className="button" style={{ cursor: "pointer" }}>
+            Upload / replace
+            <input
+              type="file"
+              accept=".xlsx"
+              hidden
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void onUpload(f); e.currentTarget.value = ""; }}
+            />
+          </label>
+          <button type="button" className="button" onClick={() => void onDownload()}>Download Excel</button>
+          <button type="button" className="button" onClick={() => actions.resetRateDb()}>Reset to built-in</button>
+        </div>
+      </div>
+      <Row label="Source" value={db.source} />
+      <Row label="Coverage" value={`${db.codes.length} currencies · ${years[0]}–${years[years.length - 1]}`} />
+      <p className="hint">
+        This database is the FIRST source for every rate lookup; live providers (OFX, then the configured fallbacks)
+        are only consulted for spot rates the database lacks — and a rate found nowhere stays blank, never guessed.
+        The workbook has three sheets: <strong>Currency Code</strong>, <strong>IRS Average Rate</strong>,
+        <strong> Treasury Spot Rate</strong> — all three are validated on upload.
+      </p>
+      {uploadReport.length ? (
+        <Callout title="Upload result" tone={uploadReport[0].startsWith("The workbook was NOT") || uploadReport[0].startsWith("Could not") ? "amber" : "teal"}>
+          {uploadReport.map((l, i) => <div key={i}>{l}</div>)}
+        </Callout>
+      ) : null}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "10px 0 6px" }}>
+        <span className="section-kicker">Edit rates</span>
+        <select className="stake-input" style={{ maxWidth: 130 }} value={chosen} onChange={(e) => setCode(e.target.value)}>
+          {codes.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <small style={{ color: "var(--muted)" }}>{db.codes.find((c) => c.code === chosen)?.country || ""}</small>
+      </div>
+      <div className="wp-table rules-table">
+        <table>
+          <thead><tr><th style={{ width: 70 }}>Year</th><th>IRS average</th><th>Treasury 12/31 spot</th></tr></thead>
+          <tbody>
+            {years.map((y) => (
+              <tr key={y}>
+                <td className="ref-cell">{y}</td>
+                <td>
+                  <input
+                    className="rule-input"
+                    defaultValue={db.irsAvg[chosen]?.[y] ?? ""}
+                    key={`a-${chosen}-${y}-${db.irsAvg[chosen]?.[y] ?? ""}`}
+                    onBlur={(e) => actions.setDbRate(chosen, "avg", y, e.target.value)}
+                  />
+                </td>
+                <td>
+                  <input
+                    className="rule-input"
+                    defaultValue={db.spot[chosen]?.[y] ?? ""}
+                    key={`s-${chosen}-${y}-${db.spot[chosen]?.[y] ?? ""}`}
+                    onBlur={(e) => actions.setDbRate(chosen, "spot", y, e.target.value)}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

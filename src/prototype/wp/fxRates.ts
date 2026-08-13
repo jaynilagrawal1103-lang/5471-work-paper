@@ -36,23 +36,30 @@ export type RateLookup = {
 };
 
 /** Resolve all three template rates for a currency and the two period ends. */
-export function lookupRates(code: string, cyEnd: string, pyEnd: string): RateLookup {
+export function lookupRates(
+  code: string,
+  cyEnd: string,
+  pyEnd: string,
+  tables?: { irsAvg: RateTable; spot: RateTable; source: string },
+): RateLookup {
   const c = String(code || "").toUpperCase().trim();
+  const irs = tables?.irsAvg ?? IRS_AVERAGE;
+  const spot = tables?.spot ?? TREASURY_SPOT;
   // Fall back to the most recent published year when a period end is not set yet,
   // so a currency alone is enough to produce usable rates.
   const latest = SPOT_YEARS[SPOT_YEARS.length - 1];
   const prior = SPOT_YEARS[SPOT_YEARS.length - 2];
   const cyYear = yearFromPeriod(cyEnd) || latest;
   const pyYear = yearFromPeriod(pyEnd) || prior;
-  const avg = cyYear ? IRS_AVERAGE[c]?.[cyYear] ?? null : null;
-  const cy = cyYear ? TREASURY_SPOT[c]?.[cyYear] ?? null : null;
-  const py = pyYear ? TREASURY_SPOT[c]?.[pyYear] ?? null : null;
+  const avg = cyYear ? irs[c]?.[cyYear] ?? null : null;
+  const cy = cyYear ? spot[c]?.[cyYear] ?? null : null;
+  const py = pyYear ? spot[c]?.[pyYear] ?? null : null;
   return {
     avgRate: avg,
     cyRate: cy,
     pyRate: py,
     cyYear,
     pyYear,
-    source: "IRS yearly average + US Treasury 12/31 spot",
+    source: tables?.source ?? "IRS yearly average + US Treasury 12/31 spot",
   };
 }

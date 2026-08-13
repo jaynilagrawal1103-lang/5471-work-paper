@@ -15,6 +15,7 @@ import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
 import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod } from "./fxRates";
+import { seedRateDb, type RateDb } from "./rateDb";
 import { PROVIDERS, fetchLiveRate, isMostlyNonLatin, sourceLangHint, translateFree, type LiveRate } from "./providers";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
@@ -101,6 +102,8 @@ export type Entity = {
   ownership: Record<string, string>;
   categories: Record<string, boolean>;
   fx: Record<string, string>;
+  /** Where each rate came from and its as-of date — shown beside the inputs. */
+  fxMeta: Record<string, { source: string; asOf: string }>;
   fxAuto: boolean;
   detected: Record<string, DetectedField>;
   lines: Record<string, LineValue>;
@@ -155,6 +158,7 @@ export type WpState = {
   activeEntityId: string | null;
   rules: MappingRule[];
   policies: PolicyRule[];
+  rateDb: RateDb;
   groq: GroqState;
   usage: { docs: number; storage: number; api: number; generated: number };
   busy: boolean;
@@ -205,6 +209,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     ownership: {},
     categories: {},
     fx: {},
+    fxMeta: {},
     fxAuto: false,
     detected: {},
     lines: {},
@@ -233,6 +238,7 @@ let state: WpState = {
   activeEntityId: null,
   rules: DEFAULT_RULES.map((r) => ({ t: r.t, kw: [...r.kw] })),
   policies: [],
+  rateDb: seedRateDb(),
   groq: { key: "", model: GROQ_MODELS[0], status: "not configured", latency: null, calls: 0, tokens: 0, lastError: "" },
   usage: { docs: 0, storage: 0, api: 0, generated: 0 },
   busy: false,
@@ -430,22 +436,84 @@ export const actions = {
     if (!ent) return;
     const code = (ent.profile.currency || "").toUpperCase().trim();
     if (!code) { if (force) toast("Set the functional currency first", "bad"); return; }
-    const hit = lookupRates(code, ent.profile.cyEnd || "", ent.profile.pyEnd || "");
-    if (!hit.avgRate && !hit.cyRate && !hit.pyRate) {
-      if (force) toast(`No published rates for ${code} in those years — enter them manually`, "bad");
-      return;
-    }
+    // Priority 1: the currency-rate database (uploaded Rates.xlsx, else the
+    // built-in IRS + Treasury tables it was seeded from).
+    const db = state.rateDb;
+    const hit = lookupRates(code, ent.profile.cyEnd || "", ent.profile.pyEnd || "", {
+      irsAvg: db.irsAvg, spot: db.spot, source: db.source,
+    });
     const fx = { ...ent.fx };
-    const put = (k: string, v: number | null) => {
+    const fxMeta = { ...ent.fxMeta };
+    const put = (k: string, v: number | null, meta: { source: string; asOf: string }) => {
       if (v === null) return;
-      if (force || fx[k] === undefined || fx[k] === "" || ent.fxAuto) fx[k] = String(v);
+      if (force || fx[k] === undefined || fx[k] === "" || ent.fxAuto) {
+        fx[k] = String(v);
+        fxMeta[k] = meta;
+      }
     };
-    put("avgRate", hit.avgRate);
-    put("cyRate", hit.cyRate);
-    put("pyRate", hit.pyRate);
-    updateEntity(entityId, { fx, fxAuto: true });
-    logEvent("Exchange rates applied", `${code} · avg ${hit.avgRate ?? "—"} (${hit.cyYear}) · CY spot ${hit.cyRate ?? "—"} · PY spot ${hit.pyRate ?? "—"}`, ent.name, "system");
-    if (force) toast(`${code} rates applied from published tables`, "ok");
+    put("avgRate", hit.avgRate, { source: `${db.source} · IRS yearly average`, asOf: `calendar ${hit.cyYear}` });
+    put("cyRate", hit.cyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: `12/31/${hit.cyYear}` });
+    put("pyRate", hit.pyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: `12/31/${hit.pyYear}` });
+    updateEntity(entityId, { fx, fxAuto: true, fxMeta });
+    if (hit.avgRate || hit.cyRate || hit.pyRate) {
+      logEvent("Exchange rates applied", `${code} · avg ${hit.avgRate ?? "—"} (${hit.cyYear}) · CY spot ${hit.cyRate ?? "—"} · PY spot ${hit.pyRate ?? "—"} · ${db.source}`, ent.name, "system");
+      if (force) toast(`${code} rates applied from ${db.source}`, "ok");
+    }
+    // Priority 2/3: a spot rate the database lacks is fetched from the live
+    // providers — Frankfurter can serve the exact historical date; a dateless
+    // provider is only trusted for CURRENT period ends. Averages have no live
+    // source and stay blank rather than guessed.
+    const missing: Array<{ k: "cyRate" | "pyRate"; end: string }> = [];
+    if (!fx.cyRate && ent.profile.cyEnd) missing.push({ k: "cyRate", end: ent.profile.cyEnd });
+    if (!fx.pyRate && ent.profile.pyEnd) missing.push({ k: "pyRate", end: ent.profile.pyEnd });
+    if (missing.length) {
+      void (async () => {
+        for (const m of missing) {
+          const iso = toIsoDate(m.end, Number(yearFromPeriod(m.end)) || 0) || undefined;
+          const recent = iso ? Date.now() - new Date(iso).getTime() < 7 * 86400000 : false;
+          try {
+            const { result } = await fetchLiveRate(code, iso && !recent ? ["frankfurter"] : state.fxOrder, iso);
+            if (result.ok && result.value.rate > 0) {
+              const fresh = state.entities.find((e) => e.id === entityId);
+              if (!fresh || fresh.fx[m.k]) continue;
+              updateEntity(entityId, {
+                fx: { ...fresh.fx, [m.k]: String(result.value.rate) },
+                fxMeta: { ...fresh.fxMeta, [m.k]: { source: `${result.value.provider} (live fallback)`, asOf: result.value.asOf || iso || "latest" } },
+              });
+              logEvent("Live rate fallback applied", `${code} ${m.k} = ${result.value.rate} · ${result.value.provider} · ${result.value.asOf || iso || "latest"}`, ent.name, "system");
+            }
+          } catch { /* stays blank — the missing-rate blocker says exactly what to enter */ }
+        }
+      })();
+    }
+    if (!hit.avgRate && !hit.cyRate && !hit.pyRate && !missing.length && force) {
+      toast(`No published rates for ${code} in those years — enter them manually`, "bad");
+    }
+  },
+
+  /* ---------------- currency-rate database ---------------- */
+  replaceRateDb(db2: RateDb) {
+    logEvent("Currency rate database replaced", `${db2.source} · ${db2.codes.length} currencies`);
+    set({ rateDb: db2 });
+    toast("Rate database replaced — new lookups use it immediately", "ok");
+  },
+
+  setDbRate(code: string, kind: "avg" | "spot", year: string, raw: string) {
+    const db = state.rateDb;
+    const table = kind === "avg" ? { ...db.irsAvg } : { ...db.spot };
+    const c = code.toUpperCase();
+    const v = Number(raw.replace(/,/g, ""));
+    table[c] = { ...(table[c] || {}) };
+    if (!raw.trim() || !isFinite(v) || v <= 0) delete table[c][year];
+    else table[c][year] = v;
+    logEvent("Rate edited", `${c} ${kind === "avg" ? "IRS average" : "Treasury spot"} ${year} → ${raw || "cleared"}`);
+    set({ rateDb: { ...db, [kind === "avg" ? "irsAvg" : "spot"]: table, source: db.source.includes("edited") ? db.source : `${db.source} (edited)` } });
+  },
+
+  resetRateDb() {
+    logEvent("Currency rate database reset", "built-in IRS + Treasury tables restored");
+    set({ rateDb: seedRateDb() });
+    toast("Rate database reset to the built-in tables", "ok");
   },
 
   toggleCategory(entityId: string, cat: string) {
