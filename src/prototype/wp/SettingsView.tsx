@@ -5,6 +5,7 @@ import { Callout, SectionHeader, StatusPill } from "../primitives";
 import { DOC_TYPES, GROQ_MODELS, MAX_FILE_MB, NATIVE_PARSE, PROCESS_STEPS, QUOTA, actions, getSnapshot, subscribe } from "./store";
 import { apiBase, isRemote, setApiBaseOverride } from "../api";
 import { generateRatesWorkbook, parseRatesWorkbook, rateDbYears, readWorkbookSheets } from "./rateDb";
+import { resetProject } from "./localStore";
 import { safeDownload } from "./safeBrowser";
 import { sessionSnapshot, sessionSubscribe } from "../session";
 import { PROVIDERS } from "./providers";
@@ -582,10 +583,27 @@ function BackendCard() {
       </div>
       {!isRemote() ? (
         <p className="hint" style={{ marginTop: 8 }}>
-          Task management and cross-session persistence need the backend; the standalone build keeps working fully
-          offline without it.
+          Task management needs the backend; without it the project still persists in THIS browser (IndexedDB) across
+          refreshes and restarts.
         </p>
       ) : null}
+      <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--line, #e5e5e5)" }}>
+        <button
+          type="button"
+          className="button"
+          onClick={() => {
+            const sure = window.confirm(
+              "Reset Project permanently clears EVERYTHING stored in this browser: documents, entities, mappings, edits, translations, policies and the rate database. This cannot be undone." +
+              (isRemote() ? " Data already saved to the backend is NOT deleted." : ""),
+            );
+            if (!sure) return;
+            void resetProject().then(() => window.location.reload());
+          }}
+        >
+          Reset Project…
+        </button>
+        <small style={{ marginLeft: 8, color: "var(--muted)" }}>clears all local data after confirmation</small>
+      </div>
     </div>
   );
 }

@@ -309,8 +309,12 @@ type StoreHooks = {
   onMutate?: (patch: Partial<WpState>) => void;
   onFilesAdded?: (entityId: string, files: EntityFile[]) => void;
 };
-let hooks: StoreHooks = {};
-export function registerStoreHooks(h: StoreHooks) { hooks = h; }
+const hooksList: StoreHooks[] = [];
+export function registerStoreHooks(h: StoreHooks) { hooksList.push(h); }
+const hooks: StoreHooks = {
+  onMutate: (patch) => hooksList.forEach((h) => h.onMutate?.(patch)),
+  onFilesAdded: (id, files) => hooksList.forEach((h) => h.onFilesAdded?.(id, files)),
+};
 
 /** Replace the whole state (hydration from the backend). */
 export function loadState(next: WpState) {

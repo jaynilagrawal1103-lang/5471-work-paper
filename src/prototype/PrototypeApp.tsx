@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { NAV_ITEMS, Shell, type ViewId } from "./Shell";
 import { TasksView } from "./wp/TasksView";
 import { initPersistence } from "./wp/persist";
+import { initLocalPersistence } from "./wp/localStore";
 import {
   CategoryView, ExceptionsView, IntakeView, MappingView, OverviewView,
   PortfolioView, ReadinessView, SignoffView, WorkspaceView,
@@ -25,8 +26,9 @@ function normalizeView(value: string): ViewId {
 export function PrototypeApp({ initialView }: AppProps) {
   const [activeView, setActiveView] = useState<ViewId>(normalizeView(initialView));
 
-  // Remote mode boots once: probe, hydrate, register autosave. No-op locally.
-  useEffect(() => { void initPersistence(); }, []);
+  // Local persistence restores the last session first; remote mode then
+  // hydrates over it when a backend is configured (the server is the truth).
+  useEffect(() => { void initLocalPersistence().then(() => initPersistence()); }, []);
 
   const navigate = (view: ViewId) => {
     setActiveView(view);
