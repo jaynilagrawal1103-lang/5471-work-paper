@@ -638,7 +638,11 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
               <tbody>
                 {unmatched.map((u, i) => (
                   <tr key={u.entityId + u.label + i}>
-                    <td><strong>{u.label}</strong>{u.docName ? <small style={{ display: "block", opacity: 0.7 }}>{u.docName}{u.page ? ` · p.${u.page}` : ""}</small> : null}</td>
+                    <td>
+                      <strong>{u.label}</strong>
+                      {u.docName ? <small style={{ display: "block", opacity: 0.7 }}>{u.docName}{u.page ? ` · p.${u.page}` : ""}</small> : null}
+                      {u.reason ? <small style={{ display: "block", color: "var(--muted)" }}>{u.reason}</small> : null}
+                    </td>
                     <td>{u.entity}</td>
                     <td className="numeric">{u.values.map((v) => v.toLocaleString()).join(" · ")}</td>
                     <td>

@@ -493,6 +493,14 @@ export const actions = {
       // The assignment is a standing decision — it now survives re-processing.
       mapOverrides: { ...ent.mapOverrides, [norm(row.label)]: { to: target } },
     });
+    // And it teaches the tool: the caption becomes a mapping rule, so FUTURE
+    // documents map it automatically (rules are editable in Settings).
+    const kw = norm(row.label);
+    if (kw.length >= 3 && !state.rules.some((r) => r.kw.some((k) => k.toLowerCase() === kw))) {
+      set({ rules: [...state.rules, { kw: [kw], t: target }] });
+      logEvent("Mapping rule learned", `"${kw}" → ${target} (from a manual assignment)`, ent.name);
+      toast(`Mapped and remembered — future documents will map "${row.label}" automatically`, "ok");
+    }
   },
 
   /** Move every contribution of a caption to another template line (or back
@@ -868,7 +876,7 @@ export const actions = {
           const ov = overrides[norm(m.row.label)];
           if (ov !== undefined) {
             // The user's standing decision wins over rules and feed scoping.
-            if (ov.to === null) { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName }); continue; }
+            if (ov.to === null) { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName, reason: "You unassigned this caption — pick a template line to book it." }); continue; }
             target = ov.to;
           } else {
             // Feed scoping: a P&L page may only hit IS lines, a balance-sheet
@@ -888,10 +896,26 @@ export const actions = {
               }
             }
           }
-          if (!target) { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName }); continue; }
+          if (!target) {
+            unmatched.push({
+              ...m.row, docId: m.docId, docName: m.docName,
+              reason: m.feed === "is"
+                ? "No mapping rule matches this caption on an income-statement page — assign it to a Schedule C line (or a Schedule F line if it is really a balance)."
+                : m.feed === "bs"
+                  ? "No mapping rule matches this caption on a balance-sheet page — assign it to a Schedule F line."
+                  : "No mapping rule matches this caption — assign it to the right schedule line.",
+            });
+            continue;
+          }
 
           const routed = routeRow(m.row, target.startsWith("BS"), caseYears, m.kind);
-          if (routed === "ambiguous") { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName }); continue; }
+          if (routed === "ambiguous") {
+            unmatched.push({
+              ...m.row, docId: m.docId, docName: m.docName,
+              reason: "The row carries several numbers with no year identity — assigning it manually books the value the routing can verify.",
+            });
+            continue;
+          }
           if (!routed.length) continue;   // prior-year-only income row etc — correctly ignored
 
           const isOverride = ov !== undefined && ov.to !== null;

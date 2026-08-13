@@ -324,7 +324,10 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                         <tbody>
                           {entity.unmatched.map((u, i) => (
                             <tr key={`${u.label}-${i}`}>
-                              <td>{u.label}</td>
+                              <td>
+                                {u.label}
+                                {u.reason ? <small style={{ display: "block", color: "var(--muted)" }}>{u.reason}</small> : null}
+                              </td>
                               <td className="numeric">{u.values.join(" · ")}</td>
                               <td>
                                 <select
