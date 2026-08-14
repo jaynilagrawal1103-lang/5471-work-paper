@@ -151,6 +151,17 @@ export type DividendRec = {
 
 export type DocKindOverride = { kind: DocKind; pageHint?: "fs-pnl" | "fs-balance-sheet" };
 
+/** A direct shareholder row (Shareholding Details rows 19–26). Seeded from
+    the prior 5471's Schedule B Part II; editable in the Shareholders tab. */
+export type Shareholder = {
+  id: string;
+  name: string;
+  classOfShares: string;
+  boy: number;
+  eoy: number;
+  source?: string;
+};
+
 export type Entity = {
   id: string;
   name: string;
@@ -178,6 +189,7 @@ export type Entity = {
   /** Manual per-document type overrides, applied on (re)processing. The
       pageHint routes a PDF's unclassified pages to one statement feed. */
   docKindOverrides: Record<string, DocKindOverride>;
+  shareholders: Shareholder[];
   reviewItems: ReviewItem[];
   extraWrites: CellWrite[];
   dividends: DividendRec[];
@@ -286,6 +298,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     mapOverrides: {},
     docClasses: {},
     docKindOverrides: {},
+    shareholders: [],
     reviewItems: [],
     extraWrites: [],
     dividends: [],
@@ -563,6 +576,31 @@ export const actions = {
       actions.autoFillRates(entityId, false);
     }
     if (bucket === "fx") updateEntity(entityId, { fxAuto: false });
+  },
+
+  /* ---------------- shareholders (Shareholding rows 19–26) ---------------- */
+  addShareholder(entityId: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    if ((ent.shareholders || []).length >= 8) { toast("The template carries at most 8 shareholder rows (19–26)", "bad"); return; }
+    const shareholders = [...(ent.shareholders || []), { id: uid(), name: "", classOfShares: "Common", boy: 0, eoy: 0 }];
+    updateEntity(entityId, { shareholders, extraWrites: rebuildShareholderWrites({ ...ent, shareholders }) });
+  },
+
+  updateShareholder(entityId: string, id: string, patch: Partial<Shareholder>) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const shareholders = (ent.shareholders || []).map((s) => (s.id === id ? { ...s, ...patch, id } : s));
+    updateEntity(entityId, { shareholders, extraWrites: rebuildShareholderWrites({ ...ent, shareholders }) });
+  },
+
+  removeShareholder(entityId: string, id: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const gone = (ent.shareholders || []).find((s) => s.id === id);
+    const shareholders = (ent.shareholders || []).filter((s) => s.id !== id);
+    updateEntity(entityId, { shareholders, extraWrites: rebuildShareholderWrites({ ...ent, shareholders }) });
+    if (gone?.name) logEvent("Shareholder removed", gone.name, ent.name);
   },
 
   /** C-01: the preparer confirms an auto-detected functional currency. */
@@ -1508,6 +1546,20 @@ export const actions = {
 
       /* Step 4 — materialize schedule writes and the review record. */
       if (step === 4) {
+        // Shareholders seed from the prior 5471's Sch B Part II first —
+        // merge-by-name, so hand-edited or hand-added rows always survive.
+        if (cf?.holders?.length) {
+          const cur = state.entities.find((e) => e.id === entityId);
+          if (cur) {
+            const merged = [...(cur.shareholders || [])];
+            for (const h of cf.holders) {
+              if (!merged.some((s) => s.name.toLowerCase() === h.name.toLowerCase())) {
+                merged.push({ id: uid(), name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy, source: `${cfSource} · Sch B p.${h.page}` });
+              }
+            }
+            if (merged.length !== (cur.shareholders || []).length) updateEntity(entityId, { shareholders: merged });
+          }
+        }
         const ent = state.entities.find((e) => e.id === entityId);
         if (!ent) return;   // removed mid-run
         const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, ledger, rv });
@@ -2119,6 +2171,26 @@ function linesFromContribs(list: Contribution[]): LineValue | null {
 
 /** Apply an explicitly assigned row (manual or Groq) with provenance.
     Returns false when the assignment could not be applied safely. */
+/** Regenerate the Shareholding-row writes after a shareholders-tab edit —
+    the workbook must always reflect the CURRENT list without a re-process. */
+function rebuildShareholderWrites(ent: Entity): CellWrite[] {
+  const keep = ent.extraWrites.filter((w) => !(w.sheet === SHEET.shareholding && /^[BFHJ](19|2[0-6])$/.test(w.ref)));
+  const add: CellWrite[] = [];
+  ent.shareholders.slice(0, 8).forEach((h, i) => {
+    const row = 19 + i;
+    add.push({ sheet: SHEET.shareholding, ref: `B${row}`, value: h.name, source: h.source || "shareholders tab" });
+    add.push({ sheet: SHEET.shareholding, ref: `F${row}`, value: h.classOfShares, source: h.source || "shareholders tab" });
+    add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: h.boy, source: h.source || "shareholders tab" });
+    add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: h.eoy, source: h.source || "shareholders tab" });
+  });
+  for (let row = 19 + Math.min(ent.shareholders.length, 8); row <= 22; row++) {
+    add.push({ sheet: SHEET.shareholding, ref: `B${row}`, value: "", source: "template demo data cleared" });
+    add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: "", source: "template demo data cleared" });
+    if (row > 19) add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: "", source: "template demo data cleared" });
+  }
+  return [...keep, ...add];
+}
+
 /** Row-56 net income is a plain SUM of rows 52–55 — income tax expense must
     book NEGATIVE, or a statement-positive tax would INCREASE profit (RAT-003). */
 const TAX_TARGETS = new Set(["IS:54", "IS:55"]);
@@ -2301,17 +2373,42 @@ async function materializeCaseWrites(
       target: `${SHEET.schJ}!F15`, source: cfSource, suggestedValue: cf.openingEP.value,
     });
   }
-  if (cf?.shares) {
-    const holder = cf.holderName || "Parent shareholder";
-    w({ sheet: SHEET.shareholding, ref: "B19", value: holder, source: cfSource });
-    w({ sheet: SHEET.shareholding, ref: "F19", value: cf.shares.classOfShares.replace(/\s*shares?$/i, ""), source: cfSource });
-    w({ sheet: SHEET.shareholding, ref: "H19", value: cf.shares.boy, source: cfSource });
-    w({ sheet: SHEET.shareholding, ref: "J19", value: cf.shares.eoy, source: cfSource });
-    // The template ships demo shareholders B/C/D — clear them or Worksheet B
-    // and the 8992 sheet keep computing off a 60% demo holding.
-    for (const ref of ["B20", "J20", "B21", "J21", "B22", "J22"]) {
-      w({ sheet: SHEET.shareholding, ref, value: "", source: "template demo data cleared" });
+  /* Shareholding rows 19–26: the edited/seeded shareholder list first, the
+     legacy single-holder facts second. Demo rows A/B/C/D (60/20/10/10) are
+     cleared whenever a prior 5471 was recognized — NEH-007's "shareholders
+     appear as A, B, C, D" was the template's own demo data surviving. */
+  const holderRows: { name: string; classOfShares: string; boy: number; eoy: number; source?: string }[] =
+    ent.shareholders?.length
+      ? ent.shareholders
+      : cf?.shares
+        ? [{ name: cf.holderName || "Parent shareholder", classOfShares: cf.shares.classOfShares.replace(/\s*shares?$/i, ""), boy: cf.shares.boy, eoy: cf.shares.eoy, source: cfSource }]
+        : [];
+  holderRows.slice(0, 8).forEach((h, i) => {
+    const row = 19 + i;
+    w({ sheet: SHEET.shareholding, ref: `B${row}`, value: h.name, source: h.source || cfSource || "shareholders tab" });
+    w({ sheet: SHEET.shareholding, ref: `F${row}`, value: h.classOfShares, source: h.source || cfSource || "shareholders tab" });
+    w({ sheet: SHEET.shareholding, ref: `H${row}`, value: h.boy, source: h.source || cfSource || "shareholders tab" });
+    w({ sheet: SHEET.shareholding, ref: `J${row}`, value: h.eoy, source: h.source || cfSource || "shareholders tab" });
+  });
+  if (cf || holderRows.length) {
+    for (let row = 19 + Math.min(holderRows.length, 8); row <= 22; row++) {
+      for (const col of ["B", "J"]) w({ sheet: SHEET.shareholding, ref: `${col}${row}`, value: "", source: "template demo data cleared" });
+      if (row > 19) w({ sheet: SHEET.shareholding, ref: `H${row}`, value: "", source: "template demo data cleared" });
     }
+    if (cf && !holderRows.length) {
+      rv({
+        id: "cf-holders-missing", level: "warn", category: "carry-forward",
+        message: "A prior-year 5471 was recognized but no shareholder rows could be read from its Schedule B Part II — the template's DEMO shareholders were cleared. Enter the real holders in the Shareholders tab before generating.",
+        target: `${SHEET.shareholding}!B19`, source: cfSource,
+      });
+    }
+  }
+  if (holderRows.length && ent.shareholders?.length) {
+    rv({
+      id: "cf-holders", level: "info", category: "carry-forward", applied: true,
+      message: `Shareholding rows carry ${holderRows.length} direct shareholder(s): ${holderRows.map((h) => `${h.name} (${h.boy}→${h.eoy})`).join(", ")}. Edit them in the Shareholders tab.`,
+      target: `${SHEET.shareholding}!B19`,
+    });
   }
   if (cf) {
     const cmp: [string, string, number | undefined, number | null][] = [

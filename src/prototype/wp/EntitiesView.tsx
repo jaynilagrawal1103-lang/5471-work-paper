@@ -75,7 +75,7 @@ export function EntitiesView() {
 }
 
 function EntityCard({ entity, index }: { entity: Entity; index: number }) {
-  const [tab, setTab] = useState<"docs" | "profile" | "lines" | "review">("docs");
+  const [tab, setTab] = useState<"docs" | "profile" | "holders" | "lines" | "review">("docs");
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const mapped = Object.keys(entity.lines).length;
@@ -115,14 +115,14 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
       {entity.open ? (
         <div className="entity-body">
           <div className="tab-row">
-            {(["docs", "profile", "lines", "review"] as const).map((id) => (
+            {(["docs", "profile", "holders", "lines", "review"] as const).map((id) => (
               <button
                 key={id}
                 type="button"
                 className={tab === id ? "tab-button active" : "tab-button"}
                 onClick={() => setTab(id)}
               >
-                {id === "docs" ? "Documents" : id === "profile" ? "Entity profile" : id === "lines" ? "Schedule lines" : "Review & log"}
+                {id === "docs" ? "Documents" : id === "profile" ? "Entity profile" : id === "holders" ? "Shareholders" : id === "lines" ? "Schedule lines" : "Review & log"}
               </button>
             ))}
           </div>
@@ -233,6 +233,30 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                 })}
               </div>
 
+              <h3 className="wp-subhead">Additional particulars (no template cell — carried on the profile)</h3>
+              <div className="field-grid">
+                {([
+                  { key: "refId", label: "Reference ID number", hint: "must match every year's filing · flows to Schedule E" },
+                  { key: "principalPlace", label: "Principal place of business", hint: "5471 face item e" },
+                  { key: "activityCode", label: "Principal business activity code", hint: "5471 face item f" },
+                ] as const).map((f) => {
+                  const det = entity.detected[f.key];
+                  return (
+                    <label className={det ? "wp-field detected" : "wp-field"} key={f.key}>
+                      <span>
+                        {f.label}
+                        {det ? <span className="auto-badge" title={`from "${det.sourceLabel}"`}>auto</span> : null}
+                      </span>
+                      <input
+                        value={entity.profile[f.key] || ""}
+                        onChange={(e) => actions.setField(entity.id, "profile", f.key, e.target.value)}
+                      />
+                      <em>{f.hint}</em>
+                    </label>
+                  );
+                })}
+              </div>
+
               <h3 className="wp-subhead">Filer category determination</h3>
               <div className="field-grid">
                 {OWNERSHIP_FIELDS.map((f) => (
@@ -296,6 +320,81 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                 The template converts to US dollars itself: Schedule F divides by the spot rates in C60/C61 and
                 Schedule C uses the average rate in C59.
               </Callout>
+            </div>
+          ) : null}
+
+          {tab === "holders" ? (
+            <div>
+              <Callout title="Shareholding Details rows 19–26" tone="teal">
+                Direct shareholders write into the template with their real names and BOY/EOY share counts.
+                Rows seeded from the prior 5471&apos;s Schedule B Part II carry a source badge; every cell is
+                editable and edits update the workbook immediately — the template&apos;s demo rows (A/B/C/D)
+                are always cleared.
+              </Callout>
+              {(entity.shareholders || []).length ? (
+                <div className="wp-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Shareholder</th><th style={{ width: 130 }}>Class</th>
+                        <th className="numeric" style={{ width: 110 }}>Shares BOY</th>
+                        <th className="numeric" style={{ width: 110 }}>Shares EOY</th>
+                        <th style={{ width: 80 }} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(entity.shareholders || []).map((s) => (
+                        <tr key={s.id}>
+                          <td>
+                            <input
+                              className="stake-input"
+                              value={s.name}
+                              placeholder="Shareholder name"
+                              onChange={(e) => actions.updateShareholder(entity.id, s.id, { name: e.target.value })}
+                            />
+                            {s.source ? <small style={{ display: "block", color: "var(--muted)" }}>{s.source}</small> : null}
+                          </td>
+                          <td>
+                            <input
+                              className="stake-input"
+                              value={s.classOfShares}
+                              onChange={(e) => actions.updateShareholder(entity.id, s.id, { classOfShares: e.target.value })}
+                            />
+                          </td>
+                          <td className="numeric">
+                            <input
+                              type="number"
+                              value={s.boy}
+                              onChange={(e) => actions.updateShareholder(entity.id, s.id, { boy: Number(e.target.value) || 0 })}
+                            />
+                          </td>
+                          <td className="numeric">
+                            <input
+                              type="number"
+                              value={s.eoy}
+                              onChange={(e) => actions.updateShareholder(entity.id, s.id, { eoy: Number(e.target.value) || 0 })}
+                            />
+                          </td>
+                          <td><button type="button" className="button" onClick={() => actions.removeShareholder(entity.id, s.id)}>Remove</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td><strong>Total</strong></td><td />
+                        <td className="numeric"><strong>{(entity.shareholders || []).reduce((n, s) => n + s.boy, 0)}</strong></td>
+                        <td className="numeric"><strong>{(entity.shareholders || []).reduce((n, s) => n + s.eoy, 0)}</strong></td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              ) : (
+                <p className="hint">
+                  No shareholders yet. Process a prior-year 5471 to seed them from Schedule B Part II, or add them here.
+                </p>
+              )}
+              <button type="button" className="button" onClick={() => actions.addShareholder(entity.id)}>+ Add shareholder</button>
             </div>
           ) : null}
 

@@ -22,6 +22,9 @@ export type CarryForward = {
     SourcedValue
   >>;
   shares?: { classOfShares: string; boy: number; eoy: number; page: number };
+  /** Schedule B Part II — every direct shareholder with real names and
+      BOY/EOY share counts (the template ships demo rows A/B/C/D otherwise). */
+  holders?: { name: string; classOfShares: string; boy: number; eoy: number; page: number }[];
   holderName?: string;
   /** Filer's SSN-shaped ID, already masked at extraction — never stored raw. */
   filerIdMasked?: string;
@@ -423,6 +426,39 @@ export function extractCarryForward(
         }
       }
     }
+  }
+
+  /* Schedule B Part II — one row per direct shareholder:
+       "JOYCE C LANGAN | COMMON | 40.000 40.000"        (name-first layout)
+       "87-1188632 | US | Ordinary Shares | 120 | 120"  (ID-first; name on the NEXT row)
+     Share counts print separated OR glued ("100.000100.000"). */
+  const partII = face.findIndex((r) => /part ii\b.*direct shareholders/i.test(r.cells.join(" ")));
+  if (partII >= 0) {
+    const holders: NonNullable<CarryForward["holders"]> = [];
+    const isIdish = (s: string) =>
+      /^\d{2}-\d{7}\b|^\d{3}-\d{2}-\d{4}\b/.test(s) || /^[A-Z]{2}$/.test(s) || !/[A-Za-z]{3}/.test(s);
+    for (let j = partII + 1; j < Math.min(partII + 40, face.length); j++) {
+      const r = face[j];
+      const joined = r.cells.join(" ").trim();
+      if (/^part\b|^schedule [a-z]\b|income statement/i.test(joined)) break;
+      const cells = r.cells.map((c) => (c || "").trim()).filter(Boolean);
+      if (cells.length < 2) continue;
+      const ci = cells.findIndex((c) => /^(common|ordinary|preferred|class [a-z0-9]+)( shares?)?$/i.test(c));
+      if (ci < 0) continue;
+      const pair = parseSharePair(cells.slice(ci + 1));
+      if (!pair) continue;
+      let name = cells.slice(0, ci).join(" ").trim();
+      if ((!name || isIdish(name)) && j + 1 < face.length) {
+        // ID-first layout: the shareholder's name prints on the row below.
+        const cand = (face[j + 1].cells[0] || "").trim();
+        if (/[A-Za-z]{3}/.test(cand) && !looksLikeCaption(cand)) name = cand;
+      }
+      if (!name || isIdish(name) || /name, address|^\(a\)/i.test(name)) continue;
+      if (!holders.some((h) => h.name.toLowerCase() === name.toLowerCase())) {
+        holders.push({ name, classOfShares: cells[ci].replace(/\s*shares?$/i, ""), boy: pair.boy, eoy: pair.eoy, page: r.page });
+      }
+    }
+    if (holders.length) out.holders = holders;
   }
 
   // Holder: the row under "Name of person filing Form 5471". Scoped to this
