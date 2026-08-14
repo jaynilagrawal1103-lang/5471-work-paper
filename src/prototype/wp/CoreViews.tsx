@@ -203,21 +203,56 @@ export function WorkspaceView({ onNavigate }: { onNavigate: (v: ViewId) => void 
 }
 
 /* ============================ 05 Document intake ============================ */
+
+/* Manual type choices: label → override (empty = back to automatic). */
+const DOC_KIND_CHOICES: { label: string; kind: string; pageHint?: "fs-pnl" | "fs-balance-sheet" }[] = [
+  { label: "Automatic", kind: "" },
+  { label: "Financial statements — P&L pages", kind: "cfc-financial-statements", pageHint: "fs-pnl" },
+  { label: "Financial statements — balance sheet", kind: "cfc-financial-statements", pageHint: "fs-balance-sheet" },
+  { label: "Financial statements (mixed)", kind: "cfc-financial-statements" },
+  { label: "Local tax return", kind: "cfc-tax-return" },
+  { label: "Prior-year US return (5471)", kind: "prior-year-us-return" },
+  { label: "Related-party ledger", kind: "related-party-ledger" },
+  { label: "Trial balance", kind: "trial-balance" },
+  { label: "Exclude (terms / other)", kind: "terms-and-conditions" },
+];
+
+function DocKindSelect({ entityId, fileId }: { entityId: string; fileId: string }) {
+  const state = useWp();
+  const ent = state.entities.find((e) => e.id === entityId);
+  const ov = ent?.docKindOverrides?.[fileId];
+  const current = ov ? `${ov.kind}|${ov.pageHint || ""}` : "|";
+  return (
+    <select
+      value={current}
+      onChange={(e) => {
+        const [kind, hint] = e.target.value.split("|");
+        actions.setDocKind(entityId, fileId, kind as never, (hint || undefined) as never);
+      }}
+      title="Manual document type — wins over automatic classification on the next processing run"
+    >
+      {DOC_KIND_CHOICES.map((c) => (
+        <option key={c.label} value={`${c.kind}|${c.pageHint || ""}`}>{c.label}</option>
+      ))}
+    </select>
+  );
+}
+
 export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) {
   const state = useWp();
-  const all = state.entities.flatMap((e) => e.files.map((f) => ({ ...f, entity: e.name, status: e.status, progress: e.progress })));
+  const all = state.entities.flatMap((e) => e.files.map((f) => ({ ...f, entityId: e.id, entity: e.name, status: e.status, progress: e.progress, cls: e.docClasses[f.id] })));
   return (
     <div className="view-stack">
       <SectionHeader
         kicker="Evidence intake"
         title="Document intake"
-        description="Every file loaded in this session, which entity holds it, and how it was read. Documents never move between entities."
+        description="Every file loaded in this session, which entity holds it, what the classifier decided, and the manual Type override when the rules get it wrong."
         action={<button type="button" className="button" onClick={() => onNavigate("entities")}>Add documents</button>}
       />
       <div className="metric-grid">
         <div className="metric-card"><strong>{all.length}</strong><span>Documents held</span><em>{bytes(state.usage.storage)}</em></div>
-        <div className="metric-card"><strong>{all.filter((f) => f.parsable).length}</strong><span>Parsed locally</span><em>xlsx, csv, tsv, txt</em></div>
-        <div className="metric-card"><strong>{all.filter((f) => !f.parsable).length}</strong><span>Need AI extraction</span><em>pdf, images, docx</em></div>
+        <div className="metric-card"><strong>{all.filter((f) => f.parsable).length}</strong><span>Parsed locally</span><em>xlsx, csv, tsv, txt, pdf</em></div>
+        <div className="metric-card"><strong>{all.filter((f) => !f.parsable).length}</strong><span>Unsupported format</span><em>.xls, images, docx</em></div>
         <div className="metric-card"><strong>{state.usage.docs}</strong><span>Processed</span><em>this session</em></div>
       </div>
       {all.length ? (
@@ -225,22 +260,35 @@ export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) 
           <div className="panel-heading"><div><span className="section-kicker">Inventory</span><h2>Loaded documents</h2></div></div>
           <div className="wp-table">
             <table>
-              <thead><tr><th>File</th><th>Entity</th><th>Type</th><th className="numeric">Size</th><th>Reading path</th></tr></thead>
+              <thead><tr><th>File</th><th>Entity</th><th>Classified as</th><th>Type</th><th className="numeric">Size</th><th>Reading path</th></tr></thead>
               <tbody>
                 {all.map((f) => (
-                  <tr key={f.id}>
-                    <td><strong>{f.name}</strong></td>
+                  <tr key={`${f.entityId}/${f.id}`}>
+                    <td>
+                      <strong>{f.name}</strong>
+                      {f.cls?.blocks5471 && f.cls.blocks5471.length > 1 ? (
+                        <><br /><small style={{ color: "var(--muted)" }}>
+                          {f.cls.blocks5471.length} × Form 5471 ({f.cls.blocks5471.map((b) => b.cfcName || "unnamed").join(", ")})
+                        </small></>
+                      ) : null}
+                    </td>
                     <td>{f.entity}</td>
-                    <td className="ref-cell">{(f.name.split(".").pop() || "?").toUpperCase()}</td>
+                    <td>
+                      {f.cls
+                        ? <span className={f.cls.method === "user" ? "actor-tag user" : "actor-tag system"}>{f.cls.kind}{f.cls.duplicateOf ? " · duplicate" : ""}</span>
+                        : <span className="actor-tag">not processed</span>}
+                    </td>
+                    <td><DocKindSelect entityId={f.entityId} fileId={f.id} /></td>
                     <td className="numeric">{bytes(f.size)}</td>
                     <td>{f.parsable
                       ? <span className="actor-tag system">native parser</span>
-                      : <span className="actor-tag groq">AI extraction</span>}</td>
+                      : <span className="actor-tag groq">unsupported</span>}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <p className="hint">A manual Type wins over the automatic classification the next time the entity is processed.</p>
         </section>
       ) : <NoData what="No documents have been loaded yet." />}
 

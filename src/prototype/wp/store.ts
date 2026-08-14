@@ -8,7 +8,7 @@ import {
 } from "./engine";
 import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
-  type DocClass,
+  type DocClass, type DocKind,
 } from "./classify";
 import { extractCarryForwards, type CarryForward } from "./carryForward";
 
@@ -149,6 +149,8 @@ export type DividendRec = {
   rateSource: "frankfurter" | "eoy-fallback" | "none";
 };
 
+export type DocKindOverride = { kind: DocKind; pageHint?: "fs-pnl" | "fs-balance-sheet" };
+
 export type Entity = {
   id: string;
   name: string;
@@ -170,6 +172,9 @@ export type Entity = {
   contributions: Record<string, Contribution[]>;
   mapOverrides: Record<string, MapOverride>;
   docClasses: Record<string, DocClass>;
+  /** Manual per-document type overrides, applied on (re)processing. The
+      pageHint routes a PDF's unclassified pages to one statement feed. */
+  docKindOverrides: Record<string, DocKindOverride>;
   reviewItems: ReviewItem[];
   extraWrites: CellWrite[];
   dividends: DividendRec[];
@@ -276,6 +281,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     contributions: {},
     mapOverrides: {},
     docClasses: {},
+    docKindOverrides: {},
     reviewItems: [],
     extraWrites: [],
     dividends: [],
@@ -510,6 +516,19 @@ export const actions = {
     set({ usage: { ...state.usage, storage: state.usage.storage + bytesAdded } });
     toast(`${added.length} document${added.length === 1 ? "" : "s"} added to ${ent.name}`, "ok");
     hooks.onFilesAdded?.(id, added);
+  },
+
+  /** Manual document-type override — applied on the next (re)processing. */
+  setDocKind(entityId: string, fileId: string, kind: DocKind | "", pageHint?: "fs-pnl" | "fs-balance-sheet") {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const f = ent.files.find((x) => x.id === fileId);
+    const overrides = { ...(ent.docKindOverrides || {}) };
+    if (!kind) delete overrides[fileId];
+    else overrides[fileId] = { kind, ...(pageHint ? { pageHint } : {}) };
+    updateEntity(entityId, { docKindOverrides: overrides });
+    logEvent("Document type set", `${f?.name ?? fileId} → ${kind || "automatic"}${pageHint ? ` (${pageHint})` : ""}`, ent.name);
+    toast(kind ? "Document type saved — re-process to apply" : "Document type back to automatic", "ok");
   },
 
   removeFile(entityId: string, fileId: string) {
@@ -932,8 +951,30 @@ export const actions = {
         for (const f of ent.files) {
           try {
             const parsed = await readDocument(f.blob);
-            if (!parsed) { log.push(`${f.name}: no native parser — queued for AI extraction`); continue; }
+            if (!parsed) {
+              // Honesty over hope: there is no AI-extraction path — say so.
+              const ext = "." + (f.name.split(".").pop() || "?").toLowerCase();
+              log.push(`${f.name}: unsupported format (${ext}) — nothing extracted`);
+              rv({
+                level: "warn", category: "process",
+                message: `${f.name} is a format the tool cannot read (${ext}) — NOTHING from it feeds the work paper. Re-save legacy .xls workbooks as .xlsx (File ▸ Save As) and re-upload.`,
+                source: f.name,
+              });
+              continue;
+            }
             const cls = classifyParsedDoc(f.id, f.name, parsed);
+            // Manual type override wins over the rules — the preparer said
+            // what this document is; unclassified PDF pages follow the hint.
+            const ov = ent.docKindOverrides?.[f.id];
+            if (ov) {
+              cls.kind = ov.kind;
+              cls.confidence = 1;
+              cls.method = "user";
+              if (ov.pageHint) {
+                cls.pages = cls.pages.map((p) => (p.kind === "unknown" ? { ...p, kind: ov.pageHint!, score: 1 } : p));
+              }
+              log.push(`${f.name}: document type set manually → ${ov.kind}${ov.pageHint ? ` (${ov.pageHint})` : ""}`);
+            }
             bundles.push({ file: f, parsed, cls });
             parsedByFile.set(f.id, parsed);
           } catch (err) {
@@ -955,7 +996,7 @@ export const actions = {
           if (b.cls.kind === "unknown" && !b.cls.duplicateOf) {
             rv({
               level: "warn", category: "process",
-              message: `${b.file.name} could not be classified and fed NOTHING into the work paper. If it belongs to this entity, tell me what it is — or map its lines manually.`,
+              message: `${b.file.name} could not be classified and fed NOTHING into the work paper. Set its document type manually in Document intake (Type column) and re-process — or map its lines by hand.`,
               source: b.file.name,
             });
           }
@@ -1031,6 +1072,23 @@ export const actions = {
             profileGrids.push(parsed.grid);
           }
           if (read) log.push(`${file.name}: ${read} candidate line items read`);
+        }
+
+        // A recognized statement document that produced ZERO mapped rows is a
+        // silent failure — name it, with its page kinds, instead of letting
+        // the preparer discover empty schedules later.
+        for (const b of bundles) {
+          if (b.cls.duplicateOf) continue;
+          const feedsStatements =
+            b.cls.kind === "cfc-financial-statements" || b.cls.kind === "trial-balance";
+          if (!feedsStatements) continue;
+          if (mapRows.some((m) => m.docId === b.file.id)) continue;
+          const kinds = [...new Set(b.cls.pages.map((p) => p.kind))].join(", ");
+          rv({
+            level: "warn", category: "process",
+            message: `${b.file.name} was recognized as ${b.cls.kind} but produced ZERO mapped line items (pages: ${kinds}). Check the Type column in Document intake, or map its lines manually.`,
+            source: b.file.name,
+          });
         }
 
         /* Carry-forward selection. Cross-document dedupe first (the same CFC

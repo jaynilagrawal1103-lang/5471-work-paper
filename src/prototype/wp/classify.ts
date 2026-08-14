@@ -39,7 +39,7 @@ export type DocClass = {
   fileName: string;
   kind: DocKind;
   confidence: number;                     // 0..1 — share of pages the rules could place
-  method: "rules" | "groq";
+  method: "rules" | "groq" | "user";      // "user" = manual type override
   pages: PageInfo[];                      // one pseudo-page for grids
   statementYear: number | null;           // the year the document reports ON
   entityName: string | null;              // primary subject entity
@@ -87,7 +87,7 @@ const SCH_TITLES: [RegExp, PageKind][] = [
   [/information return of u\.?s\.? persons/, "us-5471-face"],
 ];
 
-function classifyPdfPage(doc: PdfDoc, page: number): PageInfo {
+function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: boolean }): PageInfo {
   const head = pageText(doc, page, "head");
   const foot = pageText(doc, page, "foot");
   const all = pageText(doc, page, "all");
@@ -119,21 +119,37 @@ function classifyPdfPage(doc: PdfDoc, page: number): PageInfo {
   if (/dividend and interest schedule/.test(head)) return mk("ato-dividend-schedule", 3);
   if (/calculation statement/.test(head)) return mk("ato-calc-statement", 2);
 
-  // Statutory financial statements: entity + ABN/ACN band, section title.
-  const fsBand = /\babn\b|\bacn\b|\ba\.\s?b\.\s?n\.?\b|company (number|registration)/.test(head) || /page \d+ of \d+/.test(foot);
+  // Statutory financial statements: entity + company-number band, section
+  // title. UK statutory accounts print "Company No. SC240721" and Companies
+  // House registration lines — all count as the band.
+  const fsBand = opts?.assumeFsBand
+    || /\babn\b|\bacn\b|\ba\.\s?b\.\s?n\.?\b|company\s+(no\.?\s|number|registration)|registered\s+(number|office)|companies house/.test(head)
+    || /page \d+ of \d+/.test(foot);
   if (fsBand) {
     // Cover/administrative pages mention every section name — test them first.
-    if (/\bcontents\b|directors'? statement|compilation report|independent auditor/.test(head)) return mk("fs-cover", 3);
+    if (/\bcontents\b|directors'? (statement|report)|accountants'? report|compilation report|independent auditor/.test(head)) return mk("fs-cover", 3);
+    // Under an ASSUMED band (statutory second pass) a titled notes page wins
+    // before the statement tests — note prose mentions "balance sheet" freely.
+    if (opts?.assumeFsBand && /accounting policies|notes to the (accounts|financial statements)/.test(head)) return mk("fs-notes", 2);
     if (/trading account/.test(head)) return mk("fs-trading", 3);
     // A balance-sheet TITLE wins over equity-movement content: a balance sheet
     // may mention retained profits in a note, but never carries the movement.
     if (/statement of financial position|balance sheet/.test(head)) return mk("fs-balance-sheet", 3);
     // Equity movements need the strong anchor — a P&L-titled page carrying the
     // retained-profits roll-forward is the equity statement, not a P&L.
-    if (/opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
+    if (/statement of changes in equity/.test(head) || /opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
     if (/statement of financial performance|profit (and|or) loss|income statement|statement of comprehensive income/.test(head)) return mk("fs-pnl", 3);
     if (/accounting policies|notes to /.test(head)) return mk("fs-notes", 2);
     if (/financial statements/.test(head)) return mk("fs-cover", 2);
+  }
+  // Accounting-software exports (QuickBooks and friends): no statutory band,
+  // but an EXACT statement title plus a period line in the first rows.
+  const head5 = doc.rows.filter((r) => r.page === page).slice(0, 5)
+    .map((r) => r.cells.map((c) => c.text).join(" ").trim().toLowerCase());
+  const periodLine = /^(as of .*\d{4}|(january|february|march|april|may|june|july|august|september|october|november|december)[^]{0,40}\d{4}|all dates)$/;
+  if (head5.some((t) => periodLine.test(t))) {
+    if (head5.some((t) => /^balance sheet(\s*[-–]\s*\d{4})?$/.test(t))) return mk("fs-balance-sheet", 2);
+    if (head5.some((t) => /^(profit (and|&) loss|income statement|statement of activity)(\s*[-–]\s*\d{4})?$/.test(t))) return mk("fs-pnl", 2);
   }
   if (/terms\s*(&|and)\s*conditions|letter of engagement|engagement terms/.test(head)) return mk("tandc", 2);
   return mk("unknown", 0);
@@ -147,14 +163,26 @@ const CONTINUABLE = new Set<PageKind>([
 ]);
 
 export function classifyPages(doc: PdfDoc): PageInfo[] {
+  // Pass 1 — page-local rules.
   const out: PageInfo[] = [];
-  for (let p = 1; p <= doc.pageCount; p++) {
-    let info = classifyPdfPage(doc, p);
-    if (info.kind === "unknown" && out.length) {
-      const prev = out[out.length - 1];
-      if (CONTINUABLE.has(prev.kind)) info = { page: p, kind: prev.kind, score: 1 };
+  for (let p = 1; p <= doc.pageCount; p++) out.push(classifyPdfPage(doc, p));
+  // Pass 2 — statutory accounts print the company number on SOME pages only
+  // (UK accounts: cover + balance sheet). Once any page proves the document
+  // is statutory FS, re-test the unknown pages with the band assumed so the
+  // titled sections (P&L account, equity, notes) classify by their own name
+  // instead of blindly continuing the previous page's kind.
+  if (out.some((p) => p.kind.startsWith("fs-"))) {
+    for (let i = 0; i < out.length; i++) {
+      if (out[i].kind !== "unknown") continue;
+      const info = classifyPdfPage(doc, out[i].page, { assumeFsBand: true });
+      if (info.kind !== "unknown") out[i] = info;
     }
-    out.push(info);
+  }
+  // Pass 3 — anchor-less continuation pages inherit the previous kind.
+  for (let i = 1; i < out.length; i++) {
+    if (out[i].kind === "unknown" && CONTINUABLE.has(out[i - 1].kind)) {
+      out[i] = { page: out[i].page, kind: out[i - 1].kind, score: 1 };
+    }
   }
   return out;
 }
@@ -168,6 +196,10 @@ const YEAR_ANCHORS: RegExp[] = [
   /as at \d{1,2} \w+ (\d{4})/,
   /for calendar year (\d{4})/,
   /tax year beginning[^]*?(\d{4})/,
+  // US-order software exports: "As of December 31, 2024" / "January - December
+  // 2024" / "January 1-December 31, 2024".
+  /as of (?:january|february|march|april|may|june|july|august|september|october|november|december) \d{1,2},? (\d{4})/,
+  /(?:january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{0,2}\s*[-–]\s*(?:january|february|march|april|may|june|july|august|september|october|november|december)?\s*\d{0,2},?\s*(\d{4})/,
 ];
 
 export function detectStatementYear(doc: PdfDoc, pages: PageInfo[]): number | null {
