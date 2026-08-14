@@ -234,6 +234,11 @@ export const DEFAULT_RULES: MappingRule[] = [
     "total current liabilities", "total liabilities", "net assets", "total equity",
     "opening retained profits", "closing retained profits", "total changes in equity",
     "attributable to members",
+    // Software-export subtotals (observed on the analyst test cases): booking
+    // a total AND its components double-counts — the components map, the
+    // template recomputes the totals.
+    "total net sales", "gross margin", "operating income", "total operating expenses",
+    "net income", "total non-current liabilities", "total revenues",
   ], t: "SKIP" },
   { kw: ["gross receipt", "turnover", "revenue", "sales", "chiffre d'affaires", "ingresos", "营业收入"], t: "IS:7" },
   { kw: ["service income", "services income", "consulting fees", "consultancy fees", "fees earned"], t: "IS:7" },
@@ -250,7 +255,7 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["gain on sale", "loss on sale", "disposal of asset"], t: "IS:18" },
   { kw: ["unrealised exchange", "unrealized exchange"], t: "IS:19" },
   { kw: ["realised exchange", "realized exchange", "exchange gain", "exchange loss"], t: "IS:20" },
-  { kw: ["management fees earned", "management fee income", "management fees", "reimbursement", "recharge income", "sundry income", "other income"], t: "IS:OI" },
+  { kw: ["management fees earned", "management fee income", "management fees", "reimbursement", "recharge income", "sundry income", "other income", "other revenue", "other revenues"], t: "IS:OI" },
   { kw: ["salaries", "salary", "payroll", "compensation", "personnel", "staff cost", "charges de personnel", "wages", "superannuation", "pension contribution"], t: "IS:26" },
   { kw: ["rent expense", "rent", "loyer", "premises rent"], t: "IS:27" },
   { kw: ["royalty expense"], t: "IS:28" },

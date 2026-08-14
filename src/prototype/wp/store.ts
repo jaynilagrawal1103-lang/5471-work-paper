@@ -1265,13 +1265,21 @@ export const actions = {
               });
               continue;
             }
+            const booked = taxBookValue(resolved.target, r.field, r.value);
+            if (booked !== r.value) {
+              rv({
+                id: `tax-sign-${resolved.target}`, level: "warn", category: "mapping", applied: true,
+                message: `"${m.row.label}" ${r.value.toLocaleString()} was booked to ${resolved.target === "IS:54" ? "income tax expense — current (row 54)" : "deferred tax (row 55)"} as a NEGATIVE amount: the template's net income (row 56) is a plain SUM of rows 52–55, so a positive tax would increase profit. If this line is genuinely a tax credit, edit the value in the Exception Center.`,
+                target: `${SHEET.is}!F${resolved.target.split(":")[1]}`, source: m.docName,
+              });
+            }
             const cur = lines[resolved.target] || {};
-            if (r.field === "amount") lines[resolved.target] = { amount: (typeof cur.amount === "number" ? cur.amount : 0) + r.value };
-            else if (r.field === "eoy") lines[resolved.target] = { ...cur, eoy: (typeof cur.eoy === "number" ? cur.eoy : 0) + r.value };
-            else lines[resolved.target] = { ...cur, boy: (typeof cur.boy === "number" ? cur.boy : 0) + r.value };
+            if (r.field === "amount") lines[resolved.target] = { amount: (typeof cur.amount === "number" ? cur.amount : 0) + booked };
+            else if (r.field === "eoy") lines[resolved.target] = { ...cur, eoy: (typeof cur.eoy === "number" ? cur.eoy : 0) + booked };
+            else lines[resolved.target] = { ...cur, boy: (typeof cur.boy === "number" ? cur.boy : 0) + booked };
             (contributions[resolved.target] ||= []).push({
               docId: m.docId, docName: m.docName, page: m.row.page,
-              label: m.row.label, value: r.value, field: r.field, year: r.year, via: "rule",
+              label: m.row.label, value: booked, field: r.field, year: r.year, via: "rule",
               srcValues: m.row.values, srcYears: m.row.years, period: m.row.period,
             });
           }
@@ -2049,6 +2057,12 @@ function linesFromContribs(list: Contribution[]): LineValue | null {
 
 /** Apply an explicitly assigned row (manual or Groq) with provenance.
     Returns false when the assignment could not be applied safely. */
+/** Row-56 net income is a plain SUM of rows 52–55 — income tax expense must
+    book NEGATIVE, or a statement-positive tax would INCREASE profit (RAT-003). */
+const TAX_TARGETS = new Set(["IS:54", "IS:55"]);
+const taxBookValue = (target: string, field: "amount" | "eoy" | "boy", value: number): number =>
+  field === "amount" && TAX_TARGETS.has(target) && value > 0 ? -value : value;
+
 function manualApply(
   ent: Entity,
   lines: Record<string, LineValue>,
@@ -2065,13 +2079,14 @@ function manualApply(
   const routed = routeRow(row, target.startsWith("BS"), caseYears, row.years?.some((y) => y !== null) ? "pdf" : "grid");
   if (routed === "ambiguous" || !routed.length) return false;
   for (const r of routed) {
+    const booked = taxBookValue(target, r.field, r.value);
     const cur = lines[target] || {};
-    if (r.field === "amount") lines[target] = { amount: (typeof cur.amount === "number" ? cur.amount : 0) + r.value };
-    else if (r.field === "eoy") lines[target] = { ...cur, eoy: (typeof cur.eoy === "number" ? cur.eoy : 0) + r.value };
-    else lines[target] = { ...cur, boy: (typeof cur.boy === "number" ? cur.boy : 0) + r.value };
+    if (r.field === "amount") lines[target] = { amount: (typeof cur.amount === "number" ? cur.amount : 0) + booked };
+    else if (r.field === "eoy") lines[target] = { ...cur, eoy: (typeof cur.eoy === "number" ? cur.eoy : 0) + booked };
+    else lines[target] = { ...cur, boy: (typeof cur.boy === "number" ? cur.boy : 0) + booked };
     (contributions[target] ||= []).push({
       docId: row.docId || "", docName: row.docName || "manual entry", page: row.page,
-      label: row.label, value: r.value, field: r.field, year: r.year, via,
+      label: row.label, value: booked, field: r.field, year: r.year, via,
       srcValues: row.values, srcYears: row.years, period: row.period,
     });
   }
@@ -2471,6 +2486,31 @@ async function materializeCaseWrites(
       id: "high-tax-2024", level: "info", category: "consistency",
       message: "The prior year excluded all tested income under the GILTI high-tax exception (23.7% effective rate). This year there is a LOSS and NO Australian tax — the high-tax exception is not available and must not be repeated.",
     });
+  } else {
+    /* ---- Schedule E: current-year income tax flows from the P&L ----
+       Row 16 gets the local tax; S16/U16/U21 are template formulas, and
+       Schedule I & I-1's D45 reads Sch E&E-1!U21 — the tested-taxes flow
+       happens in the template itself, no I-1 writes needed (RAT-003). */
+    const taxBooked = ent.lines["IS:54"]?.amount;
+    const taxCur = typeof taxBooked === "number" && isFinite(taxBooked) ? taxBooked : null;
+    if (taxCur && Math.abs(taxCur) > 0) {
+      const taxAbs = Math.abs(taxCur);
+      if (ent.profile.legalName) w({ sheet: SHEET.schE, ref: "B16", value: ent.profile.legalName, source: "current-year tax row" });
+      const refId = cf?.referenceIds[0] || ent.profile.refId;
+      if (refId) w({ sheet: SHEET.schE, ref: "E16", value: refId, source: "reference ID" });
+      if (ent.profile.countryInc) w({ sheet: SHEET.schE, ref: "G16", value: ent.profile.countryInc, source: "country" });
+      if (ent.profile.cyEnd) {
+        w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
+        w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
+      }
+      w({ sheet: SHEET.schE, ref: "O16", value: taxAbs, source: "P&L income tax expense", reviewId: "sch-e-current-tax" });
+      if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
+      rv({
+        id: "sch-e-current-tax", level: "warn", category: "consistency", applied: true,
+        message: `Schedule E row 16 carries the ${taxAbs.toLocaleString()} income tax expense from the P&L. Confirm whether it was PAID or ACCRUED in the year (Schedule E wants taxes paid or accrued — an accrual-only figure may need the accrued column treatment). The USD amount and the Schedule I-1 tested-taxes flow compute in the template's own formulas.`,
+        target: `${SHEET.schE}!O16`, source: "income statement", suggestedValue: taxAbs,
+      });
+    }
   }
 
   /* ---- franking items: recognized and deliberately excluded ---- */
