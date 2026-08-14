@@ -6,9 +6,10 @@
    becomes a review item. Never touches the 1120/5472 pages — those describe
    the US parent. */
 
-import { numeric } from "./engine";
+import { numeric, numericCell } from "./engine";
 import type { ParsedDoc } from "./engine";
-import type { Block5471, DocClass, PageKind } from "./classify";
+import type { PdfRow } from "./pdfText";
+import { refIdToken, splitGluedRefId, type Block5471, type DocClass, type PageKind } from "./classify";
 
 export type SourcedValue = { value: number; page: number; rowText: string };
 
@@ -32,6 +33,8 @@ export type CarryForward = {
   functionalCurrency?: string;
   countryInc?: string;
   activity?: string;
+  activityCode?: string;                // f — principal business activity code
+  principalPlace?: string;              // e — principal place of business
   cfcName?: string;
   cfcAddress: string[];                 // street / suburb lines as printed
   /** Annual accounting period as printed on the face, "MM/DD/YYYY". A
@@ -48,20 +51,74 @@ const pagesOfKind = (cls: DocClass, ...kinds: PageKind[]): Set<number> =>
 const intersect = (a: Set<number>, b?: Set<number>): Set<number> =>
   b ? new Set([...a].filter((x) => b.has(x))) : a;
 
+/* ---------- geometry-aware helpers for the face grid ----------
+   The 5471 face is a two-column form: values print in the LEFT column under
+   their caption, while the RIGHT column carries its own caption/value pairs.
+   Flat row text bleeds the columns together — "BME01 b(3) Previous reference
+   ID number(s)" landing in the legal-name harvest is exactly that bug — so
+   these helpers keep the x-geometry pdfText already extracts. */
+
+const rowsOnPagesGeo = (parsed: ParsedDoc, pages: Set<number>): PdfRow[] =>
+  parsed.pdf ? parsed.pdf.rows.filter((r) => pages.has(r.page)) : [];
+
+/** A cell that is a form caption, not a value. */
+export const looksLikeCaption = (t: string): boolean =>
+  /reference id|identif\w* number|previous reference|^instructions|country under whose laws|^[b-d]\(?\d?\)?\s|^\(?see instructions/i.test(t.trim());
+
+/** "09/05/08 CAYMAN ISLANDS" → date + trailing place (2-digit years allowed).
+    Search, not anchor: a wrapped caption fragment ("incorporation") can
+    precede the date in the joined column text. */
+export function splitGluedDatePlace(t: string): { date: string; place?: string } | null {
+  const m = /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b\s*(.*)$/.exec(t.trim());
+  if (!m) return null;
+  return { date: m[1].replace(/-/g, "/"), place: m[2].trim() || undefined };
+}
+
+/** BOY/EOY share counts in all three shapes the returns print:
+    ["40.000 40.000"] · ["100.000100.000"] (glued) · ["100.000", "100.000"]. */
+export function parseSharePair(cells: string[]): { boy: number; eoy: number } | null {
+  const nums: number[] = [];
+  for (const raw of cells.flatMap((c) => String(c || "").trim().split(/\s+/)).filter(Boolean)) {
+    const glued = /^(\d[\d,]*\.\d{3})(\d[\d,]*\.\d{3})$/.exec(raw);
+    if (glued) {
+      const a = numeric(glued[1]);
+      const b = numeric(glued[2]);
+      if (a !== null && b !== null) { nums.push(a, b); continue; }
+    }
+    const n = numericCell(raw);
+    if (n !== null) nums.push(n);
+  }
+  if (nums.length < 2 || nums[0] < 0 || nums[1] < 0) return null;
+  return { boy: nums[0], eoy: nums[1] };
+}
+
+
 export type ParsedPeriod = { begin?: string; end?: string };
 
-/* Dates on the face print as "MM-DD-YYYY", "MM/DD/YYYY" or the software's
-   "MM-DD , 2023" (year comma-split, sometimes "20 23"). */
+/* Dates on the face print as "MM-DD-YYYY", "MM/DD/YYYY", the software's
+   "MM-DD , 2023" (year comma-split, sometimes "20 23"), or month names
+   ("JAN 1 , 2023"). */
 const DATE_PART = String.raw`(\d{1,2})\s*[-/]\s*(\d{1,2})\s*[-/,]\s*((?:19|20)\s?\d{2})`;
+const DATE_MN = String.raw`([A-Za-z]{3,9})\.?\s+(\d{1,2})\s*,?\s*((?:19|20)\s?\d{2})`;
 const PERIOD_RE = new RegExp(
   `annual accounting period[^]{0,240}?beginning\\s*${DATE_PART}\\s*,?\\s*(?:and\\s*)?ending\\s*${DATE_PART}`, "i");
 const PERIOD_END_ONLY_RE = new RegExp(
   `annual accounting period[^]{0,240}?ending\\s*${DATE_PART}`, "i");
+const PERIOD_MN_RE = new RegExp(
+  `annual accounting period[^]{0,240}?beginning\\s*${DATE_MN}\\s*,?\\s*(?:and\\s*)?ending\\s*${DATE_MN}`, "i");
+const PERIOD_END_ONLY_MN_RE = new RegExp(
+  `annual accounting period[^]{0,240}?ending\\s*${DATE_MN}`, "i");
+
+const MONTH_NUM: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+const monthNum = (w: string): number | null => MONTH_NUM[w.slice(0, 3).toLowerCase()] ?? null;
 
 const numYear = (y: string): number => Number(y.replace(/\s+/g, ""));
 const validDate = (m: number, d: number, y: number): boolean =>
   m >= 1 && m <= 12 && d >= 1 && d <= 31 && y >= 1990 && y <= 2100;
-const fmtDate = (m: string, d: string, y: string): string =>
+const fmtDate = (m: string | number, d: string, y: string): string =>
   `${String(Number(m)).padStart(2, "0")}/${String(Number(d)).padStart(2, "0")}/${numYear(y)}`;
 
 /** Parse the face's "annual accounting period ... beginning MM-DD-YYYY, and
@@ -88,11 +145,24 @@ export function parseAccountingPeriod(rows: { page: number; cells: string[] }[])
     if (m && validDate(+m[1], +m[2], numYear(m[3])) && validDate(+m[4], +m[5], numYear(m[6]))) {
       return { begin: fmtDate(m[1], m[2], m[3]), end: fmtDate(m[4], m[5], m[6]) };
     }
+    const n = PERIOD_MN_RE.exec(text);
+    if (n) {
+      const bm = monthNum(n[1]);
+      const em = monthNum(n[4]);
+      if (bm && em && validDate(bm, +n[2], numYear(n[3])) && validDate(em, +n[5], numYear(n[6]))) {
+        return { begin: fmtDate(bm, n[2], n[3]), end: fmtDate(em, n[5], n[6]) };
+      }
+    }
   }
   for (const text of clean) {
     const e = PERIOD_END_ONLY_RE.exec(text);
     if (e && validDate(+e[1], +e[2], numYear(e[3]))) {
       return { end: fmtDate(e[1], e[2], e[3]) };
+    }
+    const en = PERIOD_END_ONLY_MN_RE.exec(text);
+    if (en) {
+      const em = monthNum(en[1]);
+      if (em && validDate(em, +en[2], numYear(en[3]))) return { end: fmtDate(em, en[2], en[3]) };
     }
   }
   return null;
@@ -120,7 +190,9 @@ function matchFormLine(
       // The line number may print glued to the caption ("2a Trade notes and…").
       const bare = cell.replace(/^\d{1,2}[a-c]?\s+/, "");
       if (!labelRe.test(bare)) continue;
-      let nums = r.cells.slice(i + 1).map((c) => numeric(c)).filter((n): n is number => n !== null);
+      // Strict cells only: numeric() would book the digit residue of prose
+      // like "(combine lines 7 through 13)" as −713 on the legacy parser path.
+      let nums = r.cells.slice(i + 1).map((c) => numericCell(c)).filter((n): n is number => n !== null);
       // IRS forms repeat the line number to the right of the caption.
       const ln = /^(\d{1,2})[a-c]?\b/.exec(cell) || /^(\d{1,2})[a-c]?$/.exec((r.cells[i - 1] || "").trim());
       if (ln && nums.length > 1 && nums[0] === Number(ln[1])) nums = nums.slice(1);
@@ -152,7 +224,9 @@ export function extractCarryForward(
   const schJ = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schJ"), pageFilter));
   const schF = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schF"), pageFilter));
   const schE = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schE"), pageFilter));
-  const face = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-face", "us-5471-schA", "us-5471-schB"), pageFilter));
+  const facePages = intersect(pagesOfKind(cls, "us-5471-face", "us-5471-schA", "us-5471-schB"), pageFilter);
+  const face = rowsOnPages(parsed, facePages);
+  const faceGeo = rowsOnPagesGeo(parsed, facePages);   // index-aligned with `face`
 
   // The face's accounting-period line — fiscal years drive the FX guard.
   const period = parseAccountingPeriod(face);
@@ -180,7 +254,7 @@ export function extractCarryForward(
     const cells = r.cells.map((c) => c.trim());
     const ci = cells.findIndex((c) => /^[A-Z]{3}$/.test(c) && c !== "USD");
     if (ci > 0) {
-      const tax = numeric(cells[ci + 1]);
+      const tax = numericCell(cells[ci + 1]);
       if (tax !== null && Math.abs(tax) > 0) {
         out.priorTaxAccruedFunctional = { value: tax, page: r.page, rowText: cells.join(" | ") };
         break;
@@ -221,30 +295,114 @@ export function extractCarryForward(
     }
 
     // "d Date of incorporation … h Functional currency code" caption row —
-    // the values row below carries date / place / activity / currency together.
-    if (!out.formed && /date of incorporation/i.test(text)) {
-      for (const cand of nextRows) {
-        const cells = cand.cells.map((c) => c.trim()).filter(Boolean);
-        const di = cells.findIndex((c) => /^\d{1,2}[-/]\d{1,2}[-/]\d{4}$/.test(c));
-        if (di < 0) continue;
-        out.formed = cells[di].replace(/-/g, "/");
-        const ci = cells.findIndex((c) => /^[A-Z]{3}$/.test(c) && c !== "USD");
-        if (ci >= 0) {
-          out.functionalCurrency = cells[ci];
-          if (ci - 1 > di) out.activity = cells[ci - 1];
+    // values print on the row(s) below, one per caption COLUMN. Assign them
+    // by x-overlap with the caption anchors; the old whole-row scan demanded
+    // a standalone 4-digit-year date cell and missed every glued layout
+    // ("09/05/08 CAYMAN ISLANDS"), losing the currency printed plainly in h.
+    // The gate must tolerate a WRAPPED d caption ("d Date of" on the anchor
+    // row, "incorporation" below) — the sibling captions e/g/h identify the
+    // row just as well.
+    if (!out.formed && /date of incorporation|principal place of business|functional currency code/i.test(text)) {
+      const geoCaption = faceGeo[ri];
+      const anchors: { key: "d" | "e" | "f" | "g" | "h"; x0: number }[] = [];
+      if (geoCaption) {
+        for (const c of geoCaption.cells) {
+          const t = c.text.toLowerCase().trim();
+          if (/date of incorp|^d\s+date\b/.test(t)) anchors.push({ key: "d", x0: c.x0 });
+          else if (/principal place of business/.test(t)) anchors.push({ key: "e", x0: c.x0 });
+          else if (/activity code/.test(t)) anchors.push({ key: "f", x0: c.x0 });
+          else if (/principal business activity/.test(t)) anchors.push({ key: "g", x0: c.x0 });
+          else if (/functional currency/.test(t)) anchors.push({ key: "h", x0: c.x0 });
         }
-        break;
+      }
+      if (anchors.length >= 2) {
+        anchors.sort((a, b) => a.x0 - b.x0);
+        const buckets: Partial<Record<"d" | "e" | "f" | "g" | "h", string[]>> = {};
+        for (let j = ri + 1; j <= ri + 4 && j < faceGeo.length; j++) {
+          const geo = faceGeo[j];
+          if (!geo || geo.page !== r.page) break;
+          const joined = geo.cells.map((c) => c.text).join(" ");
+          if (/^\d+\s+[a-z]|provide the following|schedule a\b/i.test(joined.trim())) break;   // next form section
+          for (const c of geo.cells) {
+            for (let k = anchors.length - 1; k >= 0; k--) {
+              if (c.x0 >= anchors[k].x0 - 12) {
+                (buckets[anchors[k].key] ||= []).push(c.text.trim());
+                break;
+              }
+            }
+          }
+        }
+        // Wrapped caption fragments ("business activity code number") land in
+        // the value rows — filter them out of the place, and pull the code
+        // off their tail ("… code number 493100").
+        const isFragment = (c: string) =>
+          /activity code|code no\.?|code number|^incorporation$|^number$|principal place|principal business|functional currency|^business activity$|^date of/i.test(c.trim());
+        const dJoin = (buckets.d || []).join(" ").trim();
+        const glued = dJoin ? splitGluedDatePlace(dJoin) : null;
+        const eJoin = (buckets.e || [])
+          .filter((c) => /^[A-Za-z][A-Za-z ,.'&-]*$/.test(c.trim()) && !isFragment(c))
+          .join(" ").trim();
+        if (glued) {
+          out.formed = glued.date;
+          const gp = glued.place && !isFragment(glued.place) ? glued.place : undefined;
+          if (gp && !eJoin) out.principalPlace = gp;
+        }
+        if (eJoin) out.principalPlace = eJoin;
+        for (const c of [...(buckets.f || []), ...(buckets.e || []), ...(buckets.g || [])]) {
+          const m = /(?:^|\s)(\d{4,6})$/.exec(c.trim());
+          if (m) { out.activityCode = m[1]; break; }
+        }
+        const gJoin = (buckets.g || []).filter((c) => /[A-Za-z]/.test(c) && !isFragment(c)).join(" ").trim();
+        if (gJoin) out.activity = gJoin;
+        const hTok = (buckets.h || []).find((c) => /^[A-Z]{3}$/.test(c));
+        if (hTok) out.functionalCurrency = hTok;
+      }
+      // Legacy fallback: no geometry (grid docs) or anchors not found. Only
+      // on the true d caption row — the widened gate must not let a stray
+      // "functional currency" mention start a date hunt elsewhere.
+      if (!out.formed && /date of incorporation/i.test(text)) {
+        for (const cand of nextRows) {
+          const cells = cand.cells.map((c) => c.trim()).filter(Boolean);
+          const di = cells.findIndex((c) => /^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$/.test(c));
+          if (di < 0) continue;
+          out.formed = cells[di].replace(/-/g, "/");
+          const ci = cells.findIndex((c) => /^[A-Z]{3}$/.test(c) && c !== "USD");
+          if (ci >= 0) {
+            out.functionalCurrency = out.functionalCurrency || cells[ci];
+            if (ci - 1 > di && !out.activity) out.activity = cells[ci - 1];
+          }
+          break;
+        }
       }
     }
 
-    // The CFC's name and address block under "1a Name and address of foreign corporation".
+    // The CFC's name and address block under "1a Name and address of foreign
+    // corporation". Only LEFT-column cells qualify: the right column carries
+    // b(1)/b(2)/b(3) captions and values ("BME01 b(3) Previous reference ID
+    // number(s)…"), which is exactly what used to land in the legal name.
     if (!out.cfcName && /^1a name and address of foreign corporation/i.test((r.cells[0] || "").trim())) {
-      for (const cand of face.slice(ri + 1, ri + 5)) {
-        const first = (cand.cells[0] || "").trim();
-        if (!first || /^[b-d]\(?\d?\)?\s|^c country|^instructions/i.test(first)) continue;
-        if (/country under whose laws/i.test(cand.cells.join(" "))) break;
-        if (!out.cfcName) out.cfcName = first;
-        else if (out.cfcAddress.length < 3 && /[A-Za-z]/.test(first)) out.cfcAddress.push(first);
+      const geoCaption = faceGeo[ri];
+      const bColX = geoCaption && geoCaption.cells.length > 1 ? geoCaption.cells[1].x0 : null;
+      let lastRow = -1;   // once the country caption appears, take one more row (the city line)
+      for (let j = ri + 1; j <= ri + 8 && j < face.length; j++) {
+        const cand = face[j];
+        if (cand.page !== r.page) break;
+        const geo = faceGeo[j];
+        const leftCells = geo && bColX !== null
+          ? geo.cells.filter((c) => c.x0 < bColX - 8).map((c) => c.text)
+          : cand.cells;
+        const first = (leftCells[0] || "").trim();
+        const gluedId = first ? splitGluedRefId(first) : null;
+        if (gluedId) {
+          if (!out.referenceIds.includes(gluedId)) out.referenceIds.push(gluedId);
+        } else if (first && /[A-Za-z]/.test(first) && !looksLikeCaption(first)) {
+          if (!out.cfcName) out.cfcName = first;
+          else if (out.cfcAddress.length < 3 && first !== out.cfcName) out.cfcAddress.push(first);
+        }
+        if (/country under whose laws/i.test(cand.cells.join(" "))) {
+          if (lastRow < 0) lastRow = j + 1;   // the street can share the break row; the city follows
+        }
+        if (lastRow >= 0 && j >= lastRow) break;
       }
     }
 
@@ -295,17 +453,22 @@ export function extractCarryForward(
   // Reference IDs only from "Reference ID number" captions — an EIN is a
   // 9-digit number too, and the filer's EIN must never masquerade as the
   // CFC's reference ID. The 5471 pages come first, so the CFC's own ID leads.
-  const refIds: string[] = [];
+  // IDs are ALPHANUMERIC in practice (BME01, MAC2022) — never digits-only.
+  const refIds: string[] = [...out.referenceIds];   // glued b(3) captures from the 1a harvest
   for (let i = 0; i < all.length; i++) {
     const t = all[i].cells.join(" ");
     if (!/reference id/i.test(t)) continue;
-    const near = /\b(\d{9})\b/.exec(t);
-    if (near && !refIds.includes(near[1])) refIds.push(near[1]);
+    // Value on the caption row itself: a glued "BME01 b(3)…" cell or a bare token.
+    for (const c of all[i].cells) {
+      const glued = splitGluedRefId(c);
+      const tok = glued || refIdToken(c);
+      if (tok && !refIds.includes(tok)) refIds.push(tok);
+    }
     const nxt = all[i + 1];
     if (nxt && nxt.page === all[i].page) {
       for (const c of nxt.cells) {
-        const m = /^(\d{9})$/.exec((c || "").trim());
-        if (m && !refIds.includes(m[1])) refIds.push(m[1]);
+        const tok = splitGluedRefId(c || "") || refIdToken(c || "");
+        if (tok && !refIds.includes(tok)) refIds.push(tok);
       }
     }
   }

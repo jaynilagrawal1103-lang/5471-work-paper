@@ -440,8 +440,10 @@ export function detectLineNoColumnByStats(rows: string[][]): number | null {
 }
 
 /* A cell is numeric when it parses and carries no words \u2014 but ledger
-   suffixes like "1,234 CR" must still count as numbers. */
-const numericCell = (cell: string): number | null => {
+   suffixes like "1,234 CR" must still count as numbers. Exported: the
+   carry-forward form reader must never book a digit residue of prose like
+   "(combine lines 7 through 13)" as a money value. */
+export const numericCell = (cell: string): number | null => {
   const s = String(cell).trim();
   if (!s) return null;
   if (/^\(?\s*-?[\d.,\s ']+\s*\)?\s*(?:CR|DR)?\s*\/?\s*$/i.test(s) && /\d/.test(s)) return numeric(s);

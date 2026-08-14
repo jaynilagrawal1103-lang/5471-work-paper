@@ -22,6 +22,7 @@ type CfCandidate = {
   pageCount: number;
   cfcName: string;      // block-level name first, face-parsed second ("" = unidentified)
   refIds: string[];
+  statementYear: number | null;   // the year the source return reports on
 };
 
 /** Leading month of a "MM/DD/YYYY" or "M/D/YY" period string. */
@@ -1012,6 +1013,7 @@ export const actions = {
                   pageCount: block.pages.length,
                   cfcName: block.cfcName || candidate.cfcName || "",
                   refIds: [...new Set([...block.referenceIds, ...candidate.referenceIds])],
+                  statementYear: cls.statementYear,
                 });
               }
             }
@@ -1080,6 +1082,15 @@ export const actions = {
           if (selected) {
             cf = selected.cf;
             cfSource = selected.source;
+            // A reference copy OLDER than the immediately prior year: its
+            // Schedule J line 14 opens the WRONG year — flag, never adjust.
+            if (caseYears.cy && selected.statementYear && selected.statementYear < caseYears.cy - 1) {
+              rv({
+                id: "cf-year-gap", level: "warn", category: "carry-forward",
+                message: `${selected.source} is a FY${selected.statementYear} filing but the case year is ${caseYears.cy} — its Schedule J line 14 is the opening balance of FY${selected.statementYear + 1}, NOT ${caseYears.cy}. Confirm the opening E&P and the prior-filed balances before relying on them.`,
+                source: selected.source,
+              });
+            }
           }
           // Remaining NAMED blocks become sibling work papers after this run;
           // a nameless leftover block is surfaced instead — never guess.
@@ -1277,6 +1288,11 @@ export const actions = {
             propose(profile, "countryInc", cf.countryInc || "", `${cfSource} · 5471 face`);
             propose(profile, "activity", cf.activity || "", `${cfSource} · 5471 face`);
             propose(profile, "currency", cf.functionalCurrency || "", `${cfSource} · 5471 face`);
+            // No template cells exist for these three — they live on the
+            // profile (and refId keys the fan-out idempotence + Sch E E16).
+            propose(profile, "refId", cf.referenceIds[0] || "", `${cfSource} · 5471 face`);
+            propose(profile, "principalPlace", cf.principalPlace || "", `${cfSource} · 5471 face`);
+            propose(profile, "activityCode", cf.activityCode || "", `${cfSource} · 5471 face`);
             // The filing person is the client. Overwrite only the untouched
             // stakeholder default — a hand-typed client name always survives.
             if (cf.holderName && profile.clientName === state.stakeholder) {

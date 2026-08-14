@@ -227,6 +227,21 @@ function mostFrequent(list: string[]): string | null {
    right column ("BME01 b(3) Previous reference ID number(s), if any"). */
 const NAME_CANDIDATE_REJECT = /reference id|identif\w* number|previous reference|^instructions|^[a-z0-9]{2,12}\s+b\(\d\)/i;
 
+/** "BME01 b(3) Previous reference ID number(s)…" → "BME01": a reference-ID
+    VALUE glued to the next caption in the form's right column. */
+export function splitGluedRefId(t: string): string | null {
+  const m = /^([A-Z][A-Z0-9]{2,19})\s+b\(\d\)/i.exec(t.trim());
+  return m && /\d/.test(m[1]) ? m[1].toUpperCase() : null;
+}
+
+/** A reference-ID token: 7–9 digits, or letters+digits like BME01 / MAC2022. */
+export const refIdToken = (s: string): string | null => {
+  const t = s.trim();
+  if (/^\d{7,9}$/.test(t)) return t;
+  if (/^[A-Z][A-Z0-9]{3,19}$/i.test(t) && /\d/.test(t)) return t.toUpperCase();
+  return null;
+};
+
 /** The "Name of foreign corporation" caption names the CFC on 5471 pages.
     With a pageSet the scan is block-scoped; unscoped it covers the doc. */
 function findForeignCorpName(doc: PdfDoc, pageSet?: Set<number>): string | null {
@@ -267,14 +282,19 @@ function findEntityIds(doc: PdfDoc, pageSet?: Set<number>): string[] {
       if (ein) ids.add(ein[1].replace("-", ""));
     }
     if (/reference id/i.test(t)) {
-      // The value prints either on the caption row or on the row below it.
+      // The value prints either on the caption row or on the row below it —
+      // possibly glued to the b(3) caption, possibly alphanumeric (BME01).
       const near = /\b(\d{9})\b/.exec(t);
       if (near) ids.add(near[1]);
+      for (const c of rows[i].cells) {
+        const tok = splitGluedRefId(c.text);
+        if (tok) ids.add(tok);
+      }
       const next = rows[i + 1];
       if (next && next.page === rows[i].page) {
         for (const c of next.cells) {
-          const m = /^(\d{9})$/.exec(c.text.trim());
-          if (m) ids.add(m[1]);
+          const tok = splitGluedRefId(c.text) || refIdToken(c.text);
+          if (tok) ids.add(tok);
         }
       }
     }
@@ -317,17 +337,28 @@ export function segment5471Blocks(doc: PdfDoc, pages: PageInfo[]): Block5471[] {
     for (let p = b.scanFrom; p <= b.scanTo; p++) scan.add(p);
     b.referenceIds = findEntityIds(doc, scan);
   }
-  // Leading faceless block: schedules can print before their face. Merge into
-  // the following face block unless it names a different foreign corporation.
-  if (blocks.length > 1 && blocks[0].facePage === null) {
-    const [head, next] = blocks;
-    const distinct = head.cfcName && next.cfcName && entitySimilarity(head.cfcName, next.cfcName) < 0.5;
-    if (!distinct) {
-      next.pages = [...head.pages, ...next.pages];
-      next.scanFrom = 1;
-      next.cfcName = next.cfcName || head.cfcName;
-      next.referenceIds = [...new Set([...head.referenceIds, ...next.referenceIds])];
-      blocks.shift();
+  // A block whose CFC name cannot be read is a continuation page the face
+  // fallback mistook for a new filing — absorb it into its neighbour. Real
+  // faces always carry the item-1a name; genuinely separate CFCs keep their
+  // own blocks below. A leading unnamed run merges into the first NAMED block.
+  if (blocks.length > 1) {
+    const firstNamed = blocks.findIndex((b) => !!b.cfcName);
+    if (firstNamed > 0) {
+      const head = blocks.splice(0, firstNamed);
+      const target = blocks[0];
+      target.pages = [...head.flatMap((b) => b.pages), ...target.pages];
+      target.scanFrom = head[0].scanFrom;
+      target.referenceIds = [...new Set([...head.flatMap((b) => b.referenceIds), ...target.referenceIds])];
+    }
+    for (let k = 1; k < blocks.length; ) {
+      if (!blocks[k].cfcName) {
+        blocks[k - 1].pages = [...blocks[k - 1].pages, ...blocks[k].pages];
+        blocks[k - 1].scanTo = blocks[k].scanTo;
+        blocks[k - 1].referenceIds = [...new Set([...blocks[k - 1].referenceIds, ...blocks[k].referenceIds])];
+        blocks.splice(k, 1);
+      } else {
+        k++;
+      }
     }
   }
   // The SAME foreign corporation behind two faces (a filed copy plus a
