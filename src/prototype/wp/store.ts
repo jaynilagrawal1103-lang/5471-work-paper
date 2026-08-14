@@ -1643,7 +1643,10 @@ export const actions = {
             const merged = [...(cur.shareholders || [])];
             for (const h of cf.holders) {
               if (!merged.some((s) => s.name.toLowerCase() === h.name.toLowerCase())) {
-                merged.push({ id: uid(), name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy, source: `${cfSource} · Sch B p.${h.page}` });
+                merged.push({
+                  id: uid(), name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
+                  source: `${cfSource} · Sch B p.${h.page}${h.single ? " · single printed count taken as BOY = EOY — confirm" : ""}`,
+                });
               }
             }
             if (merged.length !== (cur.shareholders || []).length) updateEntity(entityId, { shareholders: merged });

@@ -23,8 +23,10 @@ export type CarryForward = {
   >>;
   shares?: { classOfShares: string; boy: number; eoy: number; page: number };
   /** Schedule B Part II — every direct shareholder with real names and
-      BOY/EOY share counts (the template ships demo rows A/B/C/D otherwise). */
-  holders?: { name: string; classOfShares: string; boy: number; eoy: number; page: number }[];
+      BOY/EOY share counts (the template ships demo rows A/B/C/D otherwise).
+      `single` marks a row where only ONE count printed — taken as BOY = EOY
+      and flagged for the preparer to confirm. */
+  holders?: { name: string; classOfShares: string; boy: number; eoy: number; page: number; single?: boolean }[];
   holderName?: string;
   /** Filer's SSN-shaped ID, already masked at extraction — never stored raw. */
   filerIdMasked?: string;
@@ -440,12 +442,21 @@ export function extractCarryForward(
     for (let j = partII + 1; j < Math.min(partII + 40, face.length); j++) {
       const r = face[j];
       const joined = r.cells.join(" ").trim();
-      if (/^part\b|^schedule [a-z]\b|income statement/i.test(joined)) break;
+      // Section break — but the column-header wrap "…entered in Schedule A,
+      // column (a)." must not end the scan before the holder rows.
+      if (/^part\b|^schedule [a-z]\b(?!\s*,\s*column)|income statement/i.test(joined)) break;
       const cells = r.cells.map((c) => (c || "").trim()).filter(Boolean);
       if (cells.length < 2) continue;
       const ci = cells.findIndex((c) => /^(common|ordinary|preferred|class [a-z0-9]+)( shares?)?$/i.test(c));
       if (ci < 0) continue;
-      const pair = parseSharePair(cells.slice(ci + 1));
+      let pair = parseSharePair(cells.slice(ci + 1));
+      let single = false;
+      if (!pair) {
+        // Some returns print ONE count per holder — taken as BOY = EOY and
+        // flagged, never silently: the Shareholders tab makes it editable.
+        const n = numericCell(cells[ci + 1] || "");
+        if (n !== null && n >= 0) { pair = { boy: n, eoy: n }; single = true; }
+      }
       if (!pair) continue;
       let name = cells.slice(0, ci).join(" ").trim();
       if ((!name || isIdish(name)) && j + 1 < face.length) {
@@ -455,7 +466,7 @@ export function extractCarryForward(
       }
       if (!name || isIdish(name) || /name, address|^\(a\)/i.test(name)) continue;
       if (!holders.some((h) => h.name.toLowerCase() === name.toLowerCase())) {
-        holders.push({ name, classOfShares: cells[ci].replace(/\s*shares?$/i, ""), boy: pair.boy, eoy: pair.eoy, page: r.page });
+        holders.push({ name, classOfShares: cells[ci].replace(/\s*shares?$/i, ""), boy: pair.boy, eoy: pair.eoy, page: r.page, ...(single ? { single: true } : {}) });
       }
     }
     if (holders.length) out.holders = holders;
