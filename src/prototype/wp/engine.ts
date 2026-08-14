@@ -36,7 +36,9 @@ export const PROFILE_FIELDS: FieldSpec[] = [
   { key: "countryInc", cell: "B19", label: "Country of incorporation" },
   { key: "booksPerson", cell: "B21", label: "Person in charge of books" },
   { key: "activity", cell: "B25", label: "Principal business activity" },
-  { key: "currency", cell: "B27", label: "Functional currency", placeholder: "GBP" },
+  // Placeholder must read as an EXAMPLE — an analyst took a bare "GBP" for a
+  // detected value on the Thompson (KYD) case.
+  { key: "currency", cell: "B27", label: "Functional currency", placeholder: "e.g. KYD" },
 ];
 
 export const OWNERSHIP_FIELDS: FieldSpec[] = [

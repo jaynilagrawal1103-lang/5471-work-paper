@@ -566,7 +566,11 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
                     </td>
                     <td>{b.target || "—"}{b.applied ? <small style={{ display: "block", opacity: 0.7 }}>pre-filled</small> : null}</td>
                     <td>
-                      {b.message.includes("rate (C") ? (
+                      {b.id === "fx-currency-unconfirmed" ? (
+                        <button type="button" className="button primary" onClick={() => actions.confirmCurrency(b.entityId)}>
+                          Confirm {(state.entities.find((e) => e.id === b.entityId)?.profile.currency || "").toUpperCase()}
+                        </button>
+                      ) : b.message.includes("rate (C") ? (
                         <button type="button" className="button" onClick={() => { actions.setActiveEntity(b.entityId); actions.autoFillRates(b.entityId); }}>Apply rates</button>
                       ) : (
                         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>

@@ -74,7 +74,7 @@ import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./
 import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
-import { PROVIDERS, fetchLiveRate, isMostlyNonLatin, sourceLangHint, translateFree, type LiveRate } from "./providers";
+import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, sourceLangHint, translateFree, type LiveRate } from "./providers";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
 declare const JSZip: any;
@@ -165,6 +165,9 @@ export type Entity = {
   /** Where each rate came from and its as-of date — shown beside the inputs. */
   fxMeta: Record<string, { source: string; asOf: string }>;
   fxAuto: boolean;
+  /** C-01: an auto-DETECTED functional currency must be confirmed by the
+      preparer before the workbook can generate; manual entry confirms. */
+  currencyConfirmed: boolean;
   detected: Record<string, DetectedField>;
   lines: Record<string, LineValue>;
   relabels: Record<string, string>;
@@ -274,6 +277,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     fx: {},
     fxMeta: {},
     fxAuto: false,
+    currencyConfirmed: false,
     detected: {},
     lines: {},
     relabels: {},
@@ -549,12 +553,26 @@ export const actions = {
       delete detected[key];                       // now a manual value
       updateEntity(entityId, { detected });
     }
+    // Typing the currency by hand IS the confirmation (C-01).
+    if (bucket === "profile" && key === "currency" && value.trim()) {
+      updateEntity(entityId, { currencyConfirmed: true });
+    }
     // Currency or period end changed -> refresh the published rates, unless the
     // preparer has overridden them by hand.
     if (bucket === "profile" && (key === "currency" || key === "cyEnd" || key === "pyEnd")) {
       actions.autoFillRates(entityId, false);
     }
     if (bucket === "fx") updateEntity(entityId, { fxAuto: false });
+  },
+
+  /** C-01: the preparer confirms an auto-detected functional currency. */
+  confirmCurrency(entityId: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent || !ent.profile.currency) return;
+    updateEntity(entityId, { currencyConfirmed: true });
+    logEvent("Functional currency confirmed", `${ent.profile.currency} confirmed by the preparer`, ent.name);
+    toast(`${ent.profile.currency} confirmed`, "ok");
+    actions.autoFillRates(entityId, false);
   },
 
   /** Populate C59/C60/C61 from the IRS and Treasury tables. */
@@ -626,6 +644,50 @@ export const actions = {
           } catch { /* stays blank — the missing-rate blocker says exactly what to enter */ }
         }
       })();
+    }
+    // Average-rate chain (RAT-001, user-decided): IRS table → OFX daily
+    // average over the entity's period → blank + reasoned review item for
+    // manual entry. An OFX figure is ALWAYS labelled as such.
+    if (!fx.avgRate && ent.profile.cyEnd) {
+      const cyYearNum = Number(yearFromPeriod(ent.profile.cyEnd));
+      const endIso = toIsoDate(ent.profile.cyEnd, cyYearNum || 0);
+      // The period is the year ENDING on cyEnd: one day past the same date a
+      // year earlier ("2024-12-31" → "2024-01-01".."2024-12-31").
+      const startIso = endIso
+        ? new Date(Date.parse(`${Number(endIso.slice(0, 4)) - 1}${endIso.slice(4)}`) + 86400000).toISOString().slice(0, 10)
+        : null;
+      if (endIso && startIso) {
+        void (async () => {
+          const r = await fxOfxAverage(code, startIso, endIso).catch(
+            (err): { ok: false; error: string } => ({ ok: false, error: (err as Error).message }),
+          );
+          const fresh = state.entities.find((e) => e.id === entityId);
+          if (!fresh || fresh.fx.avgRate) return;   // filled meanwhile — keep it
+          if (r.ok) {
+            const v = r.value;
+            updateEntity(entityId, {
+              fx: { ...fresh.fx, avgRate: String(v.rate) },
+              fxMeta: { ...fresh.fxMeta, avgRate: { source: `OFX daily average (fallback — ${db.source} has no ${code} average)`, asOf: `${v.from}..${v.to} (${v.points} daily points)` } },
+            });
+            logEvent("OFX average-rate fallback applied", `${code} average ${v.rate} over ${v.from}..${v.to} (${v.points} points) — IRS table has no figure`, ent.name, "system");
+            const again = state.entities.find((e) => e.id === entityId);
+            if (again && !again.reviewItems.some((x) => x.id === "avg-ofx-fallback")) {
+              updateEntity(entityId, {
+                reviewItems: [...again.reviewItems, {
+                  id: "avg-ofx-fallback", level: "warn", category: "fx", applied: true,
+                  message: `C59 average rate ${v.rate} was computed from OFX daily mid-market rates over ${v.from}..${v.to} (${v.points} points) because the IRS table has no ${code} average. OFX is an indicative source — confirm or replace it before filing.`,
+                  target: `${SHEET.basic}!C59`, source: "OFX", suggestedValue: v.rate,
+                } as ReviewItem],
+              });
+            }
+          } else {
+            // Blank stays blank; the derived fx-avg-missing block explains the
+            // chain's outcome so the preparer knows WHY manual entry is needed.
+            updateEntity(entityId, { fxMeta: { ...fresh.fxMeta, avgRateNote: { source: `no IRS ${code} average; OFX fallback failed: ${r.error}`, asOf: "" } } });
+            logEvent("Average-rate fallback unavailable", `${code}: no IRS figure; OFX: ${r.error} — manual entry required`, ent.name, "system");
+          }
+        })();
+      }
     }
     if (!hit.avgRate && !hit.cyRate && !hit.pyRate && !missing.length && force) {
       toast(`No published rates for ${code} in those years — enter them manually`, "bad");
@@ -2636,13 +2698,31 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   // The template divides by these; a blank or zero rate yields #DIV/0! in every
   // USD column of Schedule C and Schedule F.
   if (hasIS && !rate("avgRate")) {
-    out.push({ id: "fx-avg-missing", level: "block", category: "fx", message: "Average exchange rate (C59) is missing — Schedule C USD columns will show #DIV/0!", target: `${SHEET.basic}!C59` });
+    const code = (ent.profile.currency || "the functional currency").toUpperCase();
+    const why = ent.fxMeta?.avgRateNote?.source
+      ? ` ${ent.fxMeta.avgRateNote.source}.`
+      : ent.profile.currency
+        ? ` No IRS-table average was found for ${code} and no fallback figure was applied.`
+        : "";
+    out.push({
+      id: "fx-avg-missing", level: "block", category: "fx",
+      message: `Average exchange rate (C59) is missing — Schedule C USD columns will show #DIV/0!.${why} Enter the period's average rate manually.`,
+      target: `${SHEET.basic}!C59`,
+    });
   }
   if (hasBS && !rate("cyRate")) {
     out.push({ id: "fx-cy-missing", level: "block", category: "fx", message: "Current year end rate (C60) is missing — Schedule F end-of-year USD column will show #DIV/0!", target: `${SHEET.basic}!C60` });
   }
   if (hasBS && !rate("pyRate")) {
     out.push({ id: "fx-py-missing", level: "block", category: "fx", message: "Prior year end rate (C61) is missing — Schedule F beginning-of-year USD column will show #DIV/0!", target: `${SHEET.basic}!C61` });
+  }
+  // C-01: an auto-detected currency gates generation until confirmed.
+  if (ent.profile.currency && ent.detected.currency && !ent.currencyConfirmed) {
+    out.push({
+      id: "fx-currency-unconfirmed", level: "block", category: "fx",
+      message: `Functional currency ${ent.profile.currency.toUpperCase()} was read from ${ent.detected.currency.sourceLabel} and has NOT been confirmed. Confirm it (or correct it in the entity profile) before generating — every USD column divides by ${ent.profile.currency.toUpperCase()} rates.`,
+      target: `${SHEET.basic}!B27`,
+    });
   }
   // Fiscal year: the published tables are calendar-year — the guard leaves
   // the rates blank on purpose, and this item says what to enter by hand.
@@ -2671,7 +2751,7 @@ export function validateEntity(ent: Entity): ReviewItem[] {
 /** Ids validateEntity can produce — stored dismissal tombstones for these
     must vanish once the underlying condition is resolved. */
 const DERIVED_IDS = new Set([
-  "fx-avg-missing", "fx-cy-missing", "fx-py-missing", "fx-fiscal-manual",
+  "fx-avg-missing", "fx-cy-missing", "fx-py-missing", "fx-fiscal-manual", "fx-currency-unconfirmed",
   "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
 ]);
 

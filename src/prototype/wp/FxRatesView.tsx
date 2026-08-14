@@ -98,7 +98,11 @@ export function FxRatesView() {
             <span className="section-kicker">{active ? active.name : "No entity"}</span>
             <h2>Rates written to the template</h2>
           </div>
-          <span className="mini-label">{active?.fxAuto ? "auto-filled from tables" : "manual entry"}</span>
+          <span className="mini-label">
+            {active?.detected.currency && !active.currencyConfirmed
+              ? <>currency {code} detected — <button type="button" className="chip-btn" onClick={() => actions.confirmCurrency(active.id)}>confirm</button></>
+              : active?.fxAuto ? "auto-filled from tables" : "manual entry"}
+          </span>
         </div>
 
         <div className="wp-table">

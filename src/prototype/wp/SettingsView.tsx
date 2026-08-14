@@ -471,8 +471,12 @@ export function SettingsView() {
 
           <Callout title="Published rates still govern the work paper" tone="amber">
             Live quotes are indicative mid-market rates. Schedule C expects the IRS yearly average and Schedule F the
-            US Treasury 12/31 spot rate, both of which ship with the tool. Applying a live quote overrides C60 and is
-            recorded in the audit trail.
+            US Treasury 12/31 spot rate, both of which ship with the tool. Both tables are CALENDAR-year figures —
+            a fiscal-year entity (period ending in any month but December) never receives them and its rates are
+            entered manually. When the IRS table has no average for a currency, the tool falls back to an OFX daily
+            average over the entity&apos;s period — always labelled as OFX and flagged for confirmation — and to manual
+            entry with the reason when OFX doesn&apos;t carry the currency either. Applying a live quote overrides C60
+            and is recorded in the audit trail.
           </Callout>
         </div>
       ) : null}

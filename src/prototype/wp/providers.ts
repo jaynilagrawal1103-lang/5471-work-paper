@@ -174,6 +174,40 @@ export async function fxOfx(code: string): Promise<ProviderResult<LiveRate>> {
   }
 }
 
+/** OFX daily-series average over a period — the average-rate fallback when
+    the IRS table has no figure. Filters the allTime daily series to
+    [startIso, endIso]; refuses sparse windows rather than guessing. NOTE:
+    OFX supports ~50 major currencies; unsupported codes (e.g. RON) return
+    "Currency … not supported" and the caller falls through to manual entry. */
+export async function fxOfxAverage(
+  code: string,
+  startIso: string,
+  endIso: string,
+): Promise<ProviderResult<{ rate: number; points: number; from: string; to: string }>> {
+  try {
+    const url = `https://api.ofx.com/PublicSite.ApiService/SpotRateHistory/allTime/USD/${encodeURIComponent(code)}?DecimalPlaces=6&ReportingInterval=daily&format=json`;
+    const data = await getJson(url);
+    if (data?.ErrorCode || data?.Message) throw new Error(String(data.Message || data.ErrorCode));
+    const points = data?.HistoricalPoints;
+    if (!Array.isArray(points) || !points.length) throw new Error("no rate points returned");
+    const start = Date.parse(startIso);
+    const end = Date.parse(endIso) + 86399999;
+    if (!isFinite(start) || !isFinite(end) || end <= start) throw new Error("bad period");
+    const inRange = points
+      .map((p: any) => ({ t: Number(p?.PointInTime), r: Number(p?.InterbankRate ?? p?.Rate) }))
+      .filter((p: { t: number; r: number }) => isFinite(p.t) && isFinite(p.r) && p.r > 0 && p.t >= start && p.t <= end);
+    if (inRange.length < 60) throw new Error(`only ${inRange.length} daily points in ${startIso}..${endIso}`);
+    const rate = inRange.reduce((s: number, p: { r: number }) => s + p.r, 0) / inRange.length;
+    return {
+      ok: true,
+      value: { rate: Math.round(rate * 1e6) / 1e6, points: inRange.length, from: startIso, to: endIso },
+      provider: "ofx", units: 1,
+    };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message, provider: "ofx", units: 1 };
+  }
+}
+
 /** Frankfurter (ECB). Accepts an ISO date for historical lookups. */
 export async function fxFrankfurter(code: string, date?: string): Promise<ProviderResult<LiveRate>> {
   try {
