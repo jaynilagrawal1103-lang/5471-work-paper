@@ -171,6 +171,8 @@ export function EvidenceView() {
       })),
   );
 
+  const activeEnt = state.entities.find((e) => e.id === state.activeEntityId) || state.entities[0];
+
   return (
     <div className="view-stack">
       <SectionHeader
@@ -290,6 +292,48 @@ export function EvidenceView() {
                       ) : null}
                     </td>
                     <td>{r.target ? lineLabel(r.target) : <span className="actor-tag user">unassigned</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {activeEnt && activeEnt.extraWrites.length ? (
+        <section className="panel">
+          <div className="panel-heading">
+            <div>
+              <span className="section-kicker">{activeEnt.name} · {activeEnt.extraWrites.length} cell(s)</span>
+              <h2>Schedule &amp; carry-forward values — source snapshot</h2>
+            </div>
+          </div>
+          <p className="hint">
+            Every value written beyond the core statements, with the document, page and the exact row text it was
+            read from — the answer to &ldquo;where did this number come from?&rdquo; without opening the PDF.
+          </p>
+          <div className="wp-table">
+            <table>
+              <thead>
+                <tr>
+                  <th style={{ width: 170 }}>Cell</th>
+                  <th className="numeric" style={{ width: 130 }}>Value</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeEnt.extraWrites.filter((w) => w.value !== "").map((w, i) => (
+                  <tr key={`${w.sheet}!${w.ref}-${i}`}>
+                    <td className="ref-cell">{w.sheet}!{w.ref}</td>
+                    <td className="numeric">{typeof w.value === "number" ? w.value.toLocaleString() : w.value}</td>
+                    <td>
+                      {w.source || "—"}
+                      {w.prov?.rowText ? (
+                        <small style={{ display: "block", color: "var(--muted)", whiteSpace: "normal" }}>
+                          {w.prov.docName}{w.prov.page ? ` p.${w.prov.page}` : ""} · row read: &ldquo;{w.prov.rowText}&rdquo;
+                        </small>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>

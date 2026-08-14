@@ -118,6 +118,10 @@ export type CellWrite = {
   value: string | number;
   source?: string;                    // "2023 US return p.24 · Sch J line 14"
   reviewId?: string;
+  /** Source snapshot (S-05): the document, page and the ROW TEXT the value
+      was read from — the Evidence view shows it verbatim so a reviewer can
+      trace every schedule figure without opening the PDF. */
+  prov?: { docName: string; page?: number; rowText?: string };
   /** Re-resolve the ROW by matching this text in the label column at
       generation time — template-revision-proof (Schedule M). */
   labelKey?: { col: string; contains: string; excludes?: string };
@@ -2448,6 +2452,7 @@ async function materializeCaseWrites(
     w({
       sheet: SHEET.schJ, ref: "F15", value: cf.openingEP.value,
       source: `${cfSource} p.${cf.openingEP.page} · prior Sch J line 14`, reviewId: "cf-opening-ep",
+      prov: { docName: cfSource, page: cf.openingEP.page, rowText: cf.openingEP.rowText },
     });
     const priorTax = cf.priorTaxAccruedFunctional?.value;
     const ccy = ent.profile.currency || "local";
