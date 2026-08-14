@@ -8,7 +8,7 @@
 
 import { numeric } from "./engine";
 import type { ParsedDoc } from "./engine";
-import type { DocClass, PageKind } from "./classify";
+import type { Block5471, DocClass, PageKind } from "./classify";
 
 export type SourcedValue = { value: number; page: number; rowText: string };
 
@@ -22,6 +22,8 @@ export type CarryForward = {
   >>;
   shares?: { classOfShares: string; boy: number; eoy: number; page: number };
   holderName?: string;
+  /** Filer's SSN-shaped ID, already masked at extraction — never stored raw. */
+  filerIdMasked?: string;
   pctVoting?: number;
   categories: string[];                 // "1a", "4", "5a"
   categoriesRaw?: string;               // the checkbox row, for the review item
@@ -32,11 +34,69 @@ export type CarryForward = {
   activity?: string;
   cfcName?: string;
   cfcAddress: string[];                 // street / suburb lines as printed
+  /** Annual accounting period as printed on the face, "MM/DD/YYYY". A
+      non-December end month is a fiscal year — calendar rate tables do not
+      apply and the store must leave the rates blank for manual entry. */
+  periodBegin?: string;
+  periodEnd?: string;
   priorTaxAccruedFunctional?: SourcedValue;   // Sch E — for E-1 redetermination review
 };
 
 const pagesOfKind = (cls: DocClass, ...kinds: PageKind[]): Set<number> =>
   new Set(cls.pages.filter((p) => kinds.includes(p.kind)).map((p) => p.page));
+
+const intersect = (a: Set<number>, b?: Set<number>): Set<number> =>
+  b ? new Set([...a].filter((x) => b.has(x))) : a;
+
+export type ParsedPeriod = { begin?: string; end?: string };
+
+/* Dates on the face print as "MM-DD-YYYY", "MM/DD/YYYY" or the software's
+   "MM-DD , 2023" (year comma-split, sometimes "20 23"). */
+const DATE_PART = String.raw`(\d{1,2})\s*[-/]\s*(\d{1,2})\s*[-/,]\s*((?:19|20)\s?\d{2})`;
+const PERIOD_RE = new RegExp(
+  `annual accounting period[^]{0,240}?beginning\\s*${DATE_PART}\\s*,?\\s*(?:and\\s*)?ending\\s*${DATE_PART}`, "i");
+const PERIOD_END_ONLY_RE = new RegExp(
+  `annual accounting period[^]{0,240}?ending\\s*${DATE_PART}`, "i");
+
+const numYear = (y: string): number => Number(y.replace(/\s+/g, ""));
+const validDate = (m: number, d: number, y: number): boolean =>
+  m >= 1 && m <= 12 && d >= 1 && d <= 31 && y >= 1990 && y <= 2100;
+const fmtDate = (m: string, d: string, y: string): string =>
+  `${String(Number(m)).padStart(2, "0")}/${String(Number(d)).padStart(2, "0")}/${numYear(y)}`;
+
+/** Parse the face's "annual accounting period ... beginning MM-DD-YYYY, and
+    ending MM-DD-YYYY" line. The caption and the dates can sit several rows
+    apart (form-header rows interleave), so each anchor row is joined with up
+    to four following rows. Returns null when nothing parses — never guesses. */
+export function parseAccountingPeriod(rows: { page: number; cells: string[] }[]): ParsedPeriod | null {
+  const windows: string[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (!/annual accounting period/i.test(rows[i].cells.join(" "))) continue;
+    let text = rows[i].cells.join(" ");
+    windows.push(text);
+    for (let j = i + 1; j <= i + 4 && j < rows.length; j++) {
+      if (rows[j].page !== rows[i].page) break;
+      text += " " + rows[j].cells.join(" ");
+      windows.push(text);
+    }
+  }
+  // The FILER's own tax year prints right below the corporation's period —
+  // a row join must never let it masquerade as the accounting period.
+  const clean = windows.map((t) => t.replace(/filer'?s tax year[^]*$/i, ""));
+  for (const text of clean) {
+    const m = PERIOD_RE.exec(text);
+    if (m && validDate(+m[1], +m[2], numYear(m[3])) && validDate(+m[4], +m[5], numYear(m[6]))) {
+      return { begin: fmtDate(m[1], m[2], m[3]), end: fmtDate(m[4], m[5], m[6]) };
+    }
+  }
+  for (const text of clean) {
+    const e = PERIOD_END_ONLY_RE.exec(text);
+    if (e && validDate(+e[1], +e[2], numYear(e[3]))) {
+      return { end: fmtDate(e[1], e[2], e[3]) };
+    }
+  }
+  return null;
+}
 
 const rowsOnPages = (parsed: ParsedDoc, pages: Set<number>): { page: number; cells: string[] }[] => {
   if (!parsed.pdf) return [];
@@ -77,14 +137,29 @@ function matchFormLine(
 
 const CATEGORY_CODES = ["1a", "1b", "1c", "2", "3", "4", "5a", "5b", "5c"];
 
-export function extractCarryForward(cls: DocClass, parsed: ParsedDoc): CarryForward {
+/** Extract carry-forward facts. With `pageFilter`/`scanRange` the read is
+    scoped to one 5471 block of a multi-CFC client copy; unscoped it covers
+    the whole document (single-5471 behavior, unchanged). */
+export function extractCarryForward(
+  cls: DocClass,
+  parsed: ParsedDoc,
+  pageFilter?: Set<number>,
+  scanRange?: { from: number; to: number },
+): CarryForward {
   const out: CarryForward = { priorClosingUSD: {}, categories: [], referenceIds: [], cfcAddress: [] };
   if (!parsed.pdf) return out;
 
-  const schJ = rowsOnPages(parsed, pagesOfKind(cls, "us-5471-schJ"));
-  const schF = rowsOnPages(parsed, pagesOfKind(cls, "us-5471-schF"));
-  const schE = rowsOnPages(parsed, pagesOfKind(cls, "us-5471-schE"));
-  const face = rowsOnPages(parsed, pagesOfKind(cls, "us-5471-face", "us-5471-schA", "us-5471-schB"));
+  const schJ = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schJ"), pageFilter));
+  const schF = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schF"), pageFilter));
+  const schE = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schE"), pageFilter));
+  const face = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-face", "us-5471-schA", "us-5471-schB"), pageFilter));
+
+  // The face's accounting-period line — fiscal years drive the FX guard.
+  const period = parseAccountingPeriod(face);
+  if (period) {
+    out.periodBegin = period.begin;
+    out.periodEnd = period.end;
+  }
 
   // Schedule J line 14 — the single most important carry-forward number.
   out.openingEP = matchFormLine(schJ, /balance at beginning of next year/i, "first") ?? undefined;
@@ -174,7 +249,9 @@ export function extractCarryForward(cls: DocClass, parsed: ParsedDoc): CarryForw
     }
 
     // Filer categories: glued checkbox tokens ("1a X 1b … 4 X 5a X 5b … 5c").
-    if (/category of filer/i.test(text)) {
+    // First-win like every other face field — a later 5471's checkbox row
+    // (multi-CFC copies) must not overwrite this block's categories.
+    if (!out.categories.length && /category of filer/i.test(text)) {
       for (const cand of [r, ...nextRows]) {
         const tokens = cand.cells.join(" ").split(/\s+/).map((t) => t.toLowerCase());
         const found: string[] = [];
@@ -190,8 +267,14 @@ export function extractCarryForward(cls: DocClass, parsed: ParsedDoc): CarryForw
     }
   }
 
-  // Holder: the row under "Name of person filing Form 5471".
-  const all = rowsOnPages(parsed, new Set(cls.pages.map((p) => p.page)));
+  // Holder: the row under "Name of person filing Form 5471". Scoped to this
+  // block's extended range when segmenting a multi-CFC copy.
+  const allPages = new Set(
+    cls.pages
+      .map((p) => p.page)
+      .filter((p) => !scanRange || (p >= scanRange.from && p <= scanRange.to)),
+  );
+  const all = rowsOnPages(parsed, allPages);
   for (let i = 0; i < all.length; i++) {
     if (/^name of person filing/i.test((all[i].cells[0] || "").trim())) {
       const cand = (all[i + 1]?.cells[0] || "").trim();
@@ -200,6 +283,13 @@ export function extractCarryForward(cls: DocClass, parsed: ParsedDoc): CarryForw
         break;
       }
     }
+  }
+
+  // Filer's identifying number: SSN-shaped IDs are masked at the source —
+  // the raw value is never stored anywhere in the tool.
+  for (const r of face) {
+    const m = /\b\d{3}-\d{2}-(\d{4})\b/.exec(r.cells.join(" "));
+    if (m) { out.filerIdMasked = `***-**-${m[1]}`; break; }
   }
 
   // Reference IDs only from "Reference ID number" captions — an EIN is a
@@ -221,4 +311,38 @@ export function extractCarryForward(cls: DocClass, parsed: ParsedDoc): CarryForw
   }
   out.referenceIds = refIds;
   return out;
+}
+
+/** One CarryForward per Form 5471 block of the document. Without block
+    segmentation (older DocClass, or a grid doc) a single pseudo-block covers
+    the whole document — exactly the single-5471 behavior. */
+export function extractCarryForwards(
+  cls: DocClass,
+  parsed: ParsedDoc,
+): { block: Block5471; cf: CarryForward }[] {
+  const blocks: Block5471[] =
+    cls.blocks5471 && cls.blocks5471.length
+      ? cls.blocks5471
+      : [{
+          index: 0,
+          pages: cls.pages.filter((p) => p.kind.startsWith("us-5471-")).map((p) => p.page),
+          scanFrom: 1,
+          scanTo: Number.MAX_SAFE_INTEGER,
+          facePage: null,
+          cfcName: cls.foreignCorpName ?? null,
+          referenceIds: [],
+        }];
+  return blocks.map((block) => {
+    const single = blocks.length === 1;
+    const cf = extractCarryForward(
+      cls,
+      parsed,
+      single ? undefined : new Set(block.pages),
+      single ? undefined : { from: block.scanFrom, to: block.scanTo },
+    );
+    // The caption scanner (with its bleed guards) beats the face harvest —
+    // a right-column reference ID must never become the legal name.
+    if (block.cfcName) cf.cfcName = block.cfcName;
+    return { block, cf };
+  });
 }

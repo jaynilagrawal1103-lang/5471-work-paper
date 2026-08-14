@@ -10,7 +10,64 @@ import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
   type DocClass,
 } from "./classify";
-import { extractCarryForward, type CarryForward } from "./carryForward";
+import { extractCarryForwards, type CarryForward } from "./carryForward";
+
+/** One 5471 block's carry-forward, tagged with its origin for selection,
+    cross-document dedupe and sibling fan-out. */
+type CfCandidate = {
+  cf: CarryForward;
+  source: string;       // file name
+  fileId: string;
+  blockIndex: number;
+  pageCount: number;
+  cfcName: string;      // block-level name first, face-parsed second ("" = unidentified)
+  refIds: string[];
+};
+
+/** Leading month of a "MM/DD/YYYY" or "M/D/YY" period string. */
+export function monthFromPeriod(p?: string): number | null {
+  const m = /^(\d{1,2})[-/]/.exec((p || "").trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n >= 1 && n <= 12 ? n : null;
+}
+
+/** A period end whose month is not December is a fiscal year — the published
+    calendar-year rate tables (IRS average, Treasury 12/31 spot) do not apply. */
+export const isFiscalPeriod = (p?: string): boolean => {
+  const m = monthFromPeriod(p);
+  return m !== null && m !== 12;
+};
+
+/** "06/30/2023" → "06/30/23" — the profile's placeholder style. */
+function shortPeriod(p: string): string {
+  const m = /^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/.exec((p || "").trim());
+  if (!m) return p;
+  const yy = m[3].length === 4 ? m[3].slice(2) : m[3];
+  return `${m[1].padStart(2, "0")}/${m[2].padStart(2, "0")}/${yy}`;
+}
+
+function periodPlusOneYear(p: string): string | null {
+  const m = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec((p || "").trim());
+  if (!m) return null;
+  return `${m[1]}/${m[2]}/${Number(m[3]) + 1}`;
+}
+
+/** Exact day count of the period (pyEnd, cyEnd] — fiscal years cross a
+    calendar boundary, so daysInYear(caseYear) would miscount leap years. */
+function daysBetweenPeriods(from?: string, to?: string): number | null {
+  const parse = (p?: string): Date | null => {
+    const m = /^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/.exec((p || "").trim());
+    if (!m) return null;
+    const y = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    return new Date(Date.UTC(y, Number(m[1]) - 1, Number(m[2])));
+  };
+  const a = parse(from);
+  const b = parse(to);
+  if (!a || !b) return null;
+  const days = Math.round((b.getTime() - a.getTime()) / 86400000);
+  return days > 0 && days < 400 ? days : null;
+}
 import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
 import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
@@ -340,13 +397,59 @@ export function toast(text: string, kind: "ok" | "bad" | "" = "") {
 }
 
 /* ---------------- actions ---------------- */
+/* Fan-out: a client copy holding several filed 5471s creates one work paper
+   per foreign corporation. The parent keeps the block matching its own name;
+   every other NAMED block becomes a sibling entity sharing the same document
+   files, processed sequentially. Re-processing never spawns duplicates: a
+   plan whose reference ID or name matches an existing entity is skipped. */
+let fanningOut = false;
+
+async function fanOutSiblings(parentId: string, plans: CfCandidate[]): Promise<void> {
+  const parent = state.entities.find((e) => e.id === parentId);
+  if (!parent) return;
+  const fresh = plans.filter((plan) => {
+    const match = state.entities.find((e) =>
+      (plan.refIds.length && !!e.profile.refId && plan.refIds.includes(e.profile.refId)) ||
+      entitySimilarity(e.profile.legalName || e.name, plan.cfcName) >= 0.5);
+    return !match;
+  });
+  if (!fresh.length) return;
+  toast(`${fresh.length + 1} foreign corporations found in ${fresh[0].source} — creating ${fresh.map((p) => p.cfcName).join(", ")}`, "ok");
+  for (const plan of fresh) {
+    const sib = makeEntity(plan.cfcName, state.stakeholder);
+    sib.profile.legalName = plan.cfcName;   // drives the sibling's own block selection + backend naming
+    if (plan.refIds[0]) sib.profile.refId = plan.refIds[0];
+    // Share the parent's documents: same file ids, same blob references.
+    // Storage counts per entity copy — consistent with removeEntity's refund.
+    sib.files = parent.files.map((f) => ({ ...f }));
+    const bytes = sib.files.reduce((n, f) => n + f.size, 0);
+    set({
+      entities: [...state.entities, sib],
+      usage: { ...state.usage, storage: state.usage.storage + bytes },
+    });
+    logEvent("Entity created from prior-year 5471", `${sib.name} · seeded from ${plan.source} (5471 #${plan.blockIndex + 1}) · ref ID ${plan.refIds[0] ?? "—"}`, sib.name, "system");
+    logEvent("Documents shared", `${sib.files.length} document(s) shared from ${parent.name}`, sib.name, "system");
+    hooks.onFilesAdded?.(sib.id, sib.files);
+    await actions.processEntity(sib.id);
+  }
+  const p2 = state.entities.find((e) => e.id === parentId);
+  if (p2) updateEntity(parentId, { log: [...p2.log, `Fan-out: created ${fresh.map((p) => p.cfcName).join(", ")} from the additional Form 5471(s)`] });
+}
+
 export const actions = {
   setStakeholder(name: string) {
     const clean = name.trim() || "Unnamed stakeholder";
+    const old = state.stakeholder;
     logEvent("Stakeholder renamed", clean);
     set({
       stakeholder: clean,
-      entities: state.entities.map((e) => ({ ...e, profile: { ...e.profile, clientName: clean } })),
+      // Only entities still carrying the OLD stakeholder default follow the
+      // rename — filer-derived and hand-typed client names survive.
+      entities: state.entities.map((e) =>
+        e.profile.clientName === old || !e.profile.clientName
+          ? { ...e, profile: { ...e.profile, clientName: clean } }
+          : e,
+      ),
     });
   },
 
@@ -440,6 +543,15 @@ export const actions = {
     if (!ent) return;
     const code = (ent.profile.currency || "").toUpperCase().trim();
     if (!code) { if (force) toast("Set the functional currency first", "bad"); return; }
+    // FISCAL-YEAR GUARD: the IRS yearly-average and Treasury 12/31 tables are
+    // calendar-year figures. A period ending in any month but December must
+    // never receive them — the rates stay blank for manual entry, and the
+    // derived fx-fiscal-manual review item says exactly what to enter.
+    if (isFiscalPeriod(ent.profile.cyEnd)) {
+      logEvent("Exchange rates skipped", `fiscal year ending ${ent.profile.cyEnd} — published calendar-year tables not applicable`, ent.name, "system");
+      if (force) toast(`Fiscal year ending ${ent.profile.cyEnd} — published calendar-year tables don't apply; enter the rates manually`, "bad");
+      return;
+    }
     // Priority 1: the currency-rate database (uploaded Rates.xlsx, else the
     // built-in IRS + Treasury tables it was seeded from).
     const db = state.rateDb;
@@ -455,9 +567,14 @@ export const actions = {
         fxMeta[k] = meta;
       }
     };
+    // The as-of dates derive from the entity's own period ends when set — the
+    // calendar path only reaches here, but the provenance must not claim a
+    // 12/31 date the profile does not carry.
+    const cyAsOf = ent.profile.cyEnd?.trim() || `12/31/${hit.cyYear}`;
+    const pyAsOf = ent.profile.pyEnd?.trim() || `12/31/${hit.pyYear}`;
     put("avgRate", hit.avgRate, { source: `${db.source} · IRS yearly average`, asOf: `calendar ${hit.cyYear}` });
-    put("cyRate", hit.cyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: `12/31/${hit.cyYear}` });
-    put("pyRate", hit.pyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: `12/31/${hit.pyYear}` });
+    put("cyRate", hit.cyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: cyAsOf });
+    put("pyRate", hit.pyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: pyAsOf });
     updateEntity(entityId, { fx, fxAuto: true, fxMeta });
     if (hit.avgRate || hit.cyRate || hit.pyRate) {
       logEvent("Exchange rates applied", `${code} · avg ${hit.avgRate ?? "—"} (${hit.cyYear}) · CY spot ${hit.cyRate ?? "—"} · PY spot ${hit.pyRate ?? "—"} · ${db.source}`, ent.name, "system");
@@ -791,6 +908,10 @@ export const actions = {
     let ato: AtoFacts = {};
     let cf: CarryForward | null = null;
     let cfSource = "";
+    // Every 5471 block found across the prior-year documents. Exactly one
+    // feeds THIS entity; the remaining named blocks fan out to siblings.
+    const cfCandidates: CfCandidate[] = [];
+    let siblingPlans: CfCandidate[] = [];
     let ledger: LedgerSummary | null = null;
 
     const rv = (item: Omit<ReviewItem, "id"> & { id?: string }) => {
@@ -881,23 +1002,17 @@ export const actions = {
             const atoPages = pagesForFeed(cls, "targeted-ato");
             if (atoPages.size) ato = { ...pullAtoFacts(parsed.pdf, atoPages), ...ato };
             const cfPages = pagesForFeed(cls, "carry-forward");
-            if (cfPages.size && !cf && !(caseYears.cy && cls.statementYear === caseYears.cy)) {
-              const candidate = extractCarryForward(cls, parsed);
-              // Identity gate: the prior return's foreign corporation must be
-              // THIS entity, or a sister CFC's return would seed the numbers.
-              const knownName =
-                (state.entities.find((e) => e.id === entityId)?.profile.legalName || "") ||
-                bundles.find((x) => x.cls.kind === "cfc-financial-statements" && x.cls.entityName)?.cls.entityName || "";
-              const cfName = cls.foreignCorpName || candidate.cfcName || "";
-              if (knownName && cfName && entitySimilarity(knownName, cfName) < 0.5) {
-                rv({
-                  level: "warn", category: "carry-forward",
-                  message: `${file.name} names "${cfName}" as the foreign corporation, but this work paper's entity is "${knownName}" — its carry-forward figures were NOT used.`,
+            if (cfPages.size && !(caseYears.cy && cls.statementYear === caseYears.cy)) {
+              for (const { block, cf: candidate } of extractCarryForwards(cls, parsed)) {
+                cfCandidates.push({
+                  cf: candidate,
                   source: file.name,
+                  fileId: file.id,
+                  blockIndex: block.index,
+                  pageCount: block.pages.length,
+                  cfcName: block.cfcName || candidate.cfcName || "",
+                  refIds: [...new Set([...block.referenceIds, ...candidate.referenceIds])],
                 });
-              } else {
-                cf = candidate;
-                cfSource = file.name;
               }
             }
             const profilePages = pagesForFeed(cls, "profile");
@@ -914,6 +1029,70 @@ export const actions = {
             profileGrids.push(parsed.grid);
           }
           if (read) log.push(`${file.name}: ${read} candidate line items read`);
+        }
+
+        /* Carry-forward selection. Cross-document dedupe first (the same CFC
+           uploaded in two client copies keeps the wider block), then the
+           identity gate: the prior return's foreign corporation must be THIS
+           entity, or a sister CFC's return would seed the numbers. */
+        if (cfCandidates.length) {
+          const deduped: CfCandidate[] = [];
+          for (const cand of cfCandidates) {
+            const dupAt = deduped.findIndex((d) =>
+              (cand.refIds.length && d.refIds.some((id) => cand.refIds.includes(id))) ||
+              (!!cand.cfcName && !!d.cfcName && entitySimilarity(cand.cfcName, d.cfcName) >= 0.5));
+            if (dupAt < 0) { deduped.push(cand); continue; }
+            const kept = deduped[dupAt];
+            if (cand.pageCount > kept.pageCount) deduped[dupAt] = cand;
+            if (cand.fileId !== kept.fileId) {
+              rv({
+                level: "info", category: "carry-forward",
+                message: `"${cand.cfcName || kept.cfcName}" appears in two prior-year documents (${kept.source}, ${cand.source}) — the wider copy was used.`,
+                source: cand.source,
+              });
+            }
+          }
+          const knownName =
+            (state.entities.find((e) => e.id === entityId)?.profile.legalName || "") ||
+            bundles.find((x) => x.cls.kind === "cfc-financial-statements" && x.cls.entityName)?.cls.entityName || "";
+          let selected: CfCandidate | null = null;
+          if (knownName) {
+            let bestSim = 0;
+            for (const cand of deduped) {
+              const sim = cand.cfcName ? entitySimilarity(knownName, cand.cfcName) : 0;
+              if (sim >= 0.5 && sim > bestSim) { selected = cand; bestSim = sim; }
+            }
+            // A block whose CFC could not be named cannot be judged — accept
+            // it rather than silently dropping it (matches the prior gate).
+            if (!selected) selected = deduped.find((c) => !c.cfcName) ?? null;
+            if (!selected) {
+              for (const cand of deduped) {
+                rv({
+                  level: "warn", category: "carry-forward",
+                  message: `${cand.source} names "${cand.cfcName}" as the foreign corporation, but this work paper's entity is "${knownName}" — its carry-forward figures were NOT used.`,
+                  source: cand.source,
+                });
+              }
+            }
+          } else {
+            selected = deduped[0] ?? null;
+          }
+          if (selected) {
+            cf = selected.cf;
+            cfSource = selected.source;
+          }
+          // Remaining NAMED blocks become sibling work papers after this run;
+          // a nameless leftover block is surfaced instead — never guess.
+          siblingPlans = deduped.filter((c) => c !== selected && !!c.cfcName);
+          for (const c of deduped) {
+            if (c !== selected && !c.cfcName) {
+              rv({
+                level: "warn", category: "carry-forward",
+                message: `An additional Form 5471 was found in ${c.source} but its foreign corporation could not be identified — create that entity manually and re-process.`,
+                source: c.source,
+              });
+            }
+          }
         }
         updateEntity(entityId, { log: [...log] });
       }
@@ -1049,9 +1228,42 @@ export const actions = {
             filled++;
           };
 
-          // Statement periods from the classified case year drive FX lookup.
+          // Statement periods. A FISCAL accounting period on the prior 5471
+          // (end month ≠ 12) wins the period shape — the classified statement
+          // year still wins the case YEAR, and a disagreement is surfaced
+          // instead of guessed away. Calendar 5471 periods propose LAST, so
+          // they only fill seed-only cases with no statements at all.
+          const periodEndYear = cf?.periodEnd ? Number(cf.periodEnd.slice(-4)) : null;
+          const fiscalSeed = !!cf?.periodEnd && isFiscalPeriod(cf.periodEnd);
+          if (fiscalSeed && periodEndYear && caseYears.cy && caseYears.cy !== periodEndYear + 1) {
+            rv({
+              id: "cf-period-year-mismatch", level: "warn", category: "consistency",
+              message: `The statements report on ${caseYears.cy} but the prior 5471's accounting period ends ${cf!.periodEnd} — confirm the engagement year and the period ends in Basic Information.`,
+              source: cfSource,
+            });
+          } else if (fiscalSeed) {
+            const nextEnd = periodPlusOneYear(cf!.periodEnd!);
+            if (nextEnd) {
+              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period`);
+              propose(profile, "pyEnd", shortPeriod(cf!.periodEnd!), `${cfSource} · annual accounting period`);
+            }
+          }
           if (caseYears.cy) propose(profile, "cyEnd", `12/31/${String(caseYears.cy).slice(2)}`, "statement year");
           if (caseYears.py) propose(profile, "pyEnd", `12/31/${String(caseYears.py).slice(2)}`, "statement year");
+          if (cf?.periodEnd && !fiscalSeed) {
+            const nextEnd = periodPlusOneYear(cf.periodEnd);
+            if (nextEnd) {
+              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period`);
+              propose(profile, "pyEnd", shortPeriod(cf.periodEnd), `${cfSource} · annual accounting period`);
+            }
+          }
+          if (cf && !cf.periodEnd) {
+            rv({
+              id: "cf-period-unread", level: "info", category: "carry-forward",
+              message: `The prior 5471's annual accounting period line could not be read from ${cfSource} — the period ends were taken from the statements instead. Confirm Basic Information B1/B2.`,
+              source: cfSource,
+            });
+          }
 
           // The prior-year 5471's identity block is more authoritative for the
           // CFC's particulars than generic caption detection — propose it FIRST
@@ -1060,20 +1272,60 @@ export const actions = {
             propose(profile, "legalName", cf.cfcName || "", `${cfSource} · 5471 face`);
             propose(profile, "addr1", cf.cfcAddress[0] || "", `${cfSource} · 5471 face`);
             propose(profile, "addr2", cf.cfcAddress[1] || "", `${cfSource} · 5471 face`);
+            propose(profile, "addr3", cf.cfcAddress[2] || "", `${cfSource} · 5471 face`);
             propose(profile, "formed", cf.formed || "", `${cfSource} · 5471 face`);
             propose(profile, "countryInc", cf.countryInc || "", `${cfSource} · 5471 face`);
             propose(profile, "activity", cf.activity || "", `${cfSource} · 5471 face`);
             propose(profile, "currency", cf.functionalCurrency || "", `${cfSource} · 5471 face`);
+            // The filing person is the client. Overwrite only the untouched
+            // stakeholder default — a hand-typed client name always survives.
+            if (cf.holderName && profile.clientName === state.stakeholder) {
+              profile.clientName = cf.holderName;
+              detected.clientName = { key: "clientName", value: cf.holderName, sourceLabel: `${cfSource} · person filing`, confidence: "high" };
+              filled++;
+            }
             if (cf.pctVoting !== undefined) {
               propose(ownership, "ownStart", String(cf.pctVoting), `${cfSource} · 5471 face`);
               propose(ownership, "ownEnd", String(cf.pctVoting), `${cfSource} · 5471 face`);
             }
             propose(ownership, "cfc", "Yes", `${cfSource} · prior-year filing`);
-            propose(ownership, "tenPct", "Yes", `${cfSource} · 100% corporate shareholder`);
-            if (caseYears.cy) {
+            if (cf.pctVoting === undefined || cf.pctVoting >= 10) {
+              propose(ownership, "tenPct", "Yes",
+                cf.pctVoting !== undefined
+                  ? `${cfSource} · ${cf.pctVoting}% voting per prior filing`
+                  : `${cfSource} · prior-year filing`);
+            }
+            if (cf.pctVoting !== undefined && cf.pctVoting < 50) {
+              rv({
+                id: "cf-cfc-status", level: "warn", category: "carry-forward",
+                message: `CFC = Yes was carried from the prior filing, but this filer's voting share is ${cf.pctVoting}% — CFC status depends on COMBINED US-shareholder ownership (more than 50%). Confirm it still holds for the current year.`,
+                source: cfSource, applied: true,
+              });
+            }
+            const fiscalDays = fiscalSeed ? daysBetweenPeriods(profile.pyEnd, profile.cyEnd) : null;
+            if (fiscalDays) {
+              propose(ownership, "daysCfc", String(fiscalDays), "full fiscal-year CFC");
+              propose(ownership, "daysOwned", String(fiscalDays), "full fiscal-year ownership");
+            } else if (caseYears.cy) {
               const days = String(daysInYear(caseYears.cy));
               propose(ownership, "daysCfc", days, "full-year CFC");
               propose(ownership, "daysOwned", days, "full-year ownership");
+            }
+            if (cf.filerIdMasked) {
+              rv({
+                id: "cf-filer-id", level: "info", category: "carry-forward",
+                message: `The filing person's identifying number ${cf.filerIdMasked} appears on the prior 5471 face (shown masked — the tool never stores the full number).`,
+                source: cfSource,
+              });
+            }
+            const hasCurrentDocs = bundles.some((b) =>
+              !b.cls.duplicateOf && (b.cls.kind === "cfc-financial-statements" || b.cls.kind === "cfc-tax-return"));
+            if (!hasCurrentDocs) {
+              rv({
+                id: "cf-seed-only", level: "warn", category: "source-gap",
+                message: `This work paper was seeded from the prior-year Form 5471 only — upload ${profile.legalName || fresh.name}'s current-year financial statements and re-process to fill the income statement and balance sheet.`,
+                source: cfSource,
+              });
             }
             for (const cat of cf.categories) if (!categories[cat]) { categories[cat] = true; filled++; }
             if (cf.categories.length) {
@@ -1160,6 +1412,18 @@ export const actions = {
     if (done) {
       logEvent("Processing completed", `${Object.keys(done.lines).length} lines mapped · ${done.unmatched.length} unmatched · ${done.reviewItems.length} review items`, done.name, "system");
       toast(`${done.name} processed — ${Object.keys(done.lines).length} lines mapped`, "ok");
+    }
+    // Additional 5471s fan out AFTER this entity is ready; a fan-out failure
+    // must never mark the (already finished) parent as errored.
+    if (done && siblingPlans.length && !fanningOut) {
+      fanningOut = true;
+      try {
+        await fanOutSiblings(entityId, siblingPlans);
+      } catch (err) {
+        toast("Additional 5471 work papers could not all be created: " + (err as Error).message, "bad");
+      } finally {
+        fanningOut = false;
+      }
     }
     } catch (err) {
       // Restore the pre-run state — a failed re-process must not leave the
@@ -1874,9 +2138,15 @@ async function materializeCaseWrites(
       sheet: SHEET.schJ, ref: "F15", value: cf.openingEP.value,
       source: `${cfSource} p.${cf.openingEP.page} · prior Sch J line 14`, reviewId: "cf-opening-ep",
     });
+    const priorTax = cf.priorTaxAccruedFunctional?.value;
+    const ccy = ent.profile.currency || "local";
     rv({
       id: "cf-opening-ep", level: "warn", category: "carry-forward", applied: true,
-      message: `Schedule J opening E&P pre-filled at ${cf.openingEP.value.toLocaleString()} (prior-year Sch J line 14). Caveat: the prior Sch H did not subtract the A$${(cf.priorTaxAccruedFunctional?.value ?? 9051).toLocaleString()} Australian tax accrued — if that was wrong, opening E&P should be ${(cf.openingEP.value - (cf.priorTaxAccruedFunctional?.value ?? 9051)).toLocaleString()}. Confirm before filing.`,
+      message: `Schedule J opening E&P pre-filled at ${cf.openingEP.value.toLocaleString()} from ${cfSource} p.${cf.openingEP.page} (prior-year Sch J line 14).` +
+        (priorTax !== undefined
+          ? ` Caveat: check whether the prior Sch H subtracted the ${ccy} ${priorTax.toLocaleString()} tax accrued — if not, opening E&P should be ${(cf.openingEP.value - priorTax).toLocaleString()}.`
+          : "") +
+        " Confirm before filing.",
       target: `${SHEET.schJ}!F15`, source: cfSource, suggestedValue: cf.openingEP.value,
     });
   }
@@ -1910,7 +2180,7 @@ async function materializeCaseWrites(
         id: `cf-boy-${gcell}`, level: ties ? "info" : "warn", category: "carry-forward",
         message: `Beginning-of-year ${label}: prior year filed US$${filed.toLocaleString()};` +
           (translated !== null
-            ? ` the template will compute ${translated.toLocaleString()} from the local balance at the 12/31 spot rate — ${ties ? "ties" : "DOES NOT tie; reconcile with the accountant"}.`
+            ? ` the template will compute ${translated.toLocaleString()} from the local balance at the ${ent.profile.pyEnd || "12/31"} spot rate — ${ties ? "ties" : "DOES NOT tie; reconcile with the accountant"}.`
             : ` compare against the template's computed ${gcell} after opening the workbook.`),
         target: `${SHEET.bs}!${gcell}`, source: cfSource,
       });
@@ -1932,7 +2202,7 @@ async function materializeCaseWrites(
     if (cf.priorTaxAccruedFunctional) {
       rv({
         id: "cf-e1-redetermination", level: "warn", category: "carry-forward",
-        message: `Prior year accrued A$${cf.priorTaxAccruedFunctional.value.toLocaleString()} of Australian tax; the 2023 balance sheet shows only A$3,831 taxation payable, paid 4-Jun-2024 per the franking worksheet. If the final bill differed from the accrual, a Schedule E-1 foreign tax redetermination is needed.`,
+        message: `The prior year accrued ${ent.profile.currency || "local"} ${cf.priorTaxAccruedFunctional.value.toLocaleString()} of foreign tax (prior Sch E). If the amount finally assessed or paid differed from that accrual, a Schedule E-1 foreign tax redetermination is needed — compare against the tax payable in the current balance sheet.`,
         target: `${SHEET.schE}!E48`, source: cfSource,
       });
     }
@@ -1941,7 +2211,9 @@ async function materializeCaseWrites(
   /* ---- dividend: one record drives four schedules ---- */
   const divAmount = equity?.dividendsCY ?? ato.frankedDividendsPaid ?? null;
   if (divAmount && caseYears.cy) {
-    const fallbackDate = `12/31/${String(caseYears.cy).slice(2)}`;
+    // An undated dividend defaults to the entity's own period end — only a
+    // profile with no period at all falls back to the calendar year end.
+    const fallbackDate = ent.profile.cyEnd?.trim() || `12/31/${String(caseYears.cy).slice(2)}`;
     const date = ato.dividendDate || fallbackDate;
     let usdPerUnit: number | null = null;
     let rateSource: DividendRec["rateSource"] = "none";
@@ -1968,7 +2240,7 @@ async function materializeCaseWrites(
       id: "dividend-rate", level: rateSource === "frankfurter" ? "info" : "warn", category: "fx", applied: true,
       message: rateSource === "frankfurter"
         ? `Dividend of ${divAmount.toLocaleString()} paid ${date} translated at the ECB reference rate for that date (${usdPerUnit}).`
-        : `Dividend of ${divAmount.toLocaleString()} paid ${date} was translated at the 12/31 spot rate (${usdPerUnit ?? "n/a"}) because no payment-date rate was reachable — replace Dividends!D3 with the ${date} spot rate.`,
+        : `Dividend of ${divAmount.toLocaleString()} paid ${date} was translated at the ${ent.profile.cyEnd || "year-end"} spot rate (${usdPerUnit ?? "n/a"}) because no payment-date rate was reachable — replace Dividends!D3 with the ${date} spot rate.`,
       target: `${SHEET.dividends}!D3`,
     });
 
@@ -2258,6 +2530,15 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   if (hasBS && !rate("pyRate")) {
     out.push({ id: "fx-py-missing", level: "block", category: "fx", message: "Prior year end rate (C61) is missing — Schedule F beginning-of-year USD column will show #DIV/0!", target: `${SHEET.basic}!C61` });
   }
+  // Fiscal year: the published tables are calendar-year — the guard leaves
+  // the rates blank on purpose, and this item says what to enter by hand.
+  if (isFiscalPeriod(ent.profile.cyEnd) && (!rate("avgRate") || !rate("cyRate") || !rate("pyRate"))) {
+    out.push({
+      id: "fx-fiscal-manual", level: "warn", category: "fx",
+      message: `Fiscal year ending ${ent.profile.cyEnd}: the IRS yearly-average and Treasury 12/31 tables are calendar-year figures and were NOT applied. Enter the period's average rate (C59) and the ${ent.profile.cyEnd} / ${ent.profile.pyEnd || "prior period-end"} spot rates (C60/C61) manually.`,
+      target: `${SHEET.basic}!C59`,
+    });
+  }
   if (!ent.profile.currency) {
     out.push({ id: "profile-currency", level: "warn", category: "profile", message: "Functional currency is not set — rates cannot be looked up automatically" });
   }
@@ -2276,7 +2557,7 @@ export function validateEntity(ent: Entity): ReviewItem[] {
 /** Ids validateEntity can produce — stored dismissal tombstones for these
     must vanish once the underlying condition is resolved. */
 const DERIVED_IDS = new Set([
-  "fx-avg-missing", "fx-cy-missing", "fx-py-missing",
+  "fx-avg-missing", "fx-cy-missing", "fx-py-missing", "fx-fiscal-manual",
   "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
 ]);
 

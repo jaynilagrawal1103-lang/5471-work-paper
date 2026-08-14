@@ -3,7 +3,7 @@
 import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader } from "../primitives";
 import { CURRENCY_CODES, FX_META, IRS_AVERAGE, TREASURY_SPOT, lookupRates, yearFromPeriod } from "./fxRates";
-import { actions, getSnapshot, subscribe, validateEntity } from "./store";
+import { actions, getSnapshot, isFiscalPeriod, subscribe, validateEntity } from "./store";
 
 
 function EntitySwitch() {
@@ -34,7 +34,10 @@ export function FxRatesView() {
   const code = (active?.profile.currency || "").toUpperCase().trim();
   const cyYear = yearFromPeriod(active?.profile.cyEnd || "");
   const pyYear = yearFromPeriod(active?.profile.pyEnd || "");
-  const published = code ? lookupRates(code, active.profile.cyEnd || "", active.profile.pyEnd || "") : null;
+  // Fiscal years never show the published calendar-year figures — displaying
+  // them beside blank inputs would invite exactly the wrong entry.
+  const fiscal = !!active && isFiscalPeriod(active.profile.cyEnd);
+  const published = code && !fiscal ? lookupRates(code, active.profile.cyEnd || "", active.profile.pyEnd || "") : null;
 
   const rateIssues = active ? validateEntity(active).filter((b) => b.message.includes("rate")) : [];
 
@@ -70,6 +73,14 @@ export function FxRatesView() {
 
       <EntitySwitch />
 
+      {active && isFiscalPeriod(active.profile.cyEnd) ? (
+        <Callout title={`Fiscal year ending ${active.profile.cyEnd}`} tone="amber">
+          The published columns are blank BY DESIGN: the IRS yearly-average and Treasury 12/31 tables are
+          calendar-year figures and do not apply to a fiscal year. Enter the period&apos;s average rate and the
+          {" "}{active.profile.cyEnd} / {active.profile.pyEnd || "prior period-end"} spot rates manually.
+        </Callout>
+      ) : null}
+
       {rateIssues.length ? (
         <Callout title="These rates are required" tone="red">
           {rateIssues.map((b) => b.message).join(" · ")}
@@ -103,8 +114,8 @@ export function FxRatesView() {
             <tbody>
               {[
                 { k: "avgRate", cell: "C59", label: "Average exchange rate", pub: published?.avgRate, src: `IRS yearly average ${cyYear || "—"}`, used: "Schedule C" },
-                { k: "cyRate", cell: "C60", label: "Current year end rate", pub: published?.cyRate, src: `Treasury spot 12/31/${cyYear ? cyYear.slice(2) : "—"}`, used: "Schedule F col (b)" },
-                { k: "pyRate", cell: "C61", label: "Prior year end rate", pub: published?.pyRate, src: `Treasury spot 12/31/${pyYear ? pyYear.slice(2) : "—"}`, used: "Schedule F col (a)" },
+                { k: "cyRate", cell: "C60", label: "Current year end rate", pub: published?.cyRate, src: `Treasury spot ${active?.profile.cyEnd || (cyYear ? `12/31/${cyYear.slice(2)}` : "—")}`, used: "Schedule F col (b)" },
+                { k: "pyRate", cell: "C61", label: "Prior year end rate", pub: published?.pyRate, src: `Treasury spot ${active?.profile.pyEnd || (pyYear ? `12/31/${pyYear.slice(2)}` : "—")}`, used: "Schedule F col (a)" },
               ].map((r) => {
                 const n = Number(fxVal(r.k));
                 const bad = !(isFinite(n) && n > 0);

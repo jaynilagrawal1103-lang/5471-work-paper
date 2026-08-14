@@ -46,7 +46,22 @@ export type DocClass = {
   foreignCorpName: string | null;         // "Name of foreign corporation" on 5471 pages
   entityIds: string[];                    // ABN / EIN / reference IDs found
   duplicateOf?: string;                   // fileId of the preferred near-duplicate
+  blocks5471?: Block5471[];               // one per Form 5471 in a prior-year return
   notes: DocNote[];
+};
+
+/* One client copy can staple SEVERAL filed 5471s (one per CFC) into a single
+   PDF. Each face page opens a block; the block's scan range extends past its
+   own 5471 pages to the page before the NEXT face, so interleaved 5472 /
+   supporting-statement pages of the same copy stay attached to their CFC. */
+export type Block5471 = {
+  index: number;
+  pages: number[];        // us-5471-* pages of this block (drives schedule extraction)
+  scanFrom: number;       // extended range for holder / refID / period scans
+  scanTo: number;
+  facePage: number | null;
+  cfcName: string | null;
+  referenceIds: string[];
 };
 
 export type FeedTarget =
@@ -208,32 +223,49 @@ function mostFrequent(list: string[]): string | null {
   return best;
 }
 
-/** The "Name of foreign corporation" caption names the CFC on 5471 pages. */
-function findForeignCorpName(doc: PdfDoc): string | null {
+/* A name candidate row must be a value, not a bled-in caption from the form's
+   right column ("BME01 b(3) Previous reference ID number(s), if any"). */
+const NAME_CANDIDATE_REJECT = /reference id|identif\w* number|previous reference|^instructions|^[a-z0-9]{2,12}\s+b\(\d\)/i;
+
+/** The "Name of foreign corporation" caption names the CFC on 5471 pages.
+    With a pageSet the scan is block-scoped; unscoped it covers the doc. */
+function findForeignCorpName(doc: PdfDoc, pageSet?: Set<number>): string | null {
   const names: string[] = [];
-  const rows = doc.rows;
+  const rows = pageSet ? doc.rows.filter((r) => pageSet.has(r.page)) : doc.rows;
   for (let i = 0; i < rows.length; i++) {
     const t = rows[i].cells.map((c) => c.text).join(" ").toLowerCase();
-    if (/^name of foreign corporation/.test(t)) {
-      const next = rows[i + 1];
-      if (next && next.page === rows[i].page) {
+    // The face's own caption ("1a Name and address of foreign corporation")
+    // also announces the name — needed for a block whose face is its only page.
+    if (/^name of foreign corporation/.test(t) || /^1a name and address of foreign corporation/.test(t)) {
+      for (let j = i + 1; j <= i + 3 && j < rows.length; j++) {
+        const next = rows[j];
+        if (!next || next.page !== rows[i].page) break;
         const cand = next.cells.map((c) => c.text).find((x) => /[A-Za-z]{3}/.test(x));
-        if (cand && cand.length < 70) names.push(cand.trim());
+        if (!cand || cand.length >= 70) continue;
+        if (NAME_CANDIDATE_REJECT.test(cand.trim())) continue;   // right-column bleed
+        names.push(cand.trim());
+        break;
       }
     }
   }
   return mostFrequent(names);
 }
 
-function findEntityIds(doc: PdfDoc): string[] {
+/** IDs found in the document. With a pageSet the scan is block-scoped and
+    collects reference-ID-caption hits ONLY — a filer EIN on an in-range 5472
+    page must never become a block's reference ID. */
+function findEntityIds(doc: PdfDoc, pageSet?: Set<number>): string[] {
   const ids = new Set<string>();
-  const rows = doc.rows;
+  const refIdOnly = !!pageSet;
+  const rows = pageSet ? doc.rows.filter((r) => pageSet.has(r.page)) : doc.rows;
   for (let i = 0; i < rows.length; i++) {
     const t = rows[i].cells.map((c) => c.text).join(" ");
-    const abn = /\bABN\b:?\s*([\d][\d ]{9,16}[\d])/i.exec(t);
-    if (abn) ids.add(abn[1].replace(/\s+/g, ""));
-    const ein = /\b(\d{2}-\d{7})\b/.exec(t);
-    if (ein) ids.add(ein[1].replace("-", ""));
+    if (!refIdOnly) {
+      const abn = /\bABN\b:?\s*([\d][\d ]{9,16}[\d])/i.exec(t);
+      if (abn) ids.add(abn[1].replace(/\s+/g, ""));
+      const ein = /\b(\d{2}-\d{7})\b/.exec(t);
+      if (ein) ids.add(ein[1].replace("-", ""));
+    }
     if (/reference id/i.test(t)) {
       // The value prints either on the caption row or on the row below it.
       const near = /\b(\d{9})\b/.exec(t);
@@ -248,6 +280,75 @@ function findEntityIds(doc: PdfDoc): string[] {
     }
   }
   return [...ids];
+}
+
+/** Split a prior-year return's 5471 pages into per-CFC blocks: every face
+    page opens one. A leading faceless run of schedule pages merges into the
+    first face block unless it names a distinctly different CFC. */
+export function segment5471Blocks(doc: PdfDoc, pages: PageInfo[]): Block5471[] {
+  const fam = pages.filter((p) => p.kind.startsWith("us-5471-")).sort((a, b) => a.page - b.page);
+  if (!fam.length) return [];
+  const blocks: Block5471[] = [];
+  let cur: Block5471 | null = null;
+  for (const p of fam) {
+    if (p.kind === "us-5471-face" || !cur) {
+      cur = {
+        index: blocks.length,
+        pages: [],
+        scanFrom: 1, scanTo: doc.pageCount,   // finalized below
+        facePage: p.kind === "us-5471-face" ? p.page : null,
+        cfcName: null,
+        referenceIds: [],
+      };
+      blocks.push(cur);
+    }
+    cur.pages.push(p.page);
+  }
+  // Scan ranges: block 0 reaches back to page 1 (cover sheets belong to the
+  // first copy); each block ends the page before the next block's face.
+  for (let k = 0; k < blocks.length; k++) {
+    const next = blocks[k + 1];
+    blocks[k].scanFrom = k === 0 ? 1 : (blocks[k].facePage ?? blocks[k].pages[0]);
+    blocks[k].scanTo = next ? (next.facePage ?? next.pages[0]) - 1 : doc.pageCount;
+  }
+  for (const b of blocks) {
+    b.cfcName = findForeignCorpName(doc, new Set(b.pages));
+    const scan = new Set<number>();
+    for (let p = b.scanFrom; p <= b.scanTo; p++) scan.add(p);
+    b.referenceIds = findEntityIds(doc, scan);
+  }
+  // Leading faceless block: schedules can print before their face. Merge into
+  // the following face block unless it names a different foreign corporation.
+  if (blocks.length > 1 && blocks[0].facePage === null) {
+    const [head, next] = blocks;
+    const distinct = head.cfcName && next.cfcName && entitySimilarity(head.cfcName, next.cfcName) < 0.5;
+    if (!distinct) {
+      next.pages = [...head.pages, ...next.pages];
+      next.scanFrom = 1;
+      next.cfcName = next.cfcName || head.cfcName;
+      next.referenceIds = [...new Set([...head.referenceIds, ...next.referenceIds])];
+      blocks.shift();
+    }
+  }
+  // The SAME foreign corporation behind two faces (a filed copy plus a
+  // reference/VOID copy, or a continuation the fallback took for a face) is
+  // ONE logical unit — split, its face fields and its schedules would land in
+  // different blocks. Merge adjacent same-name blocks; genuinely different
+  // CFCs (the multi-entity case) keep their own.
+  for (let k = 1; k < blocks.length; ) {
+    const prev = blocks[k - 1];
+    const curB = blocks[k];
+    if (prev.cfcName && curB.cfcName && entitySimilarity(prev.cfcName, curB.cfcName) >= 0.5) {
+      prev.pages = [...prev.pages, ...curB.pages];
+      prev.scanTo = curB.scanTo;
+      prev.referenceIds = [...new Set([...prev.referenceIds, ...curB.referenceIds])];
+      blocks.splice(k, 1);
+    } else {
+      k++;
+    }
+  }
+  blocks.forEach((b, i) => { b.index = i; });
+  return blocks;
 }
 
 const STOPWORDS = new Set(["pty", "ltd", "limited", "inc", "llc", "corp", "corporation", "co", "gmbh", "plc", "the"]);
@@ -323,6 +424,7 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
   const fsPages = pages.filter((p) => p.kind.startsWith("fs-") || p.kind.startsWith("ato-")).map((p) => p.page);
   const entityName = mostFrequent(findCompanyNames(doc, fsPages.length ? fsPages : pages.map((p) => p.page)));
   const classified = pages.filter((p) => p.kind !== "unknown").length;
+  const blocks5471 = kind === "prior-year-us-return" ? segment5471Blocks(doc, pages) : undefined;
 
   return {
     fileId, fileName, kind,
@@ -333,6 +435,7 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
     entityName,
     foreignCorpName: findForeignCorpName(doc),
     entityIds: findEntityIds(doc),
+    ...(blocks5471 && blocks5471.length ? { blocks5471 } : {}),
     notes,
   };
 }
