@@ -18,6 +18,7 @@ export type ViewId =
   | "category"
   | "mapping"
   | "fx"
+  | "preview"
   | "workpaper"
   | "exceptions"
   | "audit"
@@ -35,11 +36,12 @@ export const NAV_ITEMS: Array<{ id: ViewId; label: string; marker: string }> = [
   { id: "category", label: "Ownership & category", marker: "08" },
   { id: "mapping", label: "Mapping & adjustments", marker: "09" },
   { id: "fx", label: "FX policy & rates", marker: "10" },
-  { id: "workpaper", label: "Workpaper readiness", marker: "11" },
-  { id: "exceptions", label: "Exception center", marker: "12" },
-  { id: "audit", label: "Audit trail", marker: "13" },
-  { id: "signoff", label: "Review & sign-off", marker: "14" },
-  { id: "settings", label: "Settings", marker: "15" },
+  { id: "preview", label: "Workpaper preview", marker: "11" },
+  { id: "workpaper", label: "Workpaper readiness", marker: "12" },
+  { id: "exceptions", label: "Exception center", marker: "13" },
+  { id: "audit", label: "Audit trail", marker: "14" },
+  { id: "signoff", label: "Review & sign-off", marker: "15" },
+  { id: "settings", label: "Settings", marker: "16" },
 ];
 
 type ShellProps = {

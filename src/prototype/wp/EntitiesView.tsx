@@ -75,7 +75,7 @@ export function EntitiesView() {
 }
 
 function EntityCard({ entity, index }: { entity: Entity; index: number }) {
-  const [tab, setTab] = useState<"docs" | "profile" | "holders" | "lines" | "review">("docs");
+  const [tab, setTab] = useState<"docs" | "profile" | "holders" | "dividends" | "lines" | "review">("docs");
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const mapped = Object.keys(entity.lines).length;
@@ -115,14 +115,14 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
       {entity.open ? (
         <div className="entity-body">
           <div className="tab-row">
-            {(["docs", "profile", "holders", "lines", "review"] as const).map((id) => (
+            {(["docs", "profile", "holders", "dividends", "lines", "review"] as const).map((id) => (
               <button
                 key={id}
                 type="button"
                 className={tab === id ? "tab-button active" : "tab-button"}
                 onClick={() => setTab(id)}
               >
-                {id === "docs" ? "Documents" : id === "profile" ? "Entity profile" : id === "holders" ? "Shareholders" : id === "lines" ? "Schedule lines" : "Review & log"}
+                {id === "docs" ? "Documents" : id === "profile" ? "Entity profile" : id === "holders" ? "Shareholders" : id === "dividends" ? "Dividends" : id === "lines" ? "Schedule lines" : "Review & log"}
               </button>
             ))}
           </div>
@@ -214,7 +214,7 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
               ) : null}
 
               <div className="field-grid">
-                {PROFILE_FIELDS.map((f) => {
+                {PROFILE_FIELDS.filter((f) => f.key !== "entityShort").map((f) => {
                   const det = entity.detected[f.key];
                   return (
                     <label className={det ? "wp-field detected" : "wp-field"} key={f.key}>
@@ -395,6 +395,74 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                 </p>
               )}
               <button type="button" className="button" onClick={() => actions.addShareholder(entity.id)}>+ Add shareholder</button>
+            </div>
+          ) : null}
+
+          {tab === "dividends" ? (
+            <div>
+              <Callout title="Dividends sheet rows 3–6" tone="teal">
+                The detected dividend drives four schedules (Dividends, Schedule R, Schedule J line 9, Schedule M) —
+                editing it updates all of them. Rows added here write to the Dividends sheet only; review the
+                distribution schedules for them separately.
+              </Callout>
+              {(entity.dividends || []).length ? (
+                <div className="wp-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style={{ width: 120 }}>Date paid</th>
+                        <th className="numeric">Amount (functional)</th>
+                        <th className="numeric" style={{ width: 130 }}>US$ per unit</th>
+                        <th>Rate source</th>
+                        <th style={{ width: 80 }} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(entity.dividends || []).map((d, i) => (
+                        <tr key={i}>
+                          <td>
+                            <input
+                              className="stake-input"
+                              value={d.date}
+                              onChange={(e) => actions.updateDividend(entity.id, i, { date: e.target.value })}
+                            />
+                          </td>
+                          <td className="numeric">
+                            <input
+                              type="number"
+                              value={d.amountFunctional}
+                              onChange={(e) => actions.updateDividend(entity.id, i, { amountFunctional: Number(e.target.value) || 0 })}
+                            />
+                          </td>
+                          <td className="numeric">
+                            <input
+                              type="number"
+                              step="0.0001"
+                              value={d.usdPerUnit ?? ""}
+                              onChange={(e) => actions.updateDividend(entity.id, i, { usdPerUnit: e.target.value === "" ? null : Number(e.target.value) })}
+                            />
+                          </td>
+                          <td style={{ color: "var(--muted)", fontSize: 11 }}>
+                            {d.rateSource === "frankfurter" ? "ECB payment-date rate" : d.rateSource === "eoy-fallback" ? "1 ÷ year-end spot (fallback)" : i === 0 ? "—" : "added by hand"}
+                            {i === 0 ? <><br />flows to Sch R / J / M</> : null}
+                          </td>
+                          <td>
+                            {i > 0 && i === (entity.dividends || []).length - 1
+                              ? <button type="button" className="button" onClick={() => actions.removeDividend(entity.id, i)}>Remove</button>
+                              : null}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="hint">
+                  No dividend detected. Processing reads dividends from the equity movement or the local return&apos;s
+                  dividend schedule — or add one here for the Dividends sheet.
+                </p>
+              )}
+              <button type="button" className="button" onClick={() => actions.addDividend(entity.id)}>+ Add dividend row</button>
             </div>
           ) : null}
 

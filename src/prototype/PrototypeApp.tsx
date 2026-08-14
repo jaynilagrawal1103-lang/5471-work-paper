@@ -13,6 +13,7 @@ import { AuditTrailView } from "./wp/AuditTrailView";
 import { EntitiesView } from "./wp/EntitiesView";
 import { EvidenceView } from "./wp/EvidenceRealView";
 import { FxRatesView } from "./wp/FxRatesView";
+import { PreviewView } from "./wp/PreviewView";
 import { SettingsView } from "./wp/SettingsView";
 import { Splash } from "./wp/Splash";
 import { safeReplaceState } from "./wp/safeBrowser";
@@ -45,6 +46,7 @@ export function PrototypeApp({ initialView }: AppProps) {
   if (activeView === "category") content = <CategoryView />;
   if (activeView === "mapping") content = <MappingView />;
   if (activeView === "fx") content = <FxRatesView />;
+  if (activeView === "preview") content = <PreviewView onNavigate={navigate} />;
   if (activeView === "workpaper") content = <ReadinessView onNavigate={navigate} />;
   if (activeView === "exceptions") content = <ExceptionsView onNavigate={navigate} />;
   if (activeView === "audit") content = <AuditTrailView />;

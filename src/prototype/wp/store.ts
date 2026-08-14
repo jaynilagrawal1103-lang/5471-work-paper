@@ -190,6 +190,9 @@ export type Entity = {
       pageHint routes a PDF's unclassified pages to one statement feed. */
   docKindOverrides: Record<string, DocKindOverride>;
   shareholders: Shareholder[];
+  /** Template sheets the preparer excluded in the Review Summary — they
+      receive no writes on generation (the sheets themselves remain). */
+  excludedSheets: string[];
   reviewItems: ReviewItem[];
   extraWrites: CellWrite[];
   dividends: DividendRec[];
@@ -299,6 +302,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     docClasses: {},
     docKindOverrides: {},
     shareholders: [],
+    excludedSheets: [],
     reviewItems: [],
     extraWrites: [],
     dividends: [],
@@ -570,12 +574,87 @@ export const actions = {
     if (bucket === "profile" && key === "currency" && value.trim()) {
       updateEntity(entityId, { currencyConfirmed: true });
     }
+    // C-02: the single legal-name input keeps driving the header while the
+    // card still carries its default name.
+    if (bucket === "profile" && key === "legalName" && value.trim()) {
+      const cur = state.entities.find((e) => e.id === entityId);
+      if (cur) {
+        const patch: Partial<Entity> = {};
+        if (!cur.profile.entityShort || /^Entity \d+$/.test(cur.profile.entityShort)) {
+          patch.profile = { ...cur.profile, entityShort: value };
+        }
+        if (/^Entity \d+$/.test(cur.name)) patch.name = value;
+        if (Object.keys(patch).length) updateEntity(entityId, patch);
+      }
+    }
     // Currency or period end changed -> refresh the published rates, unless the
     // preparer has overridden them by hand.
     if (bucket === "profile" && (key === "currency" || key === "cyEnd" || key === "pyEnd")) {
       actions.autoFillRates(entityId, false);
     }
     if (bucket === "fx") updateEntity(entityId, { fxAuto: false });
+  },
+
+  /* ---------------- dividends (Dividends rows 3–6) ---------------- */
+  updateDividend(entityId: string, index: number, patch: Partial<Pick<DividendRec, "date" | "amountFunctional" | "usdPerUnit">>) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent || !ent.dividends[index]) return;
+    const dividends = ent.dividends.map((d, i) => (i === index ? { ...d, ...patch } : d));
+    const d = dividends[index];
+    const row = 3 + index;
+    const avgRate = numeric(ent.fx.avgRate);
+    // The detected record (index 0) drives four schedules — its edits follow
+    // through; added records live on the Dividends sheet only.
+    const extraWrites = ent.extraWrites.map((w) => {
+      if (w.sheet === SHEET.dividends && w.ref === `B${row}`) return { ...w, value: d.date };
+      if (w.sheet === SHEET.dividends && w.ref === `C${row}`) return { ...w, value: d.amountFunctional };
+      if (w.sheet === SHEET.dividends && w.ref === `D${row}` && d.usdPerUnit !== null) return { ...w, value: d.usdPerUnit };
+      if (index === 0) {
+        if (w.sheet === SHEET.schR && w.ref === "E10") return { ...w, value: d.date };
+        if (w.sheet === SHEET.schR && (w.ref === "G10" || w.ref === "I10")) return { ...w, value: d.amountFunctional };
+        if (w.sheet === SHEET.schJ && w.ref === "F33") return { ...w, value: -d.amountFunctional };
+        if (w.sheet === SHEET.schM && w.ref === "E32" && avgRate) return { ...w, value: Math.round(d.amountFunctional / avgRate) };
+      }
+      return w;
+    });
+    updateEntity(entityId, { dividends, extraWrites });
+    logEvent("Dividend edited", `row ${row} · ${d.date} · ${d.amountFunctional.toLocaleString()} · US$/unit ${d.usdPerUnit ?? "n/a"}`, ent.name);
+  },
+
+  addDividend(entityId: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    if (ent.dividends.length >= 4) { toast("The template's Dividends sheet carries rows 3–6 (4 records)", "bad"); return; }
+    const rec: DividendRec = { date: ent.profile.cyEnd || "", amountFunctional: 0, usdPerUnit: null, rateSource: "none" };
+    const dividends = [...ent.dividends, rec];
+    const row = 2 + dividends.length;
+    const extraWrites = [...ent.extraWrites,
+      { sheet: SHEET.dividends, ref: `B${row}`, value: rec.date, source: "dividends tab" },
+      { sheet: SHEET.dividends, ref: `C${row}`, value: rec.amountFunctional, source: "dividends tab" },
+    ];
+    updateEntity(entityId, { dividends, extraWrites });
+    toast("Dividend row added — Schedule R/J/M flow-through applies only to the detected record; review those schedules for added rows", "ok");
+  },
+
+  removeDividend(entityId: string, index: number) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    if (index === 0 || index !== ent.dividends.length - 1) { toast("Only the last added dividend row can be removed (the detected record drives four schedules)", "bad"); return; }
+    const row = 3 + index;
+    updateEntity(entityId, {
+      dividends: ent.dividends.slice(0, -1),
+      extraWrites: ent.extraWrites.filter((w) => !(w.sheet === SHEET.dividends && new RegExp(`^[BCD]${row}$`).test(w.ref))),
+    });
+  },
+
+  /** Review Summary: include/exclude a template sheet from generation. */
+  toggleSheetExclusion(entityId: string, sheet: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const cur = ent.excludedSheets || [];
+    const on = cur.includes(sheet);
+    updateEntity(entityId, { excludedSheets: on ? cur.filter((s) => s !== sheet) : [...cur, sheet] });
+    logEvent(on ? "Sheet re-included" : "Sheet excluded from generation", sheet, ent.name);
   },
 
   /* ---------------- shareholders (Shareholding rows 19–26) ---------------- */
@@ -1532,9 +1611,15 @@ export const actions = {
               if (sniff) { propose(profile, "currency", sniff.value, sniff.sourceLabel); break; }
             }
           }
-          if (!profile.entityShort && profile.legalName) profile.entityShort = profile.legalName;
+          // C-02: ONE legal-name input drives the header. The card name and
+          // the B4 header follow legalName while still default-ish; renaming
+          // the card by hand stops the follow (renameEntity sets both).
+          if (profile.legalName && (!profile.entityShort || /^Entity \d+$/.test(profile.entityShort))) {
+            profile.entityShort = profile.legalName;
+          }
+          const nameSync = profile.legalName && /^Entity \d+$/.test(fresh.name) ? { name: profile.legalName } : {};
 
-          updateEntity(entityId, { profile, ownership, categories, detected });
+          updateEntity(entityId, { profile, ownership, categories, detected, ...nameSync });
           if (filled) {
             log.push(`${filled} entity detail(s) detected from the documents`);
             logEvent("Entity details detected", `${filled} field(s) auto-filled`, fresh.name, "system");
@@ -1919,6 +2004,9 @@ export const actions = {
       return;
     }
     logPolicyOverriddenBlocks(ent);
+    if (ent.excludedSheets?.length) {
+      logEvent("Sheets excluded from generation", ent.excludedSheets.join(", "), ent.name, "system");
+    }
     set({ busy: true });
     try {
       const { blob, report } = await buildWorkbook(ent);
@@ -2775,6 +2863,10 @@ export function buildWrites(ent: Entity): Writes {
   }
   if (!Object.keys(is).length) delete writes[SHEET.is];
   if (!Object.keys(bs).length) delete writes[SHEET.bs];
+  // Review-summary exclusions: a sheet the preparer unchecked receives NO
+  // writes — the template sheet itself stays (formula cross-references like
+  // Schedule I & I-1 ← Sch E&E-1!U21 forbid removing sheets).
+  for (const s of ent.excludedSheets || []) delete writes[s];
   return writes;
 }
 

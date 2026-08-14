@@ -756,6 +756,48 @@ export function SignoffView({ onNavigate }: { onNavigate: (v: ViewId) => void })
           ) : <div className="empty-state"><span>✓</span><strong>Clear to approve</strong><p>All checks passed for this entity.</p></div>}
         </section>
       </div>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div>
+            <span className="section-kicker">
+              Filer categor{Object.keys(ent.categories).filter((k) => ent.categories[k]).length === 1 ? "y" : "ies"}{" "}
+              {Object.keys(ent.categories).filter((k) => ent.categories[k]).join(", ") || "not selected"}
+            </span>
+            <h2>Review summary — schedules in this workbook</h2>
+          </div>
+          <button type="button" className="button" onClick={() => onNavigate("preview")}>Open cell preview</button>
+        </div>
+        <div className="wp-table">
+          <table>
+            <thead><tr><th>Template sheet</th><th className="numeric" style={{ width: 110 }}>Cells to write</th><th style={{ width: 140 }}>Included</th></tr></thead>
+            <tbody>
+              {Object.entries(buildWrites({ ...ent, excludedSheets: [] })).map(([sheet, cells]) => {
+                const off = (ent.excludedSheets || []).includes(sheet);
+                return (
+                  <tr key={sheet} style={off ? { opacity: 0.55 } : undefined}>
+                    <td><strong>{sheet}</strong></td>
+                    <td className="numeric">{Object.keys(cells).length}</td>
+                    <td>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <input type="checkbox" checked={!off} onChange={() => actions.toggleSheetExclusion(ent.id, sheet)} />
+                        {off ? "excluded" : "write"}
+                      </label>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="hint">
+          Cross-check this set against the filing-requirements table in the Form 5471 instructions for the selected
+          categor{Object.keys(ent.categories).filter((k) => ent.categories[k]).length === 1 ? "y" : "ies"} — the tool
+          fills what the documents support and never removes a template sheet (formula cross-references, e.g.
+          Schedule I &amp; I-1 reading Sch E &amp; E-1, must stay intact). Unchecking a sheet writes nothing into it
+          and is logged on generation.
+        </p>
+      </section>
     </div>
   );
 }
