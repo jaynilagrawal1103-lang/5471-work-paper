@@ -747,6 +747,7 @@ tr.en9-cfrow input:focus{outline:2px solid #c7d2fe;border-color:#818cf8;backgrou
 .en9-os-foot{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:12px;max-width:84ch}
 @media (max-width:760px){.en9-os-2col{grid-template-columns:1fr}.en9-os-row{grid-template-columns:1fr}}
 .en9-ocr-src{min-width:260px;max-width:100%}
+.en9-ocr-sandbox{font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;margin-top:8px;max-width:78ch}
 </style>
 <script id="en9-js">/* ===== WP UI Enhancement Layer (EN9) — reactive DOM augmentation =====
    Reacts to every state change (wp:state event fired by the store) and to
@@ -1321,6 +1322,13 @@ function enhanceTopbarHint(){
 
 /* ---------- OCR for scanned PDFs (Tesseract.js, free & open source) ---------- */
 var EN9OCR={busy:false, result:null, io:null, stats:{runs:0,pages:0,words:0,fails:0}};
+function en9IsSandbox(){ try{ return /claudeusercontent\.com|claude\.ai/.test(location.hostname); }catch(e){ return false; } }
+function en9OcrFriendly(e){ var m=String(e&&e.message||e||"");
+  if(/Failed to construct 'Worker'|blob-request|cannot be accessed from origin|Worker is not defined/i.test(m))
+    return "This preview sandbox blocks background workers, so the OCR engine cannot start here. It runs normally on your deployed site (Netlify) or when the file is opened directly in a browser.";
+  if(/Could not download/i.test(m))
+    return m+" \u2014 check your network or ad-blocker; the open-source engine loads from cdn.jsdelivr.net on first use.";
+  return m; }
 try{ window.__EN9OCR=EN9OCR; window.__en9OcrRun=function(){ return en9OcrRun.apply(null,arguments); }; }catch(e){}
 function en9LoadScript(u){ return new Promise(function(res,rej){
   var sc=document.createElement("script"); sc.src=u; sc.async=true;
@@ -1395,7 +1403,7 @@ function en9OcrRun(file,entityId,langs,st,done){
       done&&done(EN9OCR.result);
     });
   })
-  .catch(function(e){ EN9OCR.stats.fails++; st("OCR failed: "+(e&&e.message||e)); done&&done(null); })
+  .catch(function(e){ EN9OCR.stats.fails++; st("OCR failed: "+en9OcrFriendly(e)); done&&done(null); })
   .then(function(){ EN9OCR.busy=false; if(worker&&worker.terminate)try{worker.terminate()}catch(e){} });
 }
 
@@ -1434,6 +1442,7 @@ function enhanceOcrPanel(){
   row.appendChild(sel); row.appendChild(src); row.appendChild(fi); row.appendChild(lg); row.appendChild(btn);
   fillSrc();
   card.appendChild(row);
+  if(en9IsSandbox()) card.appendChild(el("div","en9-ocr-sandbox","\u26A0 You are viewing this inside the claude.ai preview, which blocks the background workers OCR needs. Everything else works here \u2014 but run OCR on your deployed site (or open the downloaded HTML directly in your browser)."));
   var stat=el("div","en9-ocr-status"); card.appendChild(stat);
   var acts=el("div","en9-ocr-acts"); acts.style.display="none";
   var addb=el("button","button primary","Add to intake"); addb.type="button";
