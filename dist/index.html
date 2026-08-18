@@ -732,6 +732,20 @@ tr.en9-cfrow input:focus{outline:2px solid #c7d2fe;border-color:#818cf8;backgrou
 .en9-ocr-acts{display:flex;gap:8px;margin-top:8px}
 .en9-ocr-note{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:10px;max-width:78ch}
 @media (max-width:640px){.en9-ocr-row{flex-direction:column;align-items:stretch}}
+/* --- OCR settings card --- */
+.en9-ocrset{border-left:4px solid #0e9384;margin-top:12px}
+.en9-os-h{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:#667085;margin:14px 0 6px;font-weight:800}
+.en9-os-grid{display:grid;gap:6px}
+.en9-os-row{display:grid;grid-template-columns:210px 1fr;gap:10px;font-size:12px;border-top:1px dashed var(--line,#e4e7ec);padding-top:6px}
+.en9-os-k{color:#667085;font-weight:650}
+.en9-os-v{color:#1d2433}
+.en9-os-list{font-size:12px;color:#1d2433;margin:4px 0 0 18px;display:grid;gap:5px}
+.en9-os-p{font-size:12px;color:#475569;max-width:80ch;margin:2px 0}
+.en9-os-2col{display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:12px}
+.en9-os-pros strong,.en9-os-cons strong{font-size:11px}
+.en9-os-pending{margin-top:8px;display:grid;gap:4px}
+.en9-os-foot{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:12px;max-width:84ch}
+@media (max-width:760px){.en9-os-2col{grid-template-columns:1fr}.en9-os-row{grid-template-columns:1fr}}
 </style>
 <script id="en9-js">/* ===== WP UI Enhancement Layer (EN9) — reactive DOM augmentation =====
    Reacts to every state change (wp:state event fired by the store) and to
@@ -1305,7 +1319,7 @@ function enhanceTopbarHint(){
 
 
 /* ---------- OCR for scanned PDFs (Tesseract.js, free & open source) ---------- */
-var EN9OCR={busy:false, result:null, io:null};
+var EN9OCR={busy:false, result:null, io:null, stats:{runs:0,pages:0,words:0,fails:0}};
 try{ window.__EN9OCR=EN9OCR; window.__en9OcrRun=function(){ return en9OcrRun.apply(null,arguments); }; }catch(e){}
 function en9LoadScript(u){ return new Promise(function(res,rej){
   var sc=document.createElement("script"); sc.src=u; sc.async=true;
@@ -1375,11 +1389,12 @@ function en9OcrRun(file,entityId,langs,st,done){
       var nm=String(file.name||"document.pdf").replace(/\.pdf$/i,"")+" (OCR).pdf";
       var f=new File([bytes],nm,{type:"application/pdf"});
       EN9OCR.result={file:f, entityId:entityId, pages:pages.length, words:tw};
+      EN9OCR.stats.runs++; EN9OCR.stats.pages+=pages.length; EN9OCR.stats.words+=tw;
       st("Done \u2014 "+pages.length+" page(s), "+tw+" word(s) recognized.");
       done&&done(EN9OCR.result);
     });
   })
-  .catch(function(e){ st("OCR failed: "+(e&&e.message||e)); done&&done(null); })
+  .catch(function(e){ EN9OCR.stats.fails++; st("OCR failed: "+(e&&e.message||e)); done&&done(null); })
   .then(function(){ EN9OCR.busy=false; if(worker&&worker.terminate)try{worker.terminate()}catch(e){} });
 }
 function enhanceOcrPanel(){
@@ -1438,6 +1453,79 @@ function en9OcrFillEntities(sel){
   if(s.activeEntityId) sel.value=s.activeEntityId;
 }
 
+
+/* ---------- Settings: OCR engine details, usage & pending verification ---------- */
+function en9OcrDocs(){ var s=st(), out=[]; if(!s) return out;
+  (s.entities||[]).forEach(function(e){ (e.files||[]).forEach(function(f){
+    if(/\(OCR\)\.pdf$/i.test(f.name||"")) out.push({entity:e.name,name:f.name}); }); });
+  return out; }
+function enhanceOcrSettings(){
+  var stacks=document.querySelectorAll(".view-stack"), host=null;
+  for(var i=0;i<stacks.length;i++)
+    if((stacks[i].textContent||"").indexOf("Every methodology, rule set, model and limit")>-1){ host=stacks[i]; break; }
+  var old=document.querySelector(".en9-ocrset");
+  if(!host){ if(old)old.remove(); return; }
+  var card=old;
+  if(!card){ card=el("section","panel en9-ocrset");
+    var anchor=host.querySelector(".en9-sources");
+    anchor&&anchor.nextSibling?host.insertBefore(card,anchor.nextSibling):host.appendChild(card); }
+  while(card.firstChild)card.removeChild(card.firstChild);
+  card.appendChild(el("strong",null,"OCR engine \u2014 Tesseract.js (free & open source)"));
+  /* engine facts */
+  var facts=el("div","en9-os-grid");
+  [["Engine","Tesseract.js v5 \u2014 browser build of Google\u2019s Tesseract OCR"],
+   ["License","Apache-2.0 \u00B7 free forever \u00B7 no account, no API key"],
+   ["Companions","pdf.js 3.11.174 (page rendering) \u00B7 pdf-lib 1.17.1 (searchable-PDF output)"],
+   ["Languages","English + Dutch by default; English-only option on the intake card"],
+   ["Privacy","Recognition runs entirely in this browser \u2014 the document never leaves it. Engine code (~a few MB) downloads once from cdn.jsdelivr.net on first use, then is cached."]
+  ].forEach(function(p){ var r=el("div","en9-os-row");
+    r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); facts.appendChild(r); });
+  card.appendChild(facts);
+  /* usage & quota */
+  var stq=EN9OCR.stats, docs=en9OcrDocs();
+  card.appendChild(el("h4","en9-os-h","Usage"));
+  var ug=el("div","en9-os-grid");
+  [["This session",stq.runs+" document(s) \u00B7 "+stq.pages+" page(s) \u00B7 "+stq.words.toLocaleString()+" word(s) recognized"+(stq.fails?" \u00B7 "+stq.fails+" failed run(s)":"")],
+   ["Quota","Unlimited \u2014 open-source engine, nothing metered, nothing pending to renew"],
+   ["OCR documents in this workpaper",docs.length?docs.length+" file(s) \u2014 ALL pending manual verification until each figure is checked against the original scan":"none yet"]
+  ].forEach(function(p){ var r=el("div","en9-os-row");
+    r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); ug.appendChild(r); });
+  card.appendChild(ug);
+  if(docs.length){ var dl=el("div","en9-os-pending");
+    docs.forEach(function(d2){ dl.appendChild(el("div","en9-auth-src",d2.entity+" \u2192 "+d2.name+" \u2014 verification pending")); });
+    card.appendChild(dl); }
+  /* how it works */
+  card.appendChild(el("h4","en9-os-h","How it works"));
+  var steps=el("ol","en9-os-list");
+  ["Each page of the scanned PDF is rendered to a high-resolution image (2.4\u00D7) with pdf.js.",
+   "Tesseract reads the image and returns every word with its exact position and a confidence score.",
+   "pdf-lib rebuilds the document: the original page image with an invisible, position-accurate text layer underneath \u2014 the same approach as OCRmyPDF.",
+   "The result is named \u201C\u2026 (OCR).pdf\u201D and can be added to intake; the normal parser then reads it like any digital PDF, and every caption\u2019s source chip carries the OCR provenance."
+  ].forEach(function(x){ var li=document.createElement("li"); li.textContent=x; li.setAttribute("data-en9",""); steps.appendChild(li); });
+  card.appendChild(steps);
+  /* accepted files */
+  card.appendChild(el("h4","en9-os-h","Accepted input"));
+  card.appendChild(el("p","en9-os-p","PDF files only (.pdf) \u2014 specifically image-only scans the parser refuses with \u201Cno text layer\u201D. Digital PDFs don\u2019t need OCR (they parse directly). Photos (JPG/PNG) must be converted to PDF first. Best results: flat 300\u00A0dpi scans, straight pages, dark text on light background, machine-printed type. Not suitable for handwriting."));
+  /* pros & cons */
+  card.appendChild(el("h4","en9-os-h","Strengths & limits"));
+  var pc=el("div","en9-os-2col");
+  var pros=el("div","en9-os-pros"); pros.appendChild(el("strong",null,"Strengths"));
+  ["Free and unlimited \u2014 no quota, no key, no cost",
+   "Private \u2014 the document never leaves this browser",
+   "100+ language support in the engine family; Dutch included here",
+   "Position-accurate output, so the tool\u2019s table reconstruction works normally"
+  ].forEach(function(x){ pros.appendChild(el("div","en9-auth-fact","\u2713 "+x)); });
+  var cons=el("div","en9-os-cons"); cons.appendChild(el("strong",null,"Limits"));
+  ["Recognition is probabilistic \u2014 digits can be misread (8\u21943, 1\u21947); every figure must be verified",
+   "Complex or borderless tables can come out misaligned",
+   "Poor, skewed, or low-contrast scans may fail or produce noise",
+   "Handwriting is not supported",
+   "First use downloads the engine (~a few MB) \u2014 needs a network connection that once"
+  ].forEach(function(x){ cons.appendChild(el("div","en9-auth-miss","\u2013 "+x)); });
+  pc.appendChild(pros); pc.appendChild(cons); card.appendChild(pc);
+  card.appendChild(el("p","en9-os-foot","Values booked from an OCR\u2019d document are never treated as verified: the \u201C(OCR)\u201D name follows them through every source chip, evidence trace and export until you confirm them against the original."));
+}
+
 /* ---------- master pass ---------- */
 function rebuildAll(){
   enhancing=true;
@@ -1454,6 +1542,7 @@ function rebuildAll(){
     }
     enhanceCategoryAuthority();
     enhanceSettingsSources();
+    enhanceOcrSettings();
     enhanceTopbarHint();
     enhanceOcrPanel();
     enhancePills();
