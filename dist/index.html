@@ -746,6 +746,7 @@ tr.en9-cfrow input:focus{outline:2px solid #c7d2fe;border-color:#818cf8;backgrou
 .en9-os-pending{margin-top:8px;display:grid;gap:4px}
 .en9-os-foot{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:12px;max-width:84ch}
 @media (max-width:760px){.en9-os-2col{grid-template-columns:1fr}.en9-os-row{grid-template-columns:1fr}}
+.en9-ocr-src{min-width:260px;max-width:100%}
 </style>
 <script id="en9-js">/* ===== WP UI Enhancement Layer (EN9) — reactive DOM augmentation =====
    Reacts to every state change (wp:state event fired by the store) and to
@@ -1397,22 +1398,41 @@ function en9OcrRun(file,entityId,langs,st,done){
   .catch(function(e){ EN9OCR.stats.fails++; st("OCR failed: "+(e&&e.message||e)); done&&done(null); })
   .then(function(){ EN9OCR.busy=false; if(worker&&worker.terminate)try{worker.terminate()}catch(e){} });
 }
+
+function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
+  var e=(s.entities||[]).find(function(x){return x.id===entityId;});
+  (e&&e.files||[]).forEach(function(f){
+    if(/\.pdf$/i.test(f.name||"")&&f.blob&&!/\(OCR\)\.pdf$/i.test(f.name)) out.push(f); });
+  return out; }
+
 function enhanceOcrPanel(){
   var dz=document.querySelector(".dropzone");
   var old=document.querySelector(".en9-ocr");
   if(!dz){ if(old)old.remove(); return; }
-  if(old) { var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); return; }
+  if(old) { var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); old.EN9_fillSrc&&old.EN9_fillSrc(); return; }
   var host=dz.closest("section.panel")||dz.parentElement; if(!host||!host.parentElement) return;
   var card=el("section","panel en9-ocr");
   card.appendChild(el("strong",null,"OCR a scanned PDF (beta) \u2014 Tesseract, free & open source"));
   card.appendChild(el("p","en9-ocr-sub","For image-only PDFs the parser refuses (\u201Cno text layer\u201D). This reads them with the open-source Tesseract engine and produces a searchable copy you can add to intake. The engine (~a few MB) is downloaded from cdn.jsdelivr.net on first use \u2014 your document itself never leaves this browser. Every figure from an OCR\u2019d document must be verified against the original: recognition can misread digits."));
   var row=el("div","en9-ocr-row");
-  var fi=document.createElement("input"); fi.type="file"; fi.accept=".pdf"; fi.setAttribute("data-en9","");
   var sel=document.createElement("select"); sel.setAttribute("data-en9",""); en9OcrFillEntities(sel);
+  var src=document.createElement("select"); src.setAttribute("data-en9",""); src.className="en9-ocr-src";
+  var fi=document.createElement("input"); fi.type="file"; fi.accept=".pdf"; fi.setAttribute("data-en9","");
+  function fillSrc(){ var cur=src.value;
+    while(src.firstChild)src.removeChild(src.firstChild);
+    var o0=document.createElement("option"); o0.value=""; o0.textContent="— choose a file from this computer —"; src.appendChild(o0);
+    en9OcrIntakePdfs(sel.value).forEach(function(f){ var o=document.createElement("option");
+      o.value=f.id; o.textContent="Already attached: "+f.name; src.appendChild(o); });
+    if([...src.options].some(function(o){return o.value===cur;})) src.value=cur;
+    fi.style.display=src.value?"none":""; }
+  src.addEventListener("change",fillSrc);
+  sel.addEventListener("change",fillSrc);
+  card.EN9_fillSrc=fillSrc;
   var lg=el("label","en9-ocr-lang"); var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=true; cb.setAttribute("data-en9","");
   lg.appendChild(cb); lg.appendChild(document.createTextNode(" Dutch + English (untick for English only)"));
   var btn=el("button","button en9-ocr-btn","Run OCR"); btn.type="button";
-  row.appendChild(fi); row.appendChild(sel); row.appendChild(lg); row.appendChild(btn);
+  row.appendChild(sel); row.appendChild(src); row.appendChild(fi); row.appendChild(lg); row.appendChild(btn);
+  fillSrc();
   card.appendChild(row);
   var stat=el("div","en9-ocr-status"); card.appendChild(stat);
   var acts=el("div","en9-ocr-acts"); acts.style.display="none";
@@ -1421,8 +1441,12 @@ function enhanceOcrPanel(){
   acts.appendChild(addb); acts.appendChild(dlb); card.appendChild(acts);
   card.appendChild(el("div","en9-ocr-note","Documents added this way are named \u201C\u2026 (OCR).pdf\u201D so every caption\u2019s source chip shows OCR provenance. Treat all extracted figures as unverified until checked."));
   btn.addEventListener("click",function(){
-    var f=fi.files&&fi.files[0];
-    if(!f){ stat.textContent="Choose a PDF file first."; return; }
+    var f=null;
+    if(src.value){ var att=en9OcrIntakePdfs(sel.value).find(function(x){return x.id===src.value;});
+      f=att&&att.blob||null;
+      if(!f){ stat.textContent="That attached document is no longer available — choose the file from this computer instead."; return; } }
+    else f=fi.files&&fi.files[0];
+    if(!f){ stat.textContent="Pick an already-attached PDF from the dropdown, or choose a file from this computer."; return; }
     if(!sel.value){ stat.textContent="Choose the entity this document belongs to."; return; }
     acts.style.display="none";
     en9OcrRun(f,sel.value,cb.checked?"eng+nld":"eng",function(m){stat.textContent=m;},function(res){
