@@ -10,7 +10,12 @@
     "typecheck": "tsc --noEmit",
     "build:app": "node scripts/build.mjs",
     "build:server": "node scripts/build-server.mjs",
-    "start:server": "node dist-server/server.cjs"
+    "start:server": "node dist-server/server.cjs",
+    "inject:layer": "node scripts/inject-layer.mjs",
+    "test:layer": "node tests/test_enhance.cjs",
+    "test:rules": "node tests/test_vf.cjs",
+    "test:spaces": "node tests/test_spaces.cjs",
+    "test:all": "npm run test:rules && npm run test:spaces && npm run test:layer"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.0",
@@ -27,7 +32,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "jsdom": "^24.0.0"
   },
   "allowScripts": {
     "esbuild@0.25.12": true
