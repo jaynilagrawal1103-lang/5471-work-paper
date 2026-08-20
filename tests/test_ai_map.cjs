@@ -65,10 +65,12 @@ a(JSON.stringify(QF(null).EN9unmatched) === "[]", "QF: null-grid early return ca
 
 // --- one-pass behaviour (book everything safe, flag low confidence) --------
 const air = dist.slice(dist.indexOf("async function EN9aiRun"), dist.indexOf("var Be={EN9_expose"));
-a(/EN9retry=A\.filter\(x=>\{let v=h\.get\(x\.idx\);return!v\|\|!v\.t\|\|!EN9ok\(v\)\}\)/.test(air),
-  "pass 2 retries exactly the rows pass 1 left null or low-confidence");
-a(air.includes("EN9retry.length&&await EN9ask(EN9retry,!0)"), "pass 2 fires only when there are leftovers");
-a(air.includes("f&&f.t&&h.set(x.idx,f)"), "a null reply in pass 2 cannot erase a pass-1 suggestion");
+a(air.includes("EN9retry=A.filter(x=>{let v=h.get($h(x.row.label));return!v||!v.t||!EN9ok(v)})"),
+  "pass 2 retries exactly the rows pass 1 left null or low-confidence (content-keyed)");
+a(air.includes("h.set($h(x.row.label),f)") && !air.includes("h.set(x.idx"),
+  "AI results are keyed by caption, not array index (no wrong-caption race)");
+a(air.includes("EN9retry.length&&!EN9err&&await EN9ask(EN9retry,!0)"), "pass 2 fires only when there are leftovers and pass 1 did not hard-fail");
+a(air.includes("f&&f.t&&h.set($h(x.row.label),f)"), "a null reply in pass 2 cannot erase a pass-1 suggestion");
 a(/year tags: \$\{\(x\.row\.years\|\|\[\]\)/.test(air) && air.includes("amounts: ${(x.row.values||[]).join"),
   "pass 2 prompt carries amounts and year tags as extra evidence");
 a(air.includes("Other income") && air.includes("only use null when the caption is a subtotal".replace("only","Only")),
@@ -81,6 +83,20 @@ a(air.includes('level:"warn",category:"mapping",applied:!0'), "low-confidence le
 a(air.includes('level:"warn",category:"profile",applied:!0'), "low-confidence profile fill raises an applied warn review item");
 a(!/EN9ok\(v\)\)\{[^}]*E\.push\(x\)/.test(air), "no path parks a low-confidence row back into unmatched");
 a(air.includes("could not be placed"), "log reports what genuinely could not be placed");
+
+// --- P0 guards: live models, reasoning effort, visible failures -------------
+a(dist.includes('y8=["openai/gpt-oss-120b","openai/gpt-oss-20b"]'),
+  "model list contains only currently-served Groq production models");
+a(!dist.includes("llama-3.3-70b-versatile"), "decommissioned default model fully removed");
+a(dist.includes('reasoning_effort:"low"'), "gpt-oss reasoning effort set (prevents empty JSON under the token cap)");
+a(dist.includes("model:t.groq&&y8.includes(t.groq.model)?t.groq.model:y8[0]"),
+  "persisted saves migrate a dead model on restore");
+a(dist.includes('EN9c==="model_decommissioned"'), "decommissioned-model error mapped to plain English");
+a(dist.includes('EN9c==="invalid_api_key"'), "bad-key error mapped to plain English");
+a(air.includes('id:"EN9-ai-error"'), "AI failure raises a stored warn review item, not just a log line");
+a(air.includes("maxTokens:8e3"), "mapping calls use the raised 8k completion cap");
+a(air.includes("AI proposed an invalid line id"), "hallucinated target ids get an honest refusal reason");
+a(air.includes("could not place any of them"), "an all-null model reply logs a neutral line instead of silence");
 
 // --- dist wiring smoke -----------------------------------------------------
 a(dist.includes('"AI mapping of leftover captions"]'), "6th processing step present");
