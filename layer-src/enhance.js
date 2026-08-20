@@ -7,7 +7,7 @@
 var S = { q:"", sch:"ALL", multi:false, edited:false,
           openMeta:{}, collapsed:{}, logOpen:false,
           cf:{}, page:{}, pp:{} };
-function tkey(tb){ return (tb.tHead && tb.tHead.rows[0] ? tb.tHead.rows[0].textContent : "t").replace(/\s+/g,"").slice(0,60); }
+function tkey(tb){ var EN9i=Array.prototype.indexOf.call(document.querySelectorAll("table"),tb); return EN9i+"#"+(tb.tHead && tb.tHead.rows[0] ? tb.tHead.rows[0].textContent : "t").replace(/\s+/g,"").slice(0,58); }
 var enhancing = false, timer = null;
 
 function st(){ try{ return window.__WPGET && window.__WPGET(); }catch(e){ return null; } }
@@ -118,14 +118,21 @@ function decorateRow(r, kind){
   var oldD = tl.querySelector(".en9-edited-dot"); if(oldD) oldD.remove();
   r.classList.remove("en9-edited");
   if(e && rk && e.contributions){
+    var EN9fields = rk.sch==="Sch C" ? [rk.field] : ["boy","eoy"];
+    var EN9bad=false, sum=null, line=null;
+    for(var EN9fi=0; EN9fi<EN9fields.length; EN9fi++){
+      var EN9f=EN9fields[EN9fi];
+      var consF=(e.contributions[rk.key]||[]).filter(function(u){return u.field===EN9f && typeof u.value==="number";});
+      var lineF=e.lines && e.lines[rk.key] ? e.lines[rk.key][EN9f] : null;
+      if(consF.length && typeof lineF==="number" && Math.abs(consF.reduce(function(a,u){return a+u.value;},0)-lineF)>0.01){
+        EN9bad=true; sum=consF.reduce(function(a,u){return a+u.value;},0); line=lineF; }
+    }
     var cons=(e.contributions[rk.key]||[]).filter(function(u){return u.field===rk.field && typeof u.value==="number";});
-    var line=e.lines && e.lines[rk.key] ? e.lines[rk.key][rk.field] : null;
-    if(cons.length && typeof line==="number"){
-      var sum=cons.reduce(function(a,u){return a+u.value;},0);
-      if(Math.abs(sum-line)>0.01){
+    if(EN9bad){
+      {
         r.classList.add("en9-edited");
         var d=el("span","en9-edited-dot");
-        d.title="Manually edited \u2014 extracted total was "+sum.toLocaleString()+", current value is "+line.toLocaleString();
+        d.title="Manually edited \u2014 extracted total was "+sum.toLocaleString("en-US")+", current value is "+line.toLocaleString("en-US");
         tl.appendChild(d);
       } } }
   /* AI provenance badge (via:"groq" contributions from this run) */
@@ -181,7 +188,7 @@ function rebuild(tb, kind){
       if(has && vis.length && !S.collapsed[cur]){
         var sub=el("tr","en9-x en9-subtotal");
         var a=el("td"); a.colSpan=cols-2; a.textContent="Subtotal \u2014 "+groupName(cur)+(vis.length!==groupRows.length?" (filtered)":"");
-        var b=el("td","numeric", sum<0 ? "("+Math.abs(sum).toLocaleString()+")" : sum.toLocaleString());
+        var b=el("td","numeric", sum<0 ? "("+Math.abs(sum).toLocaleString("en-US")+")" : sum.toLocaleString("en-US"));
         var c2=el("td");
         sub.appendChild(a); sub.appendChild(b); sub.appendChild(c2);
         var last=vis[vis.length-1];
@@ -217,6 +224,7 @@ function rebuild(tb, kind){
 
 /* ---------- per-column filter row (Task-Management style) ---------- */
 function injectColFilters(item){
+  if(item.table.tHead && item.table.tHead.querySelector("button")) return; /* React column filters already present */
   var tb=item.table, head=tb.tHead; if(!head||!head.rows.length) return;
   var EN9r0=tb.tBodies[0]&&tb.tBodies[0].rows[0];
   if(EN9r0 && !EN9r0.hasAttribute("data-en9") && EN9r0.cells.length!==head.rows[0].cells.length) return;
@@ -629,7 +637,7 @@ EN9OCR.realIO={
     }); }
 };
 function en9OcrRun(file,entityId,langs,st,done){
-  if(EN9OCR.busy) return;
+  if(EN9OCR.busy){ if(st) st("An OCR run is already in progress \u2014 wait for it to finish."); return; }
   EN9OCR.busy=true; EN9OCR.result=null;
   var io=EN9OCR.io||EN9OCR.realIO, worker=null;
   st("Preparing\u2026");
@@ -695,8 +703,8 @@ function enhanceOcrPanel(){
   src.addEventListener("change",fillSrc);
   sel.addEventListener("change",fillSrc);
   card.EN9_fillSrc=fillSrc;
-  var lg=el("label","en9-ocr-lang"); var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=true; cb.setAttribute("data-en9","");
-  lg.appendChild(cb); lg.appendChild(document.createTextNode(" Dutch + English (untick for English only)"));
+  var lg=el("label","en9-ocr-lang"); var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=false; cb.setAttribute("data-en9","");
+  lg.appendChild(cb); lg.appendChild(document.createTextNode(" also recognise Dutch (slower; English is always on)"));
   var btn=el("button","button en9-ocr-btn","Run OCR"); btn.type="button";
   row.appendChild(sel); row.appendChild(src); row.appendChild(fi); row.appendChild(lg); row.appendChild(btn);
   fillSrc();
@@ -737,7 +745,7 @@ function enhanceOcrPanel(){
 function en9OcrFillEntities(sel){
   if(!sel) return; var s=st(); if(!s) return;
   var want=(s.entities||[]).map(function(e){return e.id+"|"+e.name;}).join(";");
-  if(sel.getAttribute("data-en9opts")===want) return;
+  if(sel.getAttribute("data-en9opts")===want){ if(s.activeEntityId && document.activeElement!==sel && sel.value!==s.activeEntityId) sel.value=s.activeEntityId; return; }
   sel.setAttribute("data-en9opts",want);
   while(sel.firstChild)sel.removeChild(sel.firstChild);
   (s.entities||[]).forEach(function(e){ var o=document.createElement("option");
@@ -768,7 +776,7 @@ function enhanceOcrSettings(){
   [["Engine","Tesseract.js v5 \u2014 browser build of Google\u2019s Tesseract OCR"],
    ["License","Apache-2.0 \u00B7 free forever \u00B7 no account, no API key"],
    ["Companions","pdf.js 3.11.174 (page rendering) \u00B7 pdf-lib 1.17.1 (searchable-PDF output)"],
-   ["Languages","English + Dutch by default; English-only option on the intake card"],
+   ["Languages","English by default; Dutch can be enabled on the intake card"],
    ["Privacy","Recognition runs entirely in this browser \u2014 the document never leaves it. Engine code (~a few MB) downloads once from cdn.jsdelivr.net on first use, then is cached."]
   ].forEach(function(p){ var r=el("div","en9-os-row");
     r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); facts.appendChild(r); });
@@ -777,7 +785,7 @@ function enhanceOcrSettings(){
   var stq=EN9OCR.stats, docs=en9OcrDocs();
   card.appendChild(el("h4","en9-os-h","Usage"));
   var ug=el("div","en9-os-grid");
-  [["This session",stq.runs+" document(s) \u00B7 "+stq.pages+" page(s) \u00B7 "+stq.words.toLocaleString()+" word(s) recognized"+(stq.fails?" \u00B7 "+stq.fails+" failed run(s)":"")],
+  [["This session",stq.runs+" document(s) \u00B7 "+stq.pages+" page(s) \u00B7 "+stq.words.toLocaleString("en-US")+" word(s) recognized"+(stq.fails?" \u00B7 "+stq.fails+" failed run(s)":"")],
    ["Quota","Unlimited \u2014 open-source engine, nothing metered, nothing pending to renew"],
    ["OCR documents in this workpaper",docs.length?docs.length+" file(s) \u2014 ALL pending manual verification until each figure is checked against the original scan":"none yet"]
   ].forEach(function(p){ var r=el("div","en9-os-row");
@@ -832,6 +840,12 @@ function rebuildAll(){
       injectPager(items[i]);
       fixSticky(items[i].table);
     }
+    /* wide tables scroll inside their panel instead of spilling off-screen */
+    document.querySelectorAll(".view-stack table").forEach(function(tb){
+      if(tb.closest(".wp-table")) return;
+      var pa=tb.parentElement; if(!pa) return;
+      if(tb.scrollWidth>pa.clientWidth+8 && !pa.getAttribute("data-en9xs")){ pa.setAttribute("data-en9xs","1"); pa.style.overflowX="auto"; }
+    });
     enhanceCategoryAuthority();
     enhanceSettingsSources();
     enhanceOcrSettings();

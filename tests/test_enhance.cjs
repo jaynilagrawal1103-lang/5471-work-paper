@@ -405,7 +405,7 @@ const run = () => new Promise(r => setTimeout(r, 250));
 
   // 26. pager survives table re-creation (stale-reference fix)
   const ev3=d.getElementById('ev');
-  const pager3=[...d.querySelectorAll('.en9-pager')].find(p=>p.getAttribute('data-en9t')===((ev3.tHead.rows[0].textContent||'').replace(/\s+/g,'').slice(0,60)));
+  const pager3=[...d.querySelectorAll('.en9-pager')].find(p=>(p.getAttribute('data-en9t')||'').endsWith('#'+((ev3.tHead.rows[0].textContent||'').replace(/\s+/g,'').slice(0,58))));
   const pg10=pager3.querySelector('select'); pg10.value='10'; pg10.dispatchEvent(new window.Event('change',{bubbles:true})); await run();
   // simulate React re-creating the table element in place
   const clone=ev3.cloneNode(true); clone.querySelectorAll('[data-en9]').forEach(x=>x.remove());
