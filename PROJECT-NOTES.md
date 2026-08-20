@@ -44,3 +44,10 @@ All edits applied directly to `dist/index.html` per the convention above (EN9-pr
 3. **FX nearest-date + sources** — `/*EN9FX-BEGIN*/` block: session-cached OFX allTime series, `EN9ofxOnDate` nearest-day (±7d, tie→earlier) lookup wired into `tC`; fiscal-year guard lifted (calendar tables skipped, OFX average over the true fiscal window + date spots fill instead); Feb-29 window crash fixed; manual entry / Override C60 stamp `fxMeta` (tag: IRS/Treasury/OFX/ECB/Manual); source shown in FX view, Workbook tab, Preview, sign-off badges; OFX metered + honors the Settings checkbox; FX view reads `state.rateDb`.
 
 Tests: `tests/test_detect.cjs` (+`detect_test_src.cjs` snapshot, self-syncing vs dist), `tests/test_fx.cjs`, `tests/test_ai_map.cjs`, test_enhance group 27 (AI badge); `test:all` runs all six suites. `tests/test_enhance.cjs` also gained a Blob.arrayBuffer polyfill (jsdom ≤26 lacks it — the OCR group could never pass on a stock jsdom).
+
+### Follow-up 2026-08-20 — one-pass AI mapping
+`EN9aiRun` rewritten so the automatic pass finishes the job in one run:
+- **Pass 2 retry** for every row pass 1 left null/low-confidence, re-asked with amounts, year tags and source document, and told that Other-income/deduction pool lines are valid answers and `null` is only for subtotals. A pass-2 `null` never erases a pass-1 suggestion.
+- **Confidence no longer gates booking.** Anything that survives `bF` (VALID_TARGETS + `vF` year rule + tax signs) is booked; low confidence is booked AND raises a `warn` review item (`EN9-ai-*` / `EN9-aip-*`, `applied:!0`) instead of being handed back to the preparer.
+- Only two things still return for manual work: captions the model rejects twice (subtotals/totals/non-financial) and rows with no unambiguous current-year figure (year rule).
+- NOTE on confidence: it is **self-reported by the model** in its JSON reply (`"c"`), not computed. `EN9norm1` only sanitises it (anything not literally high/medium → low). The real safety is the deterministic `bF` gate, which is confidence-independent.

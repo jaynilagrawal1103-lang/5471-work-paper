@@ -153,9 +153,14 @@ Keys are entered by the user at runtime and are never bundled into the build.
 When a Groq API key is present, processing ends with an automatic AI pass that maps
 leftover trial-balance captions to schedule lines and unrecognised entity-particular
 captions (e.g. "company formation date") to profile fields, each with a model-reported
-confidence; low-confidence proposals are only suggested, never booked. Settings ▸
-AI platform ▸ "Automatic AI mapping" turns this off. Without a key the pass is skipped
-silently and the tool remains fully offline.
+confidence. It runs in one pass: anything unresolved on the first attempt is re-asked
+with its amounts, year tags and source document, and everything the model can place is
+booked — low-confidence results are booked *and* raised as review exceptions to verify,
+rather than handed back for a second manual AI round. Only captions the model rejects
+twice (subtotals, totals, non-financial rows) and rows with no unambiguous current-year
+figure return for manual assignment. Settings ▸ AI platform ▸ "Automatic AI mapping"
+turns this off. Without a key the pass is skipped silently and the tool remains fully
+offline.
 
 Exchange rates follow a fixed chain: (1) the bundled IRS yearly-average / US Treasury
 12/31 tables; (2) OFX daily data — a period average for C59 and the nearest daily rate

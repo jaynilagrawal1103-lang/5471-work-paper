@@ -58,6 +58,25 @@ res = QF(Array.from({ length: 45 }, (_, i) => [`unknown caption number ${i}`, "v
 a(res.EN9unmatched.length === 40, "QF: candidate cap at 40 per grid");
 a(JSON.stringify(QF(null).EN9unmatched) === "[]", "QF: null-grid early return carries EN9unmatched:[]");
 
+// --- one-pass behaviour (book everything safe, flag low confidence) --------
+const air = dist.slice(dist.indexOf("async function EN9aiRun"), dist.indexOf("var Be={EN9_expose"));
+a(/EN9retry=A\.filter\(x=>\{let v=h\.get\(x\.idx\);return!v\|\|!v\.t\|\|!EN9ok\(v\)\}\)/.test(air),
+  "pass 2 retries exactly the rows pass 1 left null or low-confidence");
+a(air.includes("EN9retry.length&&await EN9ask(EN9retry,!0)"), "pass 2 fires only when there are leftovers");
+a(air.includes("f&&f.t&&h.set(x.idx,f)"), "a null reply in pass 2 cannot erase a pass-1 suggestion");
+a(/year tags: \$\{\(x\.row\.years\|\|\[\]\)/.test(air) && air.includes("amounts: ${(x.row.values||[]).join"),
+  "pass 2 prompt carries amounts and year tags as extra evidence");
+a(air.includes("Other income") && air.includes("only use null when the caption is a subtotal".replace("only","Only")),
+  "pass 2 prompt allows Other-income/deduction pools and restricts null to subtotals");
+// booking no longer gated on confidence: bF is called before any EN9ok test
+const bookIdx = air.indexOf('bF(U,d,C,I,v.t,x,"groq")');
+const okIdx = air.indexOf("EN9ok(v)||(l++");
+a(bookIdx > 0 && okIdx > bookIdx, "low confidence is booked first, then flagged (confidence no longer gates booking)");
+a(air.includes('level:"warn",category:"mapping",applied:!0'), "low-confidence ledger booking raises an applied warn review item");
+a(air.includes('level:"warn",category:"profile",applied:!0'), "low-confidence profile fill raises an applied warn review item");
+a(!/EN9ok\(v\)\)\{[^}]*E\.push\(x\)/.test(air), "no path parks a low-confidence row back into unmatched");
+a(air.includes("could not be placed"), "log reports what genuinely could not be placed");
+
 // --- dist wiring smoke -----------------------------------------------------
 a(dist.includes('"AI mapping of leftover captions"]'), "6th processing step present");
 a(dist.includes("try{await EN9aiRun(t,s,!1)}catch"), "processEntity awaits the AI pass inside its own try/catch");
