@@ -37,4 +37,28 @@ a(r.length===2&&r[0].value===90&&r[1].value===80,'grid BS takes last=eoy, previo
 // no-cy fallback: max tagged year treated as current
 r=vF({label:'Sales',values:[7,8],years:[2022,2021]},false,{cy:null,py:null},'pdf');
 a(r.length===1&&r[0].value===7&&r[0].year===2022,'without case year, newest tagged year is current');
-console.log(process.exitCode?'TESTS FAILED':'ALL 12 vF RULE TESTS PASSED');
+// 13-15: balance-sheet rows carrying ONLY a prior-year figure still populate column D.
+// Real case: Keystone "Structural Improvements" 2024 blank / 2023 150,928 — the opening
+// balance is genuine Schedule F column D data and must not be discarded.
+{
+  const r = vF({ label: "Structural Improvements", values: [150928], years: [2023] }, true, ctx, "pdf");
+  a(Array.isArray(r) && r.length === 1 && r[0].field === "boy" && r[0].value === 150928 && r[0].year === 2023,
+    "BS row with only a prior-year value books boy (was previously dropped)");
+}
+{
+  const r = vF({ label: "Sundry expenses", values: [4361], years: [2023] }, false, ctx, "pdf");
+  a(Array.isArray(r) && r.length === 0,
+    "P&L row with only a prior-year value is still refused (unchanged)");
+}
+{
+  const r = vF({ label: "Less: Accumulated depreciation", values: [-45760], years: [2023] }, true, ctx, "pdf");
+  a(Array.isArray(r) && r.length === 1 && r[0].field === "boy" && r[0].value === -45760,
+    "BS prior-year-only negative keeps its sign into boy");
+}
+{
+  const r = vF({ label: "Odd", values: [1, 2], years: [2023, 2023] }, true, ctx, "pdf");
+  a(Array.isArray(r) && r.length === 0,
+    "BS with no CY and TWO prior-year values still refuses (ambiguous opening balance)");
+}
+
+console.log(process.exitCode?'TESTS FAILED':'ALL 16 vF RULE TESTS PASSED');

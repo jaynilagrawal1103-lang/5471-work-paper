@@ -50,6 +50,11 @@ a(!res.EN9unmatched.some(u => u.norm === "date of formation"), "QF: matched capt
 const cand = res.EN9unmatched.find(u => u.norm === "company formation date");
 a(cand && cand.value === "12/05/2014" && cand.caption === "Company formation date",
   "QF: unmatched fuzzy caption captured with caption/norm/value");
+// value-shape filter: profile values are names/dates/percentages, never page numbers or money
+res = QF([["Directors Statement", "3"], ["Commissions Received", "9,703"], ["Freight & Cartage", "842"]]);
+a(res.EN9unmatched.length === 0, "QF: table-of-contents page numbers and P&L money amounts are not profile candidates");
+res = QF([["Country of incorporation of the entity", "Australia"], ["Incorporated on this date", "10/25/2010"], ["Ownership at start", "100%"]]);
+a(res.EN9unmatched.length === 3, "QF: names, dates and percentages still qualify as profile candidates");
 res = QF([["Company formation date", ""]]);
 a(res.EN9unmatched.length === 0, "QF: caption with empty value cell excluded");
 res = QF([["1234567", "12/05/2014", "x"]]);
