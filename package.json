@@ -15,7 +15,10 @@
     "test:layer": "node tests/test_enhance.cjs",
     "test:rules": "node tests/test_vf.cjs",
     "test:spaces": "node tests/test_spaces.cjs",
-    "test:all": "npm run test:rules && npm run test:spaces && npm run test:layer",
+    "test:detect": "node tests/test_detect.cjs",
+    "test:fx": "node tests/test_fx.cjs",
+    "test:ai": "node tests/test_ai_map.cjs",
+    "test:all": "npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:layer",
     "build:full": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs"
   },
   "dependencies": {

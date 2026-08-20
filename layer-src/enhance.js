@@ -128,6 +128,15 @@ function decorateRow(r, kind){
         d.title="Manually edited \u2014 extracted total was "+sum.toLocaleString()+", current value is "+line.toLocaleString();
         tl.appendChild(d);
       } } }
+  /* AI provenance badge (via:"groq" contributions from this run) */
+  var oldA = tl.querySelector(".en9-ai-badge"); if(oldA) oldA.remove();
+  r.classList.remove("en9-ai");
+  if(e && rk && e.contributions){
+    var aic = (e.contributions[rk.key]||[]).some(function(u){ return u.via === "groq"; });
+    if(aic){ r.classList.add("en9-ai");
+      var ab = el("span","en9-ai-badge","AI");
+      ab.title = "Mapped by the Groq model \u2014 provenance in the source chips; remap with the pencil.";
+      tl.appendChild(ab); } }
 }
 
 /* ---------- grouping, subtotals, filtering ---------- */

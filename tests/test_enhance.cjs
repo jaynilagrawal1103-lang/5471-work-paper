@@ -61,6 +61,17 @@ global.window = window; global.document = window.document;
 global.MutationObserver = window.MutationObserver;
 global.CustomEvent = window.CustomEvent;
 global.requestAnimationFrame = cb => setTimeout(cb, 0);
+// jsdom (<=26) does not implement Blob.arrayBuffer(); the OCR pipeline needs it.
+if (typeof window.Blob.prototype.arrayBuffer !== 'function') {
+  window.Blob.prototype.arrayBuffer = function () {
+    return new Promise((resolve, reject) => {
+      const fr = new window.FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = () => reject(fr.error);
+      fr.readAsArrayBuffer(this);
+    });
+  };
+}
 
 // Fake store: Cash edited by hand (60,000 vs extracted 55,574); Purchases matches sum
 const __state = ({
@@ -405,5 +416,14 @@ const run = () => new Promise(r => setTimeout(r, 250));
   assert(vis3.length===4 && pager3.querySelector('.en9-pinfo').textContent.includes('Page 2 of 2'), 'pager pages correctly after the table node was re-created: '+pager3.querySelector('.en9-pinfo').textContent);
   pg10.value='ALL'; pg10.dispatchEvent(new window.Event('change',{bubbles:true})); await run();
 
-  console.log(process.exitCode? 'TESTS FAILED':'ALL 26 TEST GROUPS PASSED');
+  // 27. AI provenance badge (via:"groq" contributions)
+  __state.entities[0].contributions['IS:7'][0].via='groq';
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  const aiRow=[...d.querySelectorAll('tr')].find(r=>(r.getAttribute('data-en9s')||'').includes('gross receipts'));
+  assert(aiRow && aiRow.querySelector('.en9-ai-badge') && aiRow.classList.contains('en9-ai'), 'AI badge appears on a row with a groq contribution');
+  delete __state.entities[0].contributions['IS:7'][0].via;
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  assert(aiRow && !aiRow.querySelector('.en9-ai-badge') && !aiRow.classList.contains('en9-ai'), 'AI badge removed when the provenance is gone (idempotent rebuild)');
+
+  console.log(process.exitCode? 'TESTS FAILED':'ALL 27 TEST GROUPS PASSED');
 })();

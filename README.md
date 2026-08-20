@@ -143,12 +143,27 @@ None are required; all are keyless except Groq.
 |---|---|---|
 | MyMemory | Translation | 5,000 characters/day |
 | Lingva | Translation fallback | none published |
-| OFX | Live FX, tried first | none published |
-| Frankfurter (ECB) | Live FX, historical | none published |
+| OFX | Historical daily FX — period averages and nearest-day (±7 d) date lookups, tried first | none published |
+| Frankfurter (ECB) | Historical FX, after OFX | none published |
 | ExchangeRate-API | Live FX, latest only | none published |
-| Groq | Translation and mapping | your own API key |
+| Groq | Translation and automatic mapping of leftover captions | your own API key |
 
 Keys are entered by the user at runtime and are never bundled into the build.
+
+When a Groq API key is present, processing ends with an automatic AI pass that maps
+leftover trial-balance captions to schedule lines and unrecognised entity-particular
+captions (e.g. "company formation date") to profile fields, each with a model-reported
+confidence; low-confidence proposals are only suggested, never booked. Settings ▸
+AI platform ▸ "Automatic AI mapping" turns this off. Without a key the pass is skipped
+silently and the tool remains fully offline.
+
+Exchange rates follow a fixed chain: (1) the bundled IRS yearly-average / US Treasury
+12/31 tables; (2) OFX daily data — a period average for C59 and the nearest daily rate
+within 7 days of the requested date for C60/C61 and dividend payment dates, always
+labelled with the resolved date; (3) the other configured live providers; (4) manual
+entry. Every rate displays its source (IRS / Treasury / OFX / ECB / Manual) throughout
+the app. Fiscal-year entities skip the calendar tables but do receive the OFX steps
+over their actual fiscal period, flagged for review.
 
 **Serve over HTTPS.** Browsers block these calls from `file://`.
 

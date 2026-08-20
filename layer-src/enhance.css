@@ -19,6 +19,7 @@ select.stake-input.en9-hide{display:none}
 .en9-pencil:hover{background:#eef2ff;color:#3730a3}
 /* --- badges & markers --- */
 .en9-multi-badge{display:inline-block;margin-left:6px;background:#eef2ff;color:#3730a3;border-radius:999px;font-size:9px;font-weight:800;padding:1px 7px;letter-spacing:.03em;vertical-align:middle}
+.en9-ai-badge{display:inline-block;margin-left:6px;background:#fdf0e3;color:#9a5b09;border-radius:999px;font-size:9px;font-weight:800;padding:1px 7px;letter-spacing:.03em;vertical-align:middle}
 tr.en9-edited td:first-child{box-shadow:inset 3px 0 0 #f59e0b}
 .en9-edited-dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:#f59e0b;margin-left:6px;vertical-align:middle}
 /* --- group rows & subtotals --- */
