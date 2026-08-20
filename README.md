@@ -16,13 +16,21 @@ Everything runs client-side. Documents are parsed in the browser and are never u
 
 ```bash
 npm install
-npm run build      # writes dist/index.html
-npm start          # build, then serve dist/ on localhost
+npm start          # serves the committed dist/ on localhost
 ```
 
+> **Serve over HTTPS (or localhost).** Browsers block the tool's network calls
+> and IndexedDB persistence from `file://` — do not open `index.html` directly.
+>
+> **Note on builds:** `npm run build` is intentionally a no-op. The shipped
+> application is the *committed* `dist/index.html` — every fix is applied to it
+> directly (see `PROJECT-NOTES.md`). `npm run build:app` would regenerate it
+> from the older `src/` tree and **must not be run** unless you are porting the
+> fixes back to source first.
+
 `dist/index.html` is the entire application — one self-contained file with the master
-template, the exchange-rate tables and all code inlined. Open it directly, or drop it
-on any static host.
+template, the exchange-rate tables and all code inlined. Drop it on any static host
+(HTTPS) or serve it locally.
 
 ---
 
@@ -31,7 +39,7 @@ on any static host.
 | | |
 |---|---|
 | **Reads** | `.xlsx` `.xlsm` `.csv` `.tsv` `.txt` and **text-layer PDFs** |
-| **Maps** | 43 multilingual keyword rules onto Schedule C and Schedule F lines |
+| **Maps** | 50+ multilingual keyword rules (growing as you assign captions), then an automatic AI pass |
 | **Detects** | Legal name, address, country, formation date, currency, ownership, categories |
 | **Rates** | IRS yearly averages (2017–2025) and US Treasury 12/31 spot rates, 151 currencies |
 | **Validates** | Refuses to generate while an exchange rate is missing |
@@ -54,8 +62,8 @@ FlateDecode) is kept for producers pdf.js rejects. It handles compressed object
 streams, text inside Form XObjects, and Identity-H CID fonts with no ToUnicode map
 (recovering characters by inverting the embedded TrueType `cmap` table).
 
-Scanned PDFs have no text layer; the tool reports that plainly rather than returning
-an empty result.
+Scanned PDFs have no text layer; the tool reports that plainly and offers the
+in-browser OCR card (Tesseract.js, on Document intake) to build a searchable copy.
 
 ### Review workflow
 
@@ -80,9 +88,14 @@ persistence (state, documents, sign-offs survive reloads and machines), the
 as workpapers are processed and generated), and shared policies.
 
 ```bash
-npm run build            # builds dist/index.html AND dist-server/server.cjs
+npm run build:server     # builds dist-server/server.cjs (dist/ is already committed)
 DATABASE_URL=postgres://… node dist-server/server.cjs
 ```
+
+> **The backend has no authentication and no tenant isolation** — every
+> connected browser shares one workspace and `GET /api/workpapers` lists
+> everything. Run it only on a private network for a single team. Do not
+> expose it publicly until auth lands.
 
 One service serves both the API and the app (default port 8471). Env:
 `DATABASE_URL` (Postgres), optional `PORT`, `MAX_UPLOAD_MB` (default 25),
@@ -90,7 +103,7 @@ One service serves both the API and the app (default port 8471). Env:
 `server/migrations/` run at boot.
 
 **Railway**: create a project with a Postgres plugin, set the build command
-to `npm ci && npm run build` and the start command to `npm run start:server`,
+to `npm ci && npm run build:server` and the start command to `npm run start:server`,
 and reference the plugin's `DATABASE_URL`. A static Netlify/Pages build can
 attach to it via Settings ▸ Tool configuration ▸ Backend URL.
 
@@ -113,10 +126,11 @@ could exist for the same cell.
 **Judgment** — filer category, book-to-tax adjustments, E&P, Subpart F and GILTI,
 foreign tax credit, previously taxed E&P, functional currency determination.
 
-**Data the documents don't contain** — prior-year carryovers, rates for non-calendar
-year ends, text in scanned images.
+**Data the documents don't contain** — prior-year carryovers, and text in scanned
+images until you run them through the OCR card. (Fiscal / non-calendar year ends now
+get OFX daily rates over the actual period.)
 
-`docs/5471-workpaper-user-guide.docx` covers all of this in detail.
+`docs/5471-workpaper-user-guide.docx` covers the concepts, but **predates the current UI** (tab numbering and stage counts have changed) — the in-app copy is authoritative.
 
 ---
 
@@ -131,7 +145,8 @@ year ends, text in scanned images.
 | Income statement, local currency | `Income Statement` F7:F59 |
 | Balance sheet, local currency | `Balance Sheet` D10:D62 and F10:F62 |
 
-Nothing else is touched.
+Plus a generated **Provenance** sheet listing every AI-placed figure and every
+exchange rate with its source. Nothing else is touched.
 
 ---
 
@@ -170,7 +185,7 @@ entry. Every rate displays its source (IRS / Treasury / OFX / ECB / Manual) thro
 the app. Fiscal-year entities skip the calendar tables but do receive the OFX steps
 over their actual fiscal period, flagged for review.
 
-**Serve over HTTPS.** Browsers block these calls from `file://`.
+(HTTPS reminder moved to Quick start.)
 
 ---
 
@@ -180,7 +195,7 @@ over their actual fiscal period, flagged for review.
 assets/master-template.xlsx     the Form 5471 master workbook, inlined at build time
 scripts/build.mjs               bundles and inlines everything into dist/index.html
 src/entry.tsx                   mounts the app
-src/prototype/Shell.tsx         navigation shell (14 tabs)
+src/prototype/Shell.tsx         navigation shell (16 tabs; src/ is behind dist — see PROJECT-NOTES.md)
 src/prototype/PrototypeApp.tsx  view routing
 src/prototype/wp/
   store.ts                      state, actions, validation, generation
@@ -214,7 +229,7 @@ Any static host. `dist/` is the publish directory.
 
 ## Notes
 
-- Work is held in the browser session. Generate before closing the tab.
+- Work persists in this browser (IndexedDB) and restores when you reopen the page.
 - Deep links work: `?view=fx`, `?view=entities`.
 - Eleven `#DIV/0!` cells on Schedule E and Entity Structure exist in the master
   template before the tool touches it; they divide by inputs a preparer supplies.

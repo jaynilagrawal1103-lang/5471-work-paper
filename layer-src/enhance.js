@@ -608,7 +608,7 @@ EN9OCR.realIO={
       chain=chain.then(function(){return en9LoadScript("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js")})
         .then(function(){ window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"; }); }
     if(!window.Tesseract){ chain=chain.then(function(){ st("Downloading Tesseract OCR engine (open source)\u2026");
-      return en9LoadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"); }); }
+      return en9LoadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"); }); }
     if(!window.PDFLib){ chain=chain.then(function(){ st("Downloading PDF writer\u2026");
       return en9LoadScript("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"); }); }
     return chain;
