@@ -44,6 +44,9 @@ async function ensureWorkpaper(ent: Entity): Promise<string> {
     entityClientId: ent.id,
     stateJson: serializeEntity(ent),
   });
+  // A null create (204 / parse failure) must fail loudly ONCE — dereferencing
+  // it made every autosave flush throw the same TypeError forever.
+  if (!created?.id) throw new Error("createWorkpaper returned no record");
   versions[ent.id] = created.version;
   setSession({ workpaperIds: { ...sessionSnapshot().workpaperIds, [ent.id]: created.id } });
   return created.id;
@@ -105,12 +108,12 @@ function scheduleFlush() {
 
 export async function refreshTasks() {
   try {
-    setSession({ tasks: await api.listTasks() });
+    setSession({ tasks: (await api.listTasks()) || [] });
   } catch { /* transient */ }
 }
 
 async function hydrateAll() {
-  const list = await api.listWorkpapers();
+  const list = (await api.listWorkpapers()) || [];
   if (!list.length) return;
   const entities: Entity[] = [];
   const ids: Record<string, string> = {};

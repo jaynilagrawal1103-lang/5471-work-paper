@@ -38,6 +38,16 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (res.status === 204) return null as T;
+  // An SPA-fallback host answers /api/* with 200 + the app's own HTML — that
+  // is NOT a backend. Treating it as one turned lists into nulls and
+  // white-screened the Tasks view.
+  const ct = res.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    throw Object.assign(new Error("no backend at this origin (non-JSON response)"), {
+      status: res.status,
+      EN9nobackend: true,
+    });
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const err = new Error((data && (data as { error?: string }).error) || `HTTP ${res.status}`) as Error & { status?: number; data?: unknown };

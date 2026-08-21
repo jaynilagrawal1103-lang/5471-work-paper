@@ -28,6 +28,20 @@ npm start          # serves the committed dist/ on localhost
 > from the older `src/` tree and **must not be run** unless you are porting the
 > fixes back to source first.
 
+**2026-08-21:** the app degrades gracefully when no backend is reachable
+(Task management shows a friendly notice on both 404 and SPA-fallback hosts —
+never a blank screen); generate buttons live only in Executive overview,
+Workpaper preview, Entity workspace and Sign-off, and the Overview button
+becomes **Preview format** (downloads the blank master template) until
+something is processed; the full OCR panel appears only on an entity's
+Documents tab (elsewhere a compact `⚠ OCR — verify` badge marks OCR-sourced
+values, and Settings carries one OCR card at the bottom of Free services);
+re-processing treats the **current** document set as the single source of
+truth — auto-detected data from removed documents is pruned (hand-typed
+values, sign-offs and saved mappings survive), and removing a file resets the
+entity to "needs processing". `npm run test:all` — 7 suites, 29 layer test
+groups.
+
 `dist/index.html` is the entire application — one self-contained file with the master
 template, the exchange-rate tables and all code inlined. Drop it on any static host
 (HTTPS) or serve it locally.

@@ -59,3 +59,59 @@ Two defects found by running three real AU client PDFs through the tool:
 
 Measured on the real files (two AU CFCs, 30 June 2024 fiscal year ends):
 Keystone 74 captions → 68 booked (91.9%); Shaka 73 → 70 (95.9%). Every remaining row is a P&L caption whose current-year column is blank in the source PDF — nothing to book. FX filled from OFX (fiscal year ⇒ IRS calendar tables correctly not applied). The ZUNO 2023 federal return also fanned out a third CFC, "Hope Dealers Pty Ltd", for which no 2024 financial statements were supplied.
+
+### Session 2026-08-21 — crash-proofing, button hygiene, OCR placement, honest re-processing
+
+Dist string patches (all anchors were unique; pinned by `tests/test_gen.cjs`):
+1. `refreshTasks` coerces a null task list to `[]`; `hydrateAll` tolerates a
+   null workpaper list; `ensureWorkpaper` throws "createWorkpaper returned no
+   record" instead of dereferencing a null create result (killed the autosave
+   TypeError loop). Tasks callout title is now "Task management is currently
+   unavailable — backend connection required".
+2. Generate buttons now live ONLY in Executive overview, Workpaper preview,
+   Entity workspace ("Generate this entity") and Review & sign-off. The
+   Entities & documents page-header button was removed; Workpaper readiness'
+   action is an "Open sign-off" link.
+3. `removeFile` also drops `docClasses[fileId]` + `docKindOverrides[fileId]`,
+   resets `status:"idle"`, and nulls `processedAt` when no files remain.
+4. `/*EN9PRUNE-BEGIN*/…/*EN9PRUNE-END*/` before the re-process wipe: detected
+   entries (incl. `cat:*`), profile/ownership values still equal to their
+   detection, cf-seeded categories, sourced shareholders, currencyConfirmed
+   and fxAuto rates are cleared when their source document is no longer
+   attached. Hand-typed values, sign-offs, mapOverrides, translations and
+   excludedSheets survive. Audit line: "Stale document data cleared".
+
+Layer (`layer-src/enhance.js` + `enhance.css`; re-inject after edits):
+- `enhanceOverviewButton()` — with nothing processed, the Overview primary
+  action becomes "Preview format" (downloads the untouched master template
+  from `#wp-template` as `5471_Workpaper_Blank_Format.xlsx`); the React
+  Generate button is hidden via `.en9-swapped`, restored when any entity has
+  lines or a completed run, and the layer stands down if a rebuilt app ships
+  its own Preview-format button.
+- `enhanceOcrPanel()` re-anchored: the card sits INSIDE the docs-tab content,
+  directly after the dropzone, so a tab switch removes it — it can no longer
+  linger on Shareholders/Dividends. A pending OCR result re-surfaces after a
+  rebuild; "Add to intake" is one-shot (`EN9OCR.result` cleared).
+- OCR provenance badge `⚠ OCR — verify` (`.en9-ocr-flag`): mapping rows and
+  any `.wp-table` provenance small citing an "(OCR).pdf" document. The full
+  OCR panel appears nowhere else.
+- Settings cards are tab-scoped via `en9SettingsTab()`: Authoritative sources
+  on Methodologies only, the OCR engine card at the bottom of Free services
+  only.
+
+src/ mirrors (land on the next proper rebuild; src is still behind dist):
+api.ts non-JSON throw, persist.ts null guards, TasksView guard-before-map +
+copy, PrototypeApp `ViewBoundary` error boundary (src-only — not patchable
+into the minified React tree), store `downloadBlankTemplate()` +
+`pruneRemovedDocData()` + removeFile parity + `detected["cat:*"]` seeds,
+Overview/Readiness/Entities button changes.
+
+Tests: `test_gen.cjs` +13 pins; `test_enhance.cjs` now 29 groups (19 and 21
+rewritten for tab scoping/placement, 23 asserts one-shot intake, 28 Overview
+swap + blank download, 29 OCR badges). Verified live on both failure modes:
+plain 404 (`npx serve dist`) and SPA-fallback 200-HTML — friendly message,
+zero console errors, no white screen.
+
+NOTE: the previously-live deployment predates these fixes (its white screen
+and extra Generate buttons are stale-build artifacts) — redeploy `dist/`
+verbatim.

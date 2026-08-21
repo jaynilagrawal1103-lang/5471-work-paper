@@ -10,6 +10,9 @@ export type DetectedField = {
   value: string;
   sourceLabel: string;
   confidence: "high" | "medium";
+  /** Stable provenance for the staleness prune — the source document's name
+      when known (sourceLabel is human-prose and may not start with it). */
+  src?: { doc?: string };
 };
 
 type Matcher = {

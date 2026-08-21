@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState, type ReactNode } from "react";
+import { Callout } from "./primitives";
 import { NAV_ITEMS, Shell, type ViewId } from "./Shell";
 import { TasksView } from "./wp/TasksView";
 import { initPersistence } from "./wp/persist";
@@ -19,6 +20,27 @@ import { Splash } from "./wp/Splash";
 import { safeReplaceState } from "./wp/safeBrowser";
 
 type AppProps = { initialView: string };
+
+/* One crashing view must never take the whole app with it: the boundary
+   keeps the shell alive and, keyed on the active view, resets itself the
+   moment the user navigates elsewhere. */
+class ViewBoundary extends Component<{ children: ReactNode }, { err: boolean }> {
+  state = { err: false };
+  static getDerivedStateFromError() { return { err: true }; }
+  componentDidCatch(e: unknown) { console.error("view crashed:", e); }
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="view-stack">
+          <Callout title="This view hit an error" tone="amber">
+            This view hit an error — switch views or reload the page. Details are in the browser console.
+          </Callout>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function normalizeView(value: string): ViewId {
   return NAV_ITEMS.some((item) => item.id === value) ? (value as ViewId) : "overview";
@@ -56,7 +78,9 @@ export function PrototypeApp({ initialView }: AppProps) {
   return (
     <>
       <Splash />
-      <Shell activeView={activeView} onNavigate={navigate}>{content}</Shell>
+      <Shell activeView={activeView} onNavigate={navigate}>
+        <ViewBoundary key={activeView}>{content}</ViewBoundary>
+      </Shell>
     </>
   );
 }

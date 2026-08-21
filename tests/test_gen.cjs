@@ -31,6 +31,28 @@ a(dist.includes('includes("application/json")') && dist.includes("no backend at 
   "un() rejects non-JSON responses — an SPA fallback page is not a backend");
 a(dist.includes('||!Array.isArray(e.tasks))return'),
   "Task view falls back to local mode instead of dereferencing null tasks");
+a(dist.includes('tasks:(await ss.listTasks())||[]'),
+  "refreshTasks coerces a null task list to []");
+a(dist.includes('(await ss.listWorkpapers())||[]'),
+  "hydrateAll tolerates a null workpaper list");
+a(dist.includes('createWorkpaper returned no record'),
+  "ensureWorkpaper rejects a null create result (no autosave TypeError loop)");
+a(dist.includes('title:"Task management is currently unavailable'),
+  "friendly no-backend copy on the Tasks view");
+
+// generate-button placement (Overview/Preview/Workspace/Sign-off only)
+a(!dist.includes('disabled:t.busy,onClick:()=>void Be.generateWorkpapers()'),
+  "Entities-header generate button removed");
+a(!dist.includes('children:n.length?"Blocked":"Generate"'),
+  "Readiness generate button removed");
+a(dist.includes('children:"Open sign-off"'),
+  "Readiness links to Sign-off instead");
+
+// re-processing truth: current documents are the single source
+a(dist.includes("/*EN9PRUNE-BEGIN*/"),
+  "re-process prunes data sourced from removed documents");
+a(dist.includes('docKindOverrides:EN9dk,status:"idle"'),
+  "removeFile clears per-doc state and resets status");
 
 // manual FX protection
 a(dist.includes('r[h]&&r[h].tag==="Manual"'), "auto-fill never overwrites a Manual-tagged rate");
