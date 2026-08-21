@@ -50,7 +50,8 @@ ${Array.from({length:12},(_,i)=>`<tr><td colspan=2>wide ${i}</td><td>x</td></tr>
 </tbody></table></div></section>
 <div class="view-stack"><section class="panel"><div class="panel-heading"><div><span class="section-kicker">3 selected</span><h2>Filing categories</h2></div></div>
 <div class="cat-row"><label class="cat-chip on"><input type="checkbox" checked>Category 4</label></div></section></div>
-<div class="view-stack"><p>Every methodology, rule set, model and limit this tool applies, in one place</p></div>
+<div class="view-stack"><p>Every methodology, rule set, model and limit this tool applies, in one place</p>
+<div class="tab-row"><button class="tab-button">Methodologies</button><button class="tab-button active">Free services</button></div></div>
 <section class="panel"><div class="dropzone"><strong>Drop documents</strong></div></section>
 <div class="log-list"><div>entry 1</div><div>entry 2</div></div>
 </body>`;
@@ -290,12 +291,22 @@ const run = () => new Promise(r => setTimeout(r, 250));
   window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
   assert(d.querySelectorAll('.en9-auth-card').length===2, 'panel reacts to category toggle (card removed)');
 
-  // 19. settings authoritative-sources card
+  // 19. settings cards are TAB-scoped: sources on Methodologies, OCR card on
+  // Free services — never duplicated across every settings tab.
+  const svTabs=[...d.querySelectorAll('.tab-row .tab-button')];
+  const tabMeth=svTabs.find(b=>b.textContent==='Methodologies'), tabFree=svTabs.find(b=>b.textContent==='Free services');
+  assert(!d.querySelector('.en9-sources'), 'sources card absent while Free services is the active tab');
+  tabFree.classList.remove('active'); tabMeth.classList.add('active');
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
   const src=d.querySelector('.en9-sources');
   assert(src && src.querySelector('a').href.includes('irs.gov/instructions/i5471'), 'Settings shows the IRS instructions as authoritative source');
   assert(src.textContent.includes('highest-priority source'), 'Settings card states the priority rule');
+  assert(!d.querySelector('.en9-ocrset'), 'OCR settings card leaves when Free services is not active');
   window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
   assert(d.querySelectorAll('.en9-sources').length===1, 'settings card idempotent');
+  tabMeth.classList.remove('active'); tabFree.classList.add('active');
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  assert(!d.querySelector('.en9-sources'), 'sources card removed when leaving Methodologies');
 
   // 20. command palette (Linear-inspired)
   assert(d.querySelector('.topbar .en9-kbd-hint'), 'topbar shows the \u2318K hint');
@@ -318,9 +329,21 @@ const run = () => new Promise(r => setTimeout(r, 250));
   assert(kbar.hidden, 'Escape closes the palette');
   assert(d.querySelectorAll('.en9-kbar').length===1, 'palette is a singleton (idempotent)');
 
-  // 21. OCR panel injection + entity options
+  // 21. OCR panel placement: INSIDE the docs container, directly after the
+  // dropzone — a tab switch takes it away; it may never linger on other tabs.
+  {
+    const dz0=d.querySelector('.dropzone');
+    assert(dz0.nextElementSibling && dz0.nextElementSibling.classList.contains('en9-ocr'), 'OCR card sits directly after the dropzone, inside the docs container');
+    const sec0=dz0.closest('section'); const par0=sec0.parentElement;
+    sec0.remove();
+    window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+    assert(!d.querySelector('.en9-ocr'), 'OCR card leaves with its tab (no bleed onto Shareholders/Dividends)');
+    par0.appendChild(sec0);
+    window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+    assert(d.querySelector('.en9-ocr'), 'OCR card returns with the Documents tab');
+  }
   const ocr=d.querySelector('.en9-ocr');
-  assert(ocr, 'OCR card injected before the intake panel');
+  assert(ocr, 'OCR card injected');
   assert(ocr.textContent.includes('Tesseract') && ocr.textContent.includes('never leaves this browser'), 'card names the free engine and the privacy model');
   const osel=ocr.querySelector('select');
   assert(osel.options.length===3 && osel.value==='K', 'entity selector lists all entities, defaults to active');
@@ -367,6 +390,10 @@ const run = () => new Promise(r => setTimeout(r, 250));
   ocr.querySelector('.en9-ocr-acts .primary').click();
   assert(added && added.eid==='S' && added.files[0].name.includes('(OCR)'), 'Add to intake calls the store action with the chosen entity');
   assert(stat.textContent.includes('verify every figure'), 'post-add message mandates verification');
+  assert(window.__EN9OCR.result===null, 'OCR result cleared after intake (one-shot)');
+  assert(ocr.querySelector('.en9-ocr-acts').style.display==='none', 'action row hidden after intake');
+  added=null; ocr.querySelector('.en9-ocr-acts .primary').click();
+  assert(added===null, 'a second click cannot add the same OCR file twice');
   d.dispatchEvent(new window.KeyboardEvent('keydown',{key:'k',ctrlKey:true,bubbles:true,cancelable:true}));
   const kinO=d.querySelector('.en9-kin');
   kinO.value='ocr'; kinO.dispatchEvent(new window.Event('input',{bubbles:true}));
@@ -425,5 +452,47 @@ const run = () => new Promise(r => setTimeout(r, 250));
   window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
   assert(aiRow && !aiRow.querySelector('.en9-ai-badge') && !aiRow.classList.contains('en9-ai'), 'AI badge removed when the provenance is gone (idempotent rebuild)');
 
-  console.log(process.exitCode? 'TESTS FAILED':'ALL 27 TEST GROUPS PASSED');
+  // 28. Overview: Preview format <-> Generate (one state-dependent primary action)
+  d.body.insertAdjacentHTML('beforeend',
+    '<header class="section-header"><div><span class="section-kicker">Acme</span><h1>Executive overview</h1></div>'+
+    '<div class="signoff-actions"><button class="button">Open workspace</button>'+
+    '<button class="button primary">Generate work paper</button></div></header>'+
+    '<script id="wp-template" type="application/octet-stream">UEsDBA==</'+'script>');
+  window.URL.createObjectURL=()=>'blob:en9'; window.URL.revokeObjectURL=()=>{};
+  let dlName=null; window.HTMLAnchorElement.prototype.click=function(){ dlName=this.download; };
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  assert(!d.querySelector('.en9-pfbtn'), 'processed state keeps the real Generate button (no swap)');
+  const stashLines=__state.entities[0].lines; __state.entities[0].lines={};
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  const pf=d.querySelector('.en9-pfbtn');
+  const genB=[...d.querySelectorAll('.signoff-actions button.primary')].find(b=>b.textContent==='Generate work paper');
+  assert(pf && genB && genB.classList.contains('en9-swapped'), 'nothing processed: Generate hidden, Preview format offered');
+  pf.click();
+  assert(dlName==='5471_Workpaper_Blank_Format.xlsx', 'Preview format downloads the untouched master template: '+dlName);
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  assert(d.querySelectorAll('.en9-pfbtn').length===1, 'preview button is a singleton');
+  __state.entities[0].lines=stashLines;
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  assert(!d.querySelector('.en9-pfbtn') && !genB.classList.contains('en9-swapped'), 'processed state restores the real Generate button');
+
+  // 29. OCR provenance badge: the compact "verify" flag wherever a value from
+  // an "(OCR).pdf" document lands — the full panel stays on Documents ▸ OCR.
+  const cashSmall=[...d.querySelectorAll('td small')].find(s=>s.textContent.includes('Keystone FS.pdf p.9'));
+  cashSmall.textContent='(eoy 55,574 · 2024 · Keystone Scan (OCR).pdf p.9)';
+  d.body.insertAdjacentHTML('beforeend',
+    '<div class="wp-table" id="shx"><table><thead><tr><th>Shareholder</th></tr></thead><tbody>'+
+    '<tr><td><input value="JOYCE"><small>ZUNO0002 - 2023 Federal Tax Return (OCR).pdf · Sch B p.4</small></td></tr>'+
+    '<tr><td><input value="OTHER"><small>Prior 5471.pdf · Sch B p.4</small></td></tr>'+
+    '</tbody></table></div>');
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  const cashRow=[...d.querySelectorAll('tr')].find(r=>(r.getAttribute('data-en9s')||'').includes('cash'));
+  assert(cashRow && cashRow.querySelector('.en9-ocr-flag') && cashRow.classList.contains('en9-ocrsrc'), 'mapping row from an (OCR).pdf source carries the verify flag');
+  const shTab=d.getElementById('shx');
+  assert(shTab.querySelectorAll('.en9-ocr-flag').length===1, 'shareholder-style OCR source gets exactly one flag; non-OCR row unbadged');
+  const grRow=[...d.querySelectorAll('tr')].find(r=>(r.getAttribute('data-en9s')||'').includes('gross receipts'));
+  assert(grRow && !grRow.querySelector('.en9-ocr-flag'), 'non-OCR mapping rows stay unbadged');
+  window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
+  assert(d.querySelectorAll('.en9-ocr-flag').length===2, 'OCR flags idempotent across re-renders: '+d.querySelectorAll('.en9-ocr-flag').length);
+
+  console.log(process.exitCode? 'TESTS FAILED':'ALL 29 TEST GROUPS PASSED');
 })();

@@ -561,7 +561,19 @@ export const actions = {
     if (!ent) return;
     const f = ent.files.find((x) => x.id === fileId);
     if (f) logEvent("Document removed", f.name, ent.name);
-    updateEntity(entityId, { files: ent.files.filter((x) => x.id !== fileId) });
+    // A removed document takes its per-file derived state with it, and the
+    // entity must be re-processed — stale "ready" over a changed document
+    // set was exactly how deleted-document data lingered.
+    const files = ent.files.filter((x) => x.id !== fileId);
+    const docClasses = { ...ent.docClasses };
+    const docKindOverrides = { ...(ent.docKindOverrides || {}) };
+    delete docClasses[fileId];
+    delete docKindOverrides[fileId];
+    updateEntity(entityId, {
+      files, docClasses, docKindOverrides,
+      status: "idle",
+      ...(files.length ? {} : { processedAt: null }),
+    });
     if (f) set({ usage: { ...state.usage, storage: Math.max(0, state.usage.storage - f.size) } });
   },
 
@@ -1087,6 +1099,15 @@ export const actions = {
     if (!start.files.length) { toast("Add at least one document first", "bad"); return; }
 
     logEvent("Processing started", `${start.files.length} document(s)`, start.name);
+    // The CURRENT document set is the single source of truth: auto-derived
+    // data whose source document is gone is pruned before re-detection.
+    {
+      const pruned = pruneRemovedDocData(start);
+      if (pruned) {
+        updateEntity(entityId, pruned);
+        logEvent("Stale document data cleared", "values sourced from removed documents were reset before re-processing", start.name, "system");
+      }
+    }
     // A re-run starts clean: mapped lines, provenance and review state rebuild.
     // Snapshot what the wipe destroys so a mid-run failure can restore it,
     // and so sign-offs survive a re-process.
@@ -1592,7 +1613,13 @@ export const actions = {
                 source: cfSource,
               });
             }
-            for (const cat of cf.categories) if (!categories[cat]) { categories[cat] = true; filled++; }
+            for (const cat of cf.categories) if (!categories[cat]) {
+              categories[cat] = true;
+              // Provenance handle for the staleness prune: an auto-seeded
+              // category clears when its source 5471 is removed.
+              detected["cat:" + cat] = { key: "cat:" + cat, value: "Yes", sourceLabel: `${cfSource} · Item B`, confidence: "high", src: { doc: cfSource } };
+              filled++;
+            }
             if (cf.categories.length) {
               rv({
                 id: "cf-categories", level: "warn", category: "carry-forward",
@@ -1606,7 +1633,11 @@ export const actions = {
             const found = detectProfile(rows);
             for (const d of found.profile) propose(profile, d.key, d.value, d.sourceLabel);
             for (const d of found.ownership) propose(ownership, d.key, d.value, d.sourceLabel);
-            for (const cat of found.categories) if (!categories[cat]) { categories[cat] = true; filled++; }
+            for (const cat of found.categories) if (!categories[cat]) {
+              categories[cat] = true;
+              detected["cat:" + cat] = { key: "cat:" + cat, value: "Yes", sourceLabel: "profile documents", confidence: "medium" };
+              filled++;
+            }
           }
 
           if (!profile.currency) {
@@ -2000,6 +2031,23 @@ export const actions = {
   },
 
   /* ---------------- generation ---------------- */
+  /** Overview "Preview format": the untouched master template, so the output
+      shape can be inspected before anything is processed. */
+  downloadBlankTemplate() {
+    try {
+      const blob = new Blob([templateBytes() as BlobPart],
+        { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      if (!safeDownload(blob, "5471_Workpaper_Blank_Format.xlsx")) {
+        toast("Download was blocked by the browser", "bad");
+        return;
+      }
+      logEvent("Blank template downloaded", "5471_Workpaper_Blank_Format.xlsx — untouched master template");
+      toast("Blank master template downloaded", "ok");
+    } catch (err) {
+      toast((err as Error).message, "bad");
+    }
+  },
+
   async generateOne(entityId: string) {
     const ent = state.entities.find((e) => e.id === entityId);
     if (!ent) return;
@@ -2284,6 +2332,55 @@ function rebuildShareholderWrites(ent: Entity): CellWrite[] {
     if (row > 19) add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: "", source: "template demo data cleared" });
   }
   return [...keep, ...add];
+}
+
+/** The staleness prune: drop AUTO-derived data whose source document is no
+    longer attached. Hand-typed values (no detected entry, or value drifted
+    from the detection), sign-offs, mapOverrides, translations and
+    excludedSheets are untouched. Returns null when nothing changed. */
+function pruneRemovedDocData(ent: Entity): Partial<Entity> | null {
+  const names = ent.files.map((f) => f.name);
+  const cites = (label?: string, src?: { doc?: string }): boolean => {
+    if (src?.doc) return names.includes(src.doc);
+    if (!label) return true;
+    // Only doc-shaped provenance is prunable; "statement year" and friends
+    // are conservatively kept (recomputed every run anyway).
+    if (!/\.(pdf|xlsx|xlsm|xls|csv)/i.test(label)) return true;
+    return names.some((nm) => label.startsWith(nm));
+  };
+  const detected = { ...ent.detected };
+  const profile = { ...ent.profile };
+  const ownership = { ...ent.ownership };
+  const categories = { ...ent.categories };
+  let currencyConfirmed = ent.currencyConfirmed;
+  let fxPatch: Partial<Entity> = {};
+  let changed = false;
+  for (const k of Object.keys(detected)) {
+    const d = detected[k];
+    if (!d || cites(d.sourceLabel, d.src)) continue;
+    delete detected[k];
+    changed = true;
+    if (k.startsWith("cat:")) {
+      const code = k.slice(4);
+      if (categories[code]) categories[code] = false;
+      continue;
+    }
+    if (profile[k] !== undefined && profile[k] === d.value) {
+      profile[k] = "";
+      if (k === "currency") {
+        currencyConfirmed = false;
+        if (ent.fxAuto) fxPatch = { fx: {}, fxMeta: {} };
+      }
+    } else if (ownership[k] !== undefined && ownership[k] === d.value) {
+      ownership[k] = "";
+    }
+  }
+  const shareholders = (ent.shareholders || []).filter(
+    (s) => !s.source || names.some((nm) => s.source!.startsWith(nm)),
+  );
+  if (shareholders.length !== (ent.shareholders || []).length) changed = true;
+  if (!changed) return null;
+  return { detected, profile, ownership, categories, shareholders, currencyConfirmed, ...fxPatch };
 }
 
 /** Row-56 net income is a plain SUM of rows 52–55 — income tax expense must

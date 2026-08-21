@@ -130,3 +130,10 @@ tr.en9-cfrow input:focus{outline:2px solid #c7d2fe;border-color:#818cf8;backgrou
 .status-pill.status-processing{background:#e0ecff;color:#1d4ed8}
 .status-pill.status-ready{background:#e6f6f1;color:#0f6b57}
 .status-pill.status-error{background:#fdecec;color:#b42318}
+
+/* Overview Preview-format swap: React's generate button is hidden by class,
+   never text-mutated (React-safe; the class is re-applied each pass) */
+button.en9-swapped{display:none}
+
+/* OCR provenance flag — the compact stand-in for the full OCR panel */
+.en9-ocr-flag{display:inline-block;margin-left:6px;background:#fef3c7;color:#92400e;border:1px solid #f2d9a4;border-radius:999px;font-size:9px;font-weight:800;padding:1px 7px;letter-spacing:.03em;vertical-align:middle;white-space:nowrap}

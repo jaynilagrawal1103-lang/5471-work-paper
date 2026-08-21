@@ -144,6 +144,34 @@ function decorateRow(r, kind){
       var ab = el("span","en9-ai-badge","AI");
       ab.title = "Mapped by the Groq model \u2014 provenance in the source chips; remap with the pencil.";
       tl.appendChild(ab); } }
+  /* OCR provenance badge \u2014 the full OCR panel lives on Documents \u25b8 OCR;
+     everywhere else a value from an "(OCR).pdf" document gets this flag only. */
+  var oldO = tl.querySelector(".en9-ocr-flag"); if(oldO) oldO.remove();
+  r.classList.remove("en9-ocrsrc");
+  var EN9sm=cap.querySelectorAll("small"), EN9o=false;
+  for(var oi=0;oi<EN9sm.length;oi++)
+    if(/\(OCR\)\.pdf/i.test(EN9sm[oi].textContent||"")){ EN9o=true; break; }
+  if(EN9o){ r.classList.add("en9-ocrsrc");
+    var ob2=el("span","en9-ocr-flag","\u26a0 OCR \u2014 verify");
+    ob2.title="This value came from an OCR-processed document \u2014 recognition can misread digits; verify against the original scan.";
+    tl.appendChild(ob2); }
+}
+
+/* OCR flags outside the mapping table (Shareholders/Dividends smalls etc.):
+   any .wp-table provenance small citing an "(OCR).pdf" document gets the
+   verify badge appended once. */
+function enhanceOcrBadges(){
+  var sms=document.querySelectorAll(".wp-table small");
+  for(var i=0;i<sms.length;i++){
+    var sm=sms[i]; if(isOurs(sm)) continue;
+    if(!/\(OCR\)\.pdf/i.test(sm.textContent||"")) continue;
+    if(sm.nextElementSibling&&sm.nextElementSibling.classList&&sm.nextElementSibling.classList.contains("en9-ocr-flag")) continue;
+    var row=sm.closest("tr");
+    if(row&&row.querySelector(".en9-ocr-flag")) continue;  /* mapping rows already badged */
+    var b=el("span","en9-ocr-flag","\u26a0 OCR \u2014 verify");
+    b.title="Sourced from an OCR-processed document \u2014 verify against the original scan.";
+    sm.parentElement.insertBefore(b, sm.nextSibling);
+  }
 }
 
 /* ---------- grouping, subtotals, filtering ---------- */
@@ -481,11 +509,20 @@ function enhanceCategoryAuthority(){
   });
 }
 /* ---------- Settings: authoritative sources card ---------- */
+/* The Settings description string is visible on EVERY tab — gate each layer
+   card to its own tab or it duplicates across all seven. */
+function en9SettingsTab(host){
+  var b=host.querySelector(".tab-row .tab-button.active");
+  return b?(b.textContent||"").trim():"";
+}
+
 function enhanceSettingsSources(){
   var stacks=document.querySelectorAll(".view-stack");
   for(var i=0;i<stacks.length;i++){
     var st2=stacks[i];
     if((st2.textContent||"").indexOf("Every methodology, rule set, model and limit")===-1) continue;
+    if(en9SettingsTab(st2)!=="Methodologies"){
+      var oldS=st2.querySelector(".en9-sources"); if(oldS)oldS.remove(); return; }
     if(st2.querySelector(".en9-sources")) return;
     var card=el("section","panel en9-sources");
     card.appendChild(el("strong",null,"Authoritative sources"));
@@ -683,9 +720,14 @@ function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
 function enhanceOcrPanel(){
   var dz=document.querySelector(".dropzone");
   var old=document.querySelector(".en9-ocr");
-  if(!dz){ if(old)old.remove(); return; }
-  if(old) { var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); old.EN9_fillSrc&&old.EN9_fillSrc(); return; }
-  var host=dz.closest("section.panel")||dz.parentElement; if(!host||!host.parentElement) return;
+  if(!dz||!dz.parentElement){ if(old)old.remove(); return; }
+  if(old) {
+    /* single card, always glued to the visible dropzone INSIDE the docs-tab
+       content — a tab switch unmounts that container and the card with it,
+       so the full OCR panel can never linger on Shareholders/Dividends. */
+    if(old.parentElement!==dz.parentElement||old.previousElementSibling!==dz)
+      dz.parentElement.insertBefore(old, dz.nextSibling);
+    var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); old.EN9_fillSrc&&old.EN9_fillSrc(); return; }
   var card=el("section","panel en9-ocr");
   card.appendChild(el("strong",null,"OCR a scanned PDF (beta) \u2014 Tesseract, free & open source"));
   card.appendChild(el("p","en9-ocr-sub","For image-only PDFs the parser refuses (\u201Cno text layer\u201D). This reads them with the open-source Tesseract engine and produces a searchable copy you can add to intake. The engine (~a few MB) is downloaded from cdn.jsdelivr.net on first use \u2014 your document itself never leaves this browser. Every figure from an OCR\u2019d document must be verified against the original: recognition can misread digits."));
@@ -732,7 +774,8 @@ function enhanceOcrPanel(){
   addb.addEventListener("click",function(){
     var r=EN9OCR.result; if(!r) return;
     if(window.__WPACT&&window.__WPACT.addFiles){ window.__WPACT.addFiles(r.entityId,[r.file]);
-      stat.textContent="Added \u201C"+r.file.name+"\u201D to intake \u2014 run processing, then verify every figure against the original scan."; }
+      stat.textContent="Added \u201C"+r.file.name+"\u201D to intake \u2014 run processing, then verify every figure against the original scan.";
+      EN9OCR.result=null; acts.style.display="none"; }   /* one-shot: no double intake */
     else stat.textContent="Could not reach the intake action \u2014 download the PDF and drop it on the entity instead.";
   });
   dlb.addEventListener("click",function(){
@@ -740,7 +783,9 @@ function enhanceOcrPanel(){
     var u=URL.createObjectURL(r.file), a=document.createElement("a");
     a.href=u; a.download=r.file.name; a.click(); setTimeout(function(){URL.revokeObjectURL(u)},4000);
   });
-  host.parentElement.insertBefore(card, host);
+  /* rebuilt after a tab switch: surface a still-pending OCR result */
+  if(EN9OCR.result){ stat.textContent="Done — previous OCR result is ready to add to intake."; acts.style.display=""; }
+  dz.parentElement.insertBefore(card, dz.nextSibling);
 }
 function en9OcrFillEntities(sel){
   if(!sel) return; var s=st(); if(!s) return;
@@ -764,11 +809,11 @@ function enhanceOcrSettings(){
   for(var i=0;i<stacks.length;i++)
     if((stacks[i].textContent||"").indexOf("Every methodology, rule set, model and limit")>-1){ host=stacks[i]; break; }
   var old=document.querySelector(".en9-ocrset");
-  if(!host){ if(old)old.remove(); return; }
+  /* ONE OCR info card, at the bottom of Free services only. */
+  if(!host||en9SettingsTab(host)!=="Free services"){ if(old)old.remove(); return; }
   var card=old;
   if(!card){ card=el("section","panel en9-ocrset");
-    var anchor=host.querySelector(".en9-sources");
-    anchor&&anchor.nextSibling?host.insertBefore(card,anchor.nextSibling):host.appendChild(card); }
+    host.appendChild(card); }
   while(card.firstChild)card.removeChild(card.firstChild);
   card.appendChild(el("strong",null,"OCR engine \u2014 Tesseract.js (free & open source)"));
   /* engine facts */
@@ -827,6 +872,57 @@ function enhanceOcrSettings(){
 }
 
 /* ---------- master pass ---------- */
+/* ---------- Overview: Preview format <-> Generate (state-dependent) ----------
+   With nothing processed there is nothing to generate — the primary action
+   becomes "Preview format", which downloads the untouched master template.
+   The React button is hidden via a class (never text-mutated) and restored
+   the moment any entity has extracted lines or a completed run. */
+function en9Processed(){ var s=st(); if(!s||!s.entities) return false;
+  return s.entities.some(function(e){
+    return (e.lines&&Object.keys(e.lines).length>0)||e.status==="ready"; }); }
+function en9BlankTemplate(){
+  var node=document.getElementById("wp-template"); if(!node) return false;
+  try{
+    var bin=atob((node.textContent||"").trim());
+    var arr=new Uint8Array(bin.length);
+    for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+    var blob=new Blob([arr],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    var u=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=u; a.download="5471_Workpaper_Blank_Format.xlsx"; a.click();
+    setTimeout(function(){URL.revokeObjectURL(u)},4000); return true;
+  }catch(e){ return false; }
+}
+function enhanceOverviewButton(){
+  var h1=null, hs=document.querySelectorAll(".section-header h1");
+  for(var i=0;i<hs.length;i++)
+    if(hs[i].textContent.trim()==="Executive overview"){ h1=hs[i]; break; }
+  var old=document.querySelector(".en9-pfbtn");
+  function drop(){ if(old)old.remove();
+    var g2=document.querySelector("button.en9-swapped"); if(g2)g2.classList.remove("en9-swapped"); }
+  if(!h1){ drop(); return; }
+  var head=h1.closest(".section-header");
+  var acts=head&&head.querySelector(".signoff-actions"); if(!acts){ drop(); return; }
+  var gen=null, bs=acts.querySelectorAll("button.primary");
+  for(var j=0;j<bs.length;j++) if(!isOurs(bs[j])){ gen=bs[j]; break; }
+  if(!gen){ drop(); return; }
+  /* a rebuilt app renders the state-aware button itself — stand down */
+  if((gen.textContent||"").indexOf("Preview format")>-1){ drop(); return; }
+  var s=st(), busy=!!(s&&s.busy);
+  if(en9Processed()){ gen.classList.remove("en9-swapped"); if(old)old.remove(); return; }
+  gen.classList.add("en9-swapped");
+  if(!old){
+    old=el("button","button primary en9-pfbtn","Preview format"); old.type="button";
+    old.title="Nothing has been processed yet — download the untouched master template to preview the output format.";
+    old.addEventListener("click",function(){
+      if(!en9BlankTemplate())
+        old.textContent="Download blocked — open the deployed site directly";
+    });
+    acts.appendChild(old);
+  }
+  old.disabled=busy;
+  if(old.previousElementSibling!==gen) gen.parentElement.insertBefore(old, gen.nextSibling);
+}
+
 function rebuildAll(){
   enhancing=true;
   try{
@@ -851,6 +947,8 @@ function rebuildAll(){
     enhanceOcrSettings();
     enhanceTopbarHint();
     enhanceOcrPanel();
+    enhanceOcrBadges();
+    enhanceOverviewButton();
     enhancePills();
     enhanceLog();
   }catch(e){ /* never break the app */ }

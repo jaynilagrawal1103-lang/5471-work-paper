@@ -30,13 +30,15 @@ export function TasksView({ onNavigate }: { onNavigate: (v: ViewId) => void }) {
     if (session.remote && session.connected) void refreshTasks();
   }, [session.remote, session.connected]);
 
-  const names = [...new Set(session.tasks.map((t) => t.assignee_name).filter(Boolean))] as string[];
-
-  if (!session.remote || session.connected === false) {
+  // The guard runs BEFORE any dereference of session.tasks: a broken or
+  // absent backend must degrade to the friendly callout, never a white
+  // screen. Array.isArray also catches a null smuggled in by an SPA-fallback
+  // host answering /api/* with its own HTML.
+  if (!session.remote || session.connected === false || !Array.isArray(session.tasks)) {
     return (
       <div className="view-stack">
         <SectionHeader kicker="Operations" title="Task management" description="Create and assign preparation tasks, and track each return from pending to completed." />
-        <Callout title="Backend not connected" tone="amber">
+        <Callout title="Task management is currently unavailable — backend connection required" tone="amber">
           Task management needs the backend service. {session.remote
             ? "The configured backend did not respond — check the URL under Settings ▸ Backend."
             : "This build is running in local mode: open the app from its server URL, or set the backend URL under Settings ▸ Backend."}
@@ -44,6 +46,8 @@ export function TasksView({ onNavigate }: { onNavigate: (v: ViewId) => void }) {
       </div>
     );
   }
+
+  const names = [...new Set(session.tasks.map((t) => t.assignee_name).filter(Boolean))] as string[];
 
   const create = async () => {
     if (!draft.client.trim() || !draft.subClient.trim()) return;

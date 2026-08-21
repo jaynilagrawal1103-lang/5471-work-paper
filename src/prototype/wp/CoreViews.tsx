@@ -63,9 +63,23 @@ export function OverviewView({ onNavigate }: { onNavigate: (v: ViewId) => void }
         action={
           <div className="signoff-actions">
             <button type="button" className="button" onClick={() => onNavigate("entities")}>Open workspace</button>
-            <button type="button" className="button primary" disabled={state.busy || cells === 0} onClick={() => void actions.generateWorkpapers()}>
-              {state.busy ? "Working…" : "Generate work paper"}
-            </button>
+            {state.entities.some((e) => Object.keys(e.lines).length > 0 || e.status === "ready") ? (
+              <button type="button" className="button primary" disabled={state.busy} onClick={() => void actions.generateWorkpapers()}>
+                {state.busy ? "Working…" : "Generate work paper"}
+              </button>
+            ) : (
+              // Nothing processed yet — there is nothing to generate. One
+              // button, state-dependent: preview the untouched template.
+              <button
+                type="button"
+                className="button primary"
+                disabled={state.busy}
+                title="Nothing has been processed yet — download the untouched master template to preview the output format."
+                onClick={() => actions.downloadBlankTemplate()}
+              >
+                Preview format
+              </button>
+            )}
           </div>
         }
       />
@@ -451,9 +465,9 @@ export function ReadinessView({ onNavigate }: { onNavigate: (v: ViewId) => void 
         title="Workpaper readiness"
         description="What will be written, and everything that would make the output wrong. Generation is refused while a blocking issue remains, because those are the conditions that produce #DIV/0! in the USD columns."
         action={
-          <button type="button" className="button primary" disabled={state.busy || blocking.length > 0 || cellCount(ent) === 0} onClick={() => void actions.generateOne(ent.id)}>
-            {blocking.length ? "Blocked" : "Generate"}
-          </button>
+          // Readiness is the pre-flight display; generation itself lives in
+          // Overview / Preview / Workspace / Sign-off.
+          <button type="button" className="button" onClick={() => onNavigate("signoff")}>Open sign-off</button>
         }
       />
       <ActiveEntityBar state={state} />

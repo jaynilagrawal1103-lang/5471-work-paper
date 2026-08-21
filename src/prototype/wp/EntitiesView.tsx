@@ -28,14 +28,6 @@ export function EntitiesView() {
         action={
           <div className="signoff-actions">
             <button type="button" className="button" onClick={() => actions.addEntity()}>+ Add entity</button>
-            <button
-              type="button"
-              className="button primary"
-              disabled={state.busy}
-              onClick={() => void actions.generateWorkpapers()}
-            >
-              {state.busy ? "Working…" : "Generate work paper"}
-            </button>
           </div>
         }
       />
