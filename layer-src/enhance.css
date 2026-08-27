@@ -49,24 +49,37 @@ tr.en9-hidden{display:none}
 .en9-logbtn{border:1px solid #e2e8f0;background:#fff;border-radius:8px;padding:5px 11px;font-size:11px;font-weight:600;color:#64748b;cursor:pointer;margin:4px 0}
 .en9-logbtn:hover{border-color:#a5b4fc;color:#3730a3}
 /* --- responsive --- */
+/* A5. Narrow screens scroll the table sideways INSIDE its panel. The old rule
+   turned every row into a card and hid thead outright, which took the column
+   headers and their filters with it. Headers stay put and stay sticky. */
+.app-shell,.view-stack,.panel,.two-column{min-width:0;max-width:100%}
+main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scroll */
+.wp-table{overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
 @media (max-width:900px){
   .two-column{grid-template-columns:1fr!important;display:grid}
   .entity-switch{overflow-x:auto;flex-wrap:nowrap;padding-bottom:4px}
-  .wp-table{max-height:none}
-  .wp-table table,.wp-table thead,.wp-table tbody,.wp-table tr:not(.en9-x),.wp-table td{display:block;width:100%}
-  .wp-table thead{display:none}
-  .wp-table tbody tr:not(.en9-x){border:1px solid #e2e8f0;border-radius:10px;margin-bottom:8px;padding:8px 10px;background:#fff}
-  .wp-table td{padding:3px 0;border:none}
-  .wp-table td.numeric{text-align:left;font-size:15px}
-  .wp-table td[data-en9l]:before{content:attr(data-en9l);display:block;font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;font-weight:800}
-  tr.en9-group td,tr.en9-subtotal td{position:static;display:block}
-  tr.en9-group{display:block!important}tr.en9-subtotal{display:block!important}
+  .wp-table{max-height:70vh}
+  .wp-table table{min-width:680px}             /* scroll, never squeeze */
+  .wp-table thead{display:table-header-group}  /* headers and filters stay */
+  .wp-table thead th{position:sticky;top:0;z-index:5}
+  .wp-table td,.wp-table th{padding:6px 8px;font-size:12px}
+  .en9-fpop{max-width:calc(100vw - 16px)}
 }
 @media (prefers-reduced-motion:reduce){.en9-chev,.log-list.en9-clamp,.chip-btn .en9-dot.busy{transition:none;animation:none}}
-/* --- per-column filter row (Task-Management style) --- */
-tr.en9-cfrow th{position:sticky;top:0;z-index:5;background:#fff;padding:4px 6px;box-shadow:inset 0 -1px 0 #e2e8f0}
-tr.en9-cfrow input{width:100%;box-sizing:border-box;padding:4px 8px;border:1px solid #e2e8f0;border-radius:7px;font-size:11px;font-weight:400;background:#fbfcfe}
-tr.en9-cfrow input:focus{outline:2px solid #c7d2fe;border-color:#818cf8;background:#fff}
+/* --- A2/A4/A6: header caret + popup on <body> (one pattern everywhere) --- */
+.en9-caret{border:none;background:none;cursor:pointer;padding:0 2px;margin-left:4px;font-size:10px;line-height:1;opacity:.4;color:inherit;vertical-align:middle}
+.en9-caret:hover{opacity:.9;color:#4338ca}
+.en9-caret.on{opacity:1;color:#4338ca}
+.en9-caret:focus-visible{outline:2px solid #c7d2fe;border-radius:4px}
+.en9-fpop{position:fixed;z-index:80;overflow-y:auto;background:#fff;border:1px solid var(--line,#e2e8f0);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:8px;text-align:left;font-weight:400;text-transform:none;letter-spacing:0}
+.en9-fpop[hidden]{display:none}
+.en9-fpop .en9-search{width:100%;box-sizing:border-box;margin-bottom:6px;padding:5px 8px;border:1px solid #e2e8f0;border-radius:7px;font-size:12px}
+.en9-fpop .en9-search:focus{outline:2px solid #c7d2fe;border-color:#818cf8}
+.en9-fpop-acts{display:flex;gap:8px;margin-bottom:6px}
+.en9-fpop-list{font-size:12px;display:grid;gap:1px}
+.en9-fpop-opt{display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer}
+.en9-fpop-opt span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.en9-fpop-empty{font-size:12px;color:#94a3b8;font-style:italic;padding:4px 0}
 
 /* --- pagination bar --- */
 .en9-pager{display:flex;align-items:center;gap:8px;justify-content:flex-end;margin:8px 0 2px;font-size:11px;color:#64748b}
@@ -75,7 +88,7 @@ tr.en9-cfrow input:focus{outline:2px solid #c7d2fe;border-color:#818cf8;backgrou
 .en9-pinfo{margin:0 4px;font-variant-numeric:tabular-nums}
 .en9-pbtn{border:1px solid #e2e8f0;background:#fff;border-radius:7px;min-width:26px;padding:3px 7px;cursor:pointer;color:#475569;font-size:12px}
 .en9-pbtn:hover{border-color:#a5b4fc;color:#3730a3}
-@media (max-width:900px){tr.en9-cfrow{display:none}.en9-pager{justify-content:center;flex-wrap:wrap}}
+@media (max-width:900px){.en9-pager{justify-content:center;flex-wrap:wrap}}
 /* --- filing-category authority panel --- */
 .en9-authority{padding:14px 16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;margin-top:12px}
 .en9-auth-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline;margin-bottom:8px}

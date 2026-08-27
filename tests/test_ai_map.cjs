@@ -92,9 +92,16 @@ a(dist.includes('reasoning_effort:"low"'), "gpt-oss reasoning effort set (preven
 a(dist.includes("model:t.groq&&y8.includes(t.groq.model)?t.groq.model:y8[0]"),
   "persisted saves migrate a dead model on restore");
 a(dist.includes('EN9c==="model_decommissioned"'), "decommissioned-model error mapped to plain English");
-a(dist.includes('EN9c==="invalid_api_key"'), "bad-key error mapped to plain English");
+// item D widened this: a bad key is now recognised from 401/403 and from the
+// message as well as the bare code, and only that class is treated as fatal.
+a(dist.includes('EN9kind==="credential"'), "bad-key error mapped to plain English");
+a(dist.includes('/invalid_api_key|authentication|no api key|unauthor/.test(i)'),
+  "and recognised however Groq happens to phrase it");
 a(air.includes('id:"EN9-ai-error"'), "AI failure raises a stored warn review item, not just a log line");
-a(air.includes("maxTokens:8e3"), "mapping calls use the raised 8k completion cap");
+// item D: 8000 max_tokens plus a real prompt exceeded the model's 8000 TPM
+// limit, so the first mapping call always 413'd. The budget now scales.
+a(!air.includes("maxTokens:8e3"), "REGRESSION: the flat 8k completion cap that caused the 413 is gone");
+a(air.includes("maxTokens:EN9maxTokensFor(u.length)"), "mapping calls size their completion budget to the batch");
 a(air.includes("AI proposed an invalid line id"), "hallucinated target ids get an honest refusal reason");
 a(air.includes("could not place any of them"), "an all-null model reply logs a neutral line instead of silence");
 

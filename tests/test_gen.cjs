@@ -29,16 +29,25 @@ a(dist.includes("preparer aid"), "the provenance sheet carries the preparer-aid 
 // deploy safety
 a(dist.includes('includes("application/json")') && dist.includes("no backend at this origin"),
   "un() rejects non-JSON responses — an SPA fallback page is not a backend");
-a(dist.includes('||!Array.isArray(e.tasks))return'),
-  "Task view falls back to local mode instead of dereferencing null tasks");
-a(dist.includes('tasks:(await ss.listTasks())||[]'),
+// Item F replaced the whole gate: the view no longer bails out, it renders
+// from a local store. The null-safety these two pinned still has to hold.
+a(dist.includes('EN9tasks=Array.isArray(e.tasks)?e.tasks:[]'),
+  "Task view coerces a null task list instead of dereferencing it");
+a(dist.includes('tasks:(await EN9taskStore.list())||[]'),
   "refreshTasks coerces a null task list to []");
+a(dist.includes('catch{try{sa({tasks:await EN9tasksLoadLocal()})}catch{}}'),
+  "and falls back to the local store when the API call throws");
 a(dist.includes('(await ss.listWorkpapers())||[]'),
   "hydrateAll tolerates a null workpaper list");
 a(dist.includes('createWorkpaper returned no record'),
   "ensureWorkpaper rejects a null create result (no autosave TypeError loop)");
-a(dist.includes('title:"Task management is currently unavailable'),
-  "friendly no-backend copy on the Tasks view");
+// Item F: one banner became three states, each naming its actual cause.
+a(!dist.includes('title:"Task management is currently unavailable'),
+  "REGRESSION: the dead-end 'unavailable' banner is gone");
+a(dist.includes('Local mode \\u2014 tasks are saved in this browser only'),
+  "no-backend copy says where the tasks live and that they still work");
+a(dist.includes('Backend configured but not reachable'),
+  "an unreachable backend is distinguished from having no backend at all");
 
 // generate-button placement (Overview/Preview/Workspace/Sign-off only)
 a(!dist.includes('disabled:t.busy,onClick:()=>void Be.generateWorkpapers()'),

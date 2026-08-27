@@ -19,7 +19,15 @@
     "test:fx": "node tests/test_fx.cjs",
     "test:ai": "node tests/test_ai_map.cjs",
     "test:gen": "node tests/test_gen.cjs",
-    "test:all": "npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:layer",
+    "test:groq": "node tests/test_groq.cjs",
+    "test:tasks": "node tests/test_tasks.cjs",
+    "test:taskstore": "node tests/test_taskstore.cjs",
+    "test:aikey": "node tests/test_aikey.cjs",
+    "test:tables": "node tests/test_tables.cjs",
+    "test:schedc": "node tests/test_schedc.cjs",
+    "test:boot": "node tests/test_boot.cjs",
+    "test:fixture": "node tests/test_fixture_2hats.cjs",
+    "test:all": "npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture",
     "build:full": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs"
   },
   "dependencies": {
@@ -37,8 +45,9 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "esbuild": "^0.25.0",
-    "typescript": "^5.6.0",
-    "jsdom": "^24.0.0"
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^24.0.0",
+    "typescript": "^5.6.0"
   },
   "allowScripts": {
     "esbuild@0.25.12": true

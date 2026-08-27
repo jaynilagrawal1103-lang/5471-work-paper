@@ -204,19 +204,58 @@ const run = () => new Promise(r => setTimeout(r, 250));
   anyPen.click();
   assert(psel.classList.contains('en9-hide')!==pwas, 'delegated pencil click works on re-serialized nodes');
 
-  // 12. per-column filter row (Task-Management style)
+  // 12. A2/A4/A6: header carets, one popup on <body>, no separate filter row
   const ev=d.getElementById('ev');
-  const cf=[...ev.tHead.querySelectorAll('tr[data-en9] input')];
-  assert(cf.length===5, 'column filter inputs for all 5 columns');
-  assert(cf[1].placeholder==='Language', 'column input placeholder = header name');
-  cf[1].value='german'; cf[1].dispatchEvent(new window.Event('input',{bubbles:true})); await run();
-  let evVis=[...ev.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
-  assert(evVis.length===7 && evVis.every(r=>r.textContent.includes('German')), 'Language column filter isolates German rows');
-  cf[0].value='caption 3'; cf[0].dispatchEvent(new window.Event('input',{bubbles:true})); await run();
-  evVis=[...ev.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
+  const caret=(tb,i)=>tb.tHead.rows[0].cells[i].querySelector('.en9-caret');
+  const openPop=async(tb,i)=>{ d.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    caret(tb,i).click(); await run(); return d.querySelector('.en9-fpop'); };
+  const setQ=async(tb,i,v)=>{ const p=await openPop(tb,i); const box=p.querySelector('.en9-search');
+    box.value=v; box.dispatchEvent(new window.Event('input',{bubbles:true})); await run(); };
+  const visRows=tb=>[...tb.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
+
+  assert(!d.querySelector('tr.en9-cfrow'), 'A2: the separate filter row is gone everywhere');
+  assert(ev.tHead.querySelectorAll('.en9-caret').length===5, 'A4: a caret on each of the 5 labelled columns');
+  assert(caret(ev,1).getAttribute('aria-label')==='Filter Language', 'caret is labelled with its column');
+
+  await setQ(ev,1,'german');
+  let evVis=visRows(ev);
+  assert(evVis.length===7 && evVis.every(r=>r.textContent.includes('German')), 'Language caret filter isolates German rows');
+  assert(caret(ev,1).classList.contains('on'), 'an active filter marks its caret');
+  await setQ(ev,0,'caption 3');
+  evVis=visRows(ev);
   assert(evVis.length===1 && evVis[0].textContent.includes('Caption 3'), 'column filters combine (AND)');
-  cf[0].value=''; cf[0].dispatchEvent(new window.Event('input',{bubbles:true}));
-  cf[1].value=''; cf[1].dispatchEvent(new window.Event('input',{bubbles:true})); await run();
+
+  // A6: the popup is a child of <body>, not of the <th> that .wp-table clips
+  const pop=d.querySelector('.en9-fpop');
+  assert(pop && pop.parentElement===d.body, 'A6: popup is parented to <body>, not the header cell');
+  assert(!ev.tHead.querySelector('.en9-fpop'), 'A6: no popup lives inside the table header');
+  // A6: a React-style header rebuild must not take the popup with it
+  const savedHead=ev.tHead.innerHTML; ev.tHead.innerHTML=savedHead; await run();
+  assert(d.querySelectorAll('.en9-fpop').length===1 && d.querySelector('.en9-fpop').parentElement===d.body,
+    'A6: popup survives the header being torn down and rebuilt');
+  assert(ev.tHead.querySelectorAll('.en9-caret').length===5, 'carets are restored after a header rebuild');
+  // delegation: the rebuilt caret is a listener-less clone and still opens
+  caret(ev,2).click(); await run();
+  assert(d.querySelector('.en9-fpop') && !d.querySelector('.en9-fpop').hidden,
+    'A6: delegated caret click works on a re-serialized header');
+  d.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape',bubbles:true})); await run();
+  assert(d.querySelector('.en9-fpop').hidden, 'Escape closes the popup');
+
+  // value checkboxes exclude a value without touching the search box
+  await setQ(ev,0,''); await setQ(ev,1,'');
+  assert(visRows(ev).length===14, 'clearing both searches restores every row');
+  let p3=await openPop(ev,1);
+  const opts=[...p3.querySelectorAll('.en9-fpop-opt')];
+  assert(opts.length===2, 'popup lists the distinct values of the column: '+opts.length);
+  const german=opts.find(o=>o.textContent.includes('German'));
+  german.querySelector('input').checked=false;
+  german.querySelector('input').dispatchEvent(new window.Event('change',{bubbles:true})); await run();
+  evVis=visRows(ev);
+  assert(evVis.length===7 && evVis.every(r=>r.textContent.includes('English')), 'unticking a value excludes those rows');
+  p3=await openPop(ev,1);
+  p3.querySelector('.en9-fpop-acts .en9-fchip').click(); await run();   // Select all
+  assert(visRows(ev).length===14, 'Select all clears the exclusions');
+  await setQ(ev,1,'');
 
   // 13. pagination
   const pager=d.querySelector('.en9-pager');
@@ -230,9 +269,9 @@ const run = () => new Promise(r => setTimeout(r, 250));
   evVis=[...ev.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
   assert(evVis.length===4 && pager.querySelector('.en9-pinfo').textContent.includes('Page 2 of 2'), 'next page shows remaining 4 rows');
   // filtering resets to page 1 and recounts
-  cf[1].value='german'; cf[1].dispatchEvent(new window.Event('input',{bubbles:true})); await run();
+  await setQ(ev,1,'german');
   assert(pager.querySelector('.en9-pinfo').textContent.includes('Page 1 of 1') && pager.querySelector('.en9-pinfo').textContent.includes('7 rows'), 'filter resets pagination and recounts');
-  cf[1].value=''; cf[1].dispatchEvent(new window.Event('input',{bubbles:true})); await run();
+  await setQ(ev,1,'');
 
   // 14. mapping table unaffected by pagination, still grouped
   assert(!d.querySelector('.en9-pager[data-en9t*="Sch"]') , 'no pager on grouped mapping table');
@@ -242,26 +281,47 @@ const run = () => new Promise(r => setTimeout(r, 250));
   window.dispatchEvent(new window.CustomEvent('wp:state')); await run();
   const pagerKeys=[...d.querySelectorAll('.en9-pager')].map(p=>p.getAttribute('data-en9t'));
   assert(new Set(pagerKeys).size===pagerKeys.length, 'exactly one pager per table (no duplicates)');
-  assert([...d.querySelectorAll('table')].every(tb=>!tb.tHead||tb.tHead.querySelectorAll('tr[data-en9]').length<=1), 'at most one filter row per table');
+  assert([...d.querySelectorAll('table')].every(tb=>!tb.tHead||!tb.tHead.querySelector('tr.en9-cfrow')), 'no table carries a separate filter row');
+  assert([...d.querySelectorAll('th')].every(th=>th.querySelectorAll(':scope > .en9-caret').length<=1), 'at most one caret per header cell');
+  assert(d.querySelectorAll('.en9-fpop').length===1, 'exactly one popup element in the document');
 
-  // 15. exception-center-style table: filter row present, offsets measured not hard-coded
+  // 14b. A7: the table key is content-derived, so a table mounting EARLIER in
+  // the document must not reset another table's filter, page or rows-per-page.
+  pgsel.value='10'; pgsel.dispatchEvent(new window.Event('change',{bubbles:true})); await run();
+  pager.querySelector('[data-en9pg="next"]').click(); await run();
+  assert(pager.querySelector('.en9-pinfo').textContent.includes('Page 2 of 2'), 'on page 2 before the intruder mounts');
+  const intruder=d.createElement('section'); intruder.className='panel';
+  intruder.innerHTML='<div class="wp-table"><table><thead><tr><th>Zed</th></tr></thead><tbody>'
+    +Array.from({length:12},(_,i)=>`<tr><td>z${i}</td></tr>`).join('')+'</tbody></table></div>';
+  d.body.insertBefore(intruder, d.body.firstChild); await run();
+  const pagersFor=[...d.querySelectorAll('.en9-pager')].filter(p=>p.previousElementSibling&&p.previousElementSibling.contains(ev));
+  assert(pagersFor.length===1, 'A7 REGRESSION: still exactly one pager for the table (was: a duplicate per mount)');
+  assert(pagersFor[0].querySelector('.en9-pinfo').textContent.includes('Page 2 of 2'),
+    'A7 REGRESSION: page survives an earlier table mounting: '+pagersFor[0].querySelector('.en9-pinfo').textContent);
+  assert(pagersFor[0].querySelector('select').value==='10', 'A7 REGRESSION: rows-per-page survives too');
+  intruder.remove(); await run();
+  assert(pagersFor[0].querySelector('.en9-pinfo').textContent.includes('Page 2 of 2'), 'A7: and survives the unmount as well');
+  pgsel.value='25'; pgsel.dispatchEvent(new window.Event('change',{bubbles:true})); await run();
+
+  // 15. A4: exception-style table gets carets on labelled columns only
   const exc=d.getElementById('exc');
-  const excFr=exc.tHead.querySelector('tr[data-en9]');
-  assert(excFr, 'filter row injected on exception-style table');
-  assert(excFr.cells.length===7, 'filter row matches 7 columns (empty cols get no input)');
-  assert([...excFr.cells].filter(c=>c.querySelector('input')).length===5, 'inputs only for the 5 labeled columns');
-  assert([...excFr.cells].every(c=>c.style.top!==''), 'sticky offsets are JS-measured per table (style.top set)');
-  const excCf=[...excFr.querySelectorAll('input')];
-  excCf.find(i2=>i2.placeholder==='Finding').value='item 3';
-  excCf.find(i2=>i2.placeholder==='Finding').dispatchEvent(new window.Event('input',{bubbles:true})); await run();
+  const excCarets=[...exc.tHead.querySelectorAll('.en9-caret')];
+  assert(excCarets.length===5, 'A4: carets on the 5 labelled columns, none on the 2 unlabelled: '+excCarets.length);
+  assert(!exc.tHead.rows[0].cells[0].querySelector('.en9-caret'), 'A4: no caret on the checkbox column');
+  assert(!exc.tHead.rows[0].cells[6].querySelector('.en9-caret'), 'A4: no caret on the action column');
+  const findingIdx=[...exc.tHead.rows[0].cells].findIndex(c=>c.textContent.replace(/[\u25BC\s]/g,'')==='Finding');
+  await setQ(exc,findingIdx,'item 3');
   const excVis=[...exc.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
-  assert(excVis.length===1 && excVis[0].textContent.includes('item 3'), 'Finding column filter works on exception table');
-  excCf.find(i2=>i2.placeholder==='Finding').value='';
-  excCf.find(i2=>i2.placeholder==='Finding').dispatchEvent(new window.Event('input',{bubbles:true})); await run();
+  assert(excVis.length===1 && excVis[0].textContent.includes('item 3'), 'Finding caret filter works on the exception table');
+  await setQ(exc,findingIdx,'');
+  // A4: a column whose cells hold only buttons is not offered a filter
+  const actionOnly=[...exc.tBodies[0].rows[0].cells][6];
+  assert(actionOnly.querySelector('button') && !exc.tHead.rows[0].cells[6].querySelector('.en9-caret'),
+    'A4: an action-only column is skipped');
 
   // 16. colspan-mismatch table gets NO filter row (guard) but still gets a pager
   const sp=d.getElementById('span');
-  assert(!sp.tHead.querySelector('tr[data-en9]'), 'colspan-mismatched table skipped by filter-row guard');
+  assert(!sp.tHead.querySelector('.en9-caret'), 'colspan-mismatched table skipped by the filter guard');
   assert(d.querySelectorAll('.en9-pager').length>=2, 'pager still provided for long colspan table');
 
   // 17. group sticky offsets also measured
@@ -432,7 +492,8 @@ const run = () => new Promise(r => setTimeout(r, 250));
 
   // 26. pager survives table re-creation (stale-reference fix)
   const ev3=d.getElementById('ev');
-  const pager3=[...d.querySelectorAll('.en9-pager')].find(p=>(p.getAttribute('data-en9t')||'').endsWith('#'+((ev3.tHead.rows[0].textContent||'').replace(/\s+/g,'').slice(0,58))));
+  // the key is content-derived now, so find the pager by the wrapper it sits beside
+  const pager3=[...d.querySelectorAll('.en9-pager')].find(p=>p.previousElementSibling&&p.previousElementSibling.contains(ev3));
   const pg10=pager3.querySelector('select'); pg10.value='10'; pg10.dispatchEvent(new window.Event('change',{bubbles:true})); await run();
   // simulate React re-creating the table element in place
   const clone=ev3.cloneNode(true); clone.querySelectorAll('[data-en9]').forEach(x=>x.remove());

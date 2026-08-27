@@ -115,3 +115,88 @@ zero console errors, no white screen.
 NOTE: the previously-live deployment predates these fixes (its white screen
 and extra Generate buttons are stale-build artifacts) — redeploy `dist/`
 verbatim.
+
+## Session 2026-08-24 — consolidated fix pass (A–F)
+All functional edits applied to `dist/index.html` and `layer-src/` per the
+convention above, plus one new backend module. `npm run test:all` is now
+**14 suites**; `npm run inject:layer` was run after the layer edits.
+
+| Item | What changed |
+|---|---|
+| **B1** | `EN9toIso` accepts ISO `YYYY-MM-DD` / `YYYY/MM/DD`. New `EN9reqIso` **throws** on a supplied-but-unparseable date instead of returning null — the spot-rate caller logged `let u=EN9toIso(h.end)\|\|void 0` and then asked every provider for a *dateless* rate, which came back as today's and was stamped as the year-end rate. An unparseable dividend date now raises a **blocking** review item. |
+| **B2/B3** | `EN9nearestPoint` is backward-only (largest date ≤ requested, never later at any distance) with the window widened 7 → 10 days. Failures name the requested date and the oldest date searched. |
+| **B4** | `EN9fxManualMeta` stamps the **measurement** date as `asOf` (from the entity's own `cyEnd`/`pyEnd` via `EN9fxMeasureDate`) and records `enteredOn` separately. `EN9asOfLabel` untouched. |
+| **C1** | `EN9r2` / `EN9r2add` — 2dp at accumulation in `bF` and again at workbook write in `sl` (Sch C, Sch F boy/eoy, and every numeric `extraWrites` cell). Text cells pass through untouched. |
+| **C2** | `"total for income"` / `"total for expenses"` added to the SKIP rule (QuickBooks phrasing; neither contains the existing `"total income"`/`"total expenses"` substrings). Parts Sold, Discounts given, Disbursements, Billable Expense Income and Uncategorised Income deliberately **left unmapped**. |
+| **D1** | Root cause found in-bundle: `maxTokens:8e3` + a real prompt vs a **TPM of 8000** → 413 on the first call. Budgets now scale (`EN9maxTokensFor`), batches 40 → 25, and a rolling 60s token gate paces requests. `EN9askResume` splits a batch on 413 and resumes, backs off on 429/5xx honouring `retry-after`. |
+| **D2** | `EN9classifyGroq` separates credential (401/403/`invalid_api_key`) from transient (413/429/5xx/network). Transient restores the prior status and writes an amber `EN9notice`; only credential failures set the red sticky `lastError`. |
+| **D3** | `Be.EN9revalidateGroq()` checks a stored key silently on load. |
+| **E** | **New:** `server/src/aiProxy.ts` — `POST /api/ai/chat` injects `GROQ_API_KEY` server-side; origin allow-list, optional `AI_PROXY_TOKEN`, per-IP minute+day rate limits, model allow-list, `max_tokens` ceiling, key redaction on passthrough. `/api/health` gained `aiProxy`. Client picks proxy vs personal key via `EN9aiMode`; Settings names the mode and the trade-off. **No build-time key injection.** |
+| **F** | Local-first task store (IndexedDB, localStorage fallback) behind `EN9taskStore`; the API adapter is used only when the health check actually answered. The single "Backend is not connected" banner became four states (`local` / `unreachable` / `connected` / `checking`) — file:// and a static-host 404 no longer share a message. Backend-URL override moved into the UI. Local assignment is labelled "this browser only", never claimed as real. |
+| **A1** | **Root cause:** `autoFocus:!0` on the popup search input — focusing inside a scrollable ancestor scrolls it into view. Now `focus({preventScroll:true})` via `EN9focusNoScroll`, used by both the React filters and the layer. |
+| **A2/A3/A4** | The separate filter row is gone; carets sit on existing column headers on every table in every tab. Unlabelled and action-only columns (Remove/Restore/Use/…) are skipped. The Status filter reads the **chip**, not the select's options. |
+| **A5** | `EN9popPlace` clamps left/right, flips above the trigger near the viewport bottom, and repositions on scroll and resize from the trigger's **live** rect. Narrow screens scroll the table horizontally inside its panel — the old rule hid `thead` outright, taking the headers and filters with it. |
+| **A6** | One popup, appended to `<body>`. `.wp-table` sets `overflow:auto` and clipped it in the `<th>`, and a React rebuild tore it down mid-keystroke. Caret clicks are delegated. |
+| **A7** | `tkey` is derived from the panel heading, the header's own text and the column count, with `[data-en9]` nodes stripped first. The old document-wide `querySelectorAll("table")` index changed whenever any earlier table mounted, silently losing filter state, page and rows-per-page and appending a duplicate pager each time. |
+
+### New test suites
+`test_groq`, `test_tasks`, `test_taskstore`, `test_aikey`, `test_tables`,
+`test_schedc`, `test_boot` — added to `test:all`. `test_taskstore` drives the
+real storage adapters through `fake-indexeddb` across all three environments;
+`test_boot` loads the shipped `dist/index.html` in jsdom and asserts the app
+renders. `test_fx`, `test_ai_map`, `test_gen` and `test_enhance` were updated
+where an assertion pinned behaviour these items deliberately changed.
+
+### New environment variables (server)
+`GROQ_API_KEY`, `AI_PROXY_TOKEN`, `AI_RATE_PER_MIN`, `AI_RATE_PER_DAY`,
+`AI_MAX_TOKENS`, `AI_MODELS` — all optional; without `GROQ_API_KEY` the proxy
+reports itself off and browsers fall back to a personal key.
+
+## Session 2026-08-26 — mapping accuracy rules 1-7 + step 4
+
+Driven by fixture #1 (2Hats Consulting B.V. 2024). The fixture replays the real
+Yuki report rows through the **shipped** mapping code via `window.__EN9MAP`
+(a debug hook in the bundle) and scores against the reviewed workpaper. No copy
+of the mapping logic lives in the test.
+
+**Result: financial line accuracy 11% -> 90%; Schedule F balances to the cent.**
+
+| Rule | Change |
+|---|---|
+| **6** | Ligature folding (fi/fl/ffi...) + control-character stripping in `ZY()`, the single point every extracted string passes. Fixes the NUL bytes that made the generated `.xlsx` fail XML validation. Applied again on the way into the workbook. |
+| **1** | `EN9structRows` — three structural subtotal tests, no keyword list: forward (rows indented beneath sum to it), backward (rows above at a deeper indent sum to it), and total-worded rows at the document's outermost indent. `EN9dropFurniture` removes running headers/footers first so the backward scan survives page breaks. |
+| **2** | `EN9dedupeRows` — one booking per `(document, page, caption, value)`. |
+| **3** | `EN9sectionOk` — a caption cannot cross the banner it was printed under (assets/liabilities/income/costs), and within the balance sheet cannot cross sides. |
+| **3b** | `EN9sectionRoute` — **beyond the brief.** The banner is documentary evidence, so it now outranks the model's guess (but never an explicit keyword rule). This is what routes a "depreciation" caption to accumulated depreciation under Assets and to the expense line under Costs. |
+| **4** | `EN9balance` / `EN9tieOut` — Schedule F must balance; wired into `gn()` so it blocks generation. Verified: fires on the old figures naming the exact gap, silent on the corrected sheet. |
+| **5** | `EN9PLACEHOLDERS` + `EN9clearPlaceholders` — the template's demo shareholder ("A" / 60 / 0.6), the hard-coded 60/100 totals and the leftover `VAT Payable` / `CAISSE D'EPARGNE` labels are blanked on every generation. |
+| **7** | `EN9parseUsShareholders` — Schedule B **Part I** parser, which did not exist. Reads by column position, so `Common Stock`, `Class A Common`, `Ordinary Shares` and `COMMON` all parse; every one was silently dropped before. |
+| **Step 4** | `EN9schETax` writes the income tax to Schedule E (O16/Q16 + identification). The template chain `Income Statement J56 -> Sch-H I10 -> I26 -> Schedule J F23` and `Schedule E U21 -> Sch-H G19` is entirely formula-driven, so this one write is what lights up Sch-H, Schedule I-1, 8992 and Worksheet A. Sign convention: the P&L keeps the tax negative, Schedule E receives the magnitude. `EN9tieTax` flags a disagreement. |
+
+### Before / after on fixture #1
+| Line | Before | After |
+|---|---|---|
+| Cash | 114,923.68 | **28,447.17** |
+| Gross receipts | 385,453.38 | **174,223.36** |
+| Compensation | 559,921.89 | **186,640.63** |
+| Depreciable assets / accum. dep. | 1,864.09 / 0 | **1,449.37 / -1,390.12** |
+| Common stock / retained earnings | 11,609.32 / -3,781.36 | **4,500.00 / -1,890.68** |
+| Other deductions / other income | 199,649.31 / - | **3,252.17 / 18,503.33** |
+| Assets vs liabilities+equity | out by 42,939.81 | **29,641.42 = 29,641.42** |
+| Unmatched captions | 6 | **0** |
+| Rows skipped as subtotals | 3 | **38** |
+
+### Correction to an earlier finding
+The audit claimed "Tangible fixed assets was booked twice from page 2". The
+provenance shows page 2 (59.25) and page 4 (236.97) — two different rows. It is
+caught by the section guard, not by dedupe.
+
+### Known presentation difference (not an error)
+The tool books Creditors 259.24 to Accounts payable and social security 6,087 to
+other current liabilities; the reviewed workpaper does the reverse. Both sides
+total 29,641.42 identically.
+
+### New in this session
+`tests/fixtures/harness.cjs` (jsdom driver), `tests/fixtures/2hats_rows.json`,
+`tests/fixtures/2hats_ai_mappings.json`, `tests/test_fixture_2hats.cjs`
+(20 checks, wired into `test:all`). `window.__EN9MAP` debug hook in the bundle.

@@ -7,7 +7,48 @@
 var S = { q:"", sch:"ALL", multi:false, edited:false,
           openMeta:{}, collapsed:{}, logOpen:false,
           cf:{}, page:{}, pp:{} };
-function tkey(tb){ var EN9i=Array.prototype.indexOf.call(document.querySelectorAll("table"),tb); return EN9i+"#"+(tb.tHead && tb.tHead.rows[0] ? tb.tHead.rows[0].textContent : "t").replace(/\s+/g,"").slice(0,58); }
+/* A7. The old key led with the table's index in document.querySelectorAll("table"),
+   so it changed whenever ANY earlier table mounted or unmounted: filter state,
+   page and rows-per-page were silently lost and injectPager appended a second
+   bar every time. The key is now derived from content only, and every node this
+   layer injects is stripped out first -- otherwise the carets we add would
+   themselves destabilise the key they are stored under. */
+function thName(th){
+  if(!th) return "";
+  var c = th.cloneNode(true), junk = c.querySelectorAll("[data-en9]");
+  for(var i=0;i<junk.length;i++) junk[i].remove();
+  return (c.textContent||"").replace(/\s+/g," ").trim();
+}
+function tkey(tb){
+  var h = tb.tHead && tb.tHead.rows[0] ? tb.tHead.rows[0] : null, names = [];
+  if(h) for(var i=0;i<h.cells.length;i++) names.push(thName(h.cells[i]).replace(/\s+/g,""));
+  var panel = tb.closest ? tb.closest(".panel") : null;
+  var hd = panel ? panel.querySelector(".panel-heading h2, .panel-heading h1") : null;
+  var title = (hd ? hd.textContent : "") || "";
+  /* position among the panel's OWN tables: stable, unlike a document-wide index */
+  var wrap = (tb.closest && tb.closest(".wp-table")) || tb.parentElement;
+  var sibs = panel ? panel.querySelectorAll(".wp-table") : [];
+  var pos = Array.prototype.indexOf.call(sibs, wrap);
+  return title.replace(/\s+/g,"").slice(0,28) + "#" + (pos<0?0:pos) + "#"
+       + names.join("|").slice(0,90) + "#" + (h ? h.cells.length : 0);
+}
+/* The Status cell holds a chip AND a select; the filter must read the chip,
+   not every option in the dropdown. Buttons and our own nodes go too, and an
+   input contributes its value rather than nothing. */
+function cellText(td){
+  if(!td) return "";
+  var c = td.cloneNode(true), drop = c.querySelectorAll("[data-en9],select,option,button");
+  for(var i=0;i<drop.length;i++) drop[i].remove();
+  var live = td.querySelectorAll("input"), cl = c.querySelectorAll("input");
+  for(var k=0;k<cl.length;k++){
+    var v = live[k] ? (live[k].type==="checkbox" ? (live[k].checked?"yes":"no") : String(live[k].value||"")) : "";
+    if(cl[k].parentNode) cl[k].parentNode.replaceChild(document.createTextNode(" "+v+" "), cl[k]);
+  }
+  var t = (c.textContent||"").replace(/\s+/g," ").trim();
+  if(!t){ var sel = td.querySelector("select"); if(sel && sel.selectedIndex>=0 && sel.options[sel.selectedIndex])
+    t = (sel.options[sel.selectedIndex].textContent||"").trim(); }
+  return t;
+}
 var enhancing = false, timer = null;
 
 function st(){ try{ return window.__WPGET && window.__WPGET(); }catch(e){ return null; } }
@@ -48,13 +89,25 @@ function enhancePills(){
 }
 
 /* ---------- table detection ---------- */
+/* A3. Every table in every tab, not just the two kinds the layer used to know
+   about. "map" gets grouping and subtotals, "big" gets a pager, "plain" gets
+   the same header filters as everything else and nothing more. */
 function mapTables(){
-  var out=[], wraps=document.querySelectorAll(".wp-table:not(.rules-table)");
-  for(var i=0;i<wraps.length;i++){
-    var tb = wraps[i].querySelector("table"); if(!tb||!tb.tHead) continue;
-    var h = tb.tHead.textContent||"";
-    if(/Source caption/i.test(h)) out.push({wrap:wraps[i], table:tb, kind:"map"});
-    else if(tb.tBodies[0] && tb.tBodies[0].rows.length>=10) out.push({wrap:wraps[i], table:tb, kind:"big"});
+  var out=[], tbs=document.querySelectorAll(".view-stack table, .wp-table table");
+  for(var i=0;i<tbs.length;i++){
+    var tb=tbs[i];
+    if(!tb.tHead || !tb.tHead.rows.length) continue;
+    if(isOurs(tb)) continue;
+    var dup=false;
+    for(var d=0;d<out.length;d++) if(out[d].table===tb){ dup=true; break; }
+    if(dup) continue;
+    var wrap = (tb.closest && tb.closest(".wp-table")) || tb.parentElement;
+    if(!wrap) continue;
+    var h = tb.tHead.textContent||"", rules = wrap.classList && wrap.classList.contains("rules-table");
+    var kind = (!rules && /Source caption/i.test(h)) ? "map"
+             : (!rules && tb.tBodies[0] && tb.tBodies[0].rows.length>=10) ? "big"
+             : "plain";
+    out.push({wrap:wrap, table:tb, kind:kind});
   }
   return out;
 }
@@ -177,10 +230,7 @@ function enhanceOcrBadges(){
 /* ---------- grouping, subtotals, filtering ---------- */
 function matches(r, key){
   if(S.q && (r.getAttribute("data-en9s")||"").indexOf(S.q)===-1) return false;
-  var cf=key?S.cf[key]:null;
-  if(cf) for(var ci in cf){ if(!cf[ci]) continue;
-    var cell=r.cells[ci]; if(!cell) return false;
-    if((cell.textContent||"").toLowerCase().indexOf(cf[ci])===-1) return false; }
+  if(!rowPasses(r, key)) return false;
   if(S.sch!=="ALL" && r.getAttribute("data-en9sch")!==S.sch) return false;
   if(S.multi && !r.classList.contains("en9-multi")) return false;
   if(S.edited && !r.classList.contains("en9-edited")) return false;
@@ -230,7 +280,7 @@ function rebuild(tb, kind){
     }
     flush();
   }
-  if(kind!=="map"){
+  if(kind==="big"){
     var pp = S.pp[key]||25, pg = S.page[key]||0;
     if(pp!=="ALL"){
       var visRows=[]; for(var pv=0; pv<rows.length; pv++)
@@ -250,50 +300,181 @@ function rebuild(tb, kind){
   }
 }
 
-/* ---------- per-column filter row (Task-Management style) ---------- */
+/* ---------- A2/A4/A6: header carets, popups parented to <body> ----------
+   The separate filter row is gone. Every filterable column carries a caret on
+   its existing header, matching the Exception centre. The popup CANNOT live in
+   the <th>: .wp-table sets overflow:auto and clips it, and a React rebuild tears
+   the header down mid-keystroke. It is a single element on <body> instead. */
+var EN9SKIPCOL = /^(remove|restore|use|open|delete|actions?|edit|\u2715|\+ ?policy)$/i;
+
+function colFilterable(tb, idx){
+  var th = tb.tHead.rows[0].cells[idx], name = thName(th);
+  if(!name) return false;                       /* unlabelled column */
+  if(EN9SKIPCOL.test(name)) return false;       /* action-only column */
+  var rows = dataRows(tb), sampled = 0, withText = 0;
+  for(var i=0;i<rows.length && sampled<40;i++){
+    var td = rows[i].cells[idx]; if(!td) continue;
+    sampled++; if(cellText(td)) withText++;
+  }
+  return sampled === 0 ? true : withText > 0;   /* buttons only -> not filterable */
+}
+function colFilter(key, idx){ return (S.cf[key]||{})[idx]||null; }
+function colActive(key, idx){
+  var f = colFilter(key, idx);
+  return !!(f && (f.q || (f.ex && Object.keys(f.ex).length)));
+}
+function rowPasses(r, key, skipIdx){
+  var cf = key ? S.cf[key] : null; if(!cf) return true;
+  for(var ci in cf){
+    if(skipIdx !== undefined && String(ci) === String(skipIdx)) continue;
+    var f = cf[ci]; if(!f) continue;
+    var td = r.cells[ci]; if(!td) return false;
+    var v = cellText(td);
+    if(f.q && v.toLowerCase().indexOf(f.q) === -1) return false;
+    if(f.ex && f.ex[v]) return false;
+  }
+  return true;
+}
+/* Options narrow against the OTHER columns' filters, so the list never offers a
+   value that would produce an empty table. */
+function colOptions(tb, key, idx){
+  var rows = dataRows(tb), seen = {}, out = [];
+  for(var i=0;i<rows.length;i++){
+    if(!rowPasses(rows[i], key, idx)) continue;
+    var v = cellText(rows[i].cells[idx]);
+    if(!(v in seen)){ seen[v] = 1; out.push(v); }
+  }
+  return out.sort(function(a,b){ return String(a).localeCompare(String(b), undefined, {numeric:true}); });
+}
+
+var POP = null, POPFOR = null, POPANCHOR = null, POPBOUND = false;
+function popEl(){
+  if(POP && POP.isConnected) return POP;
+  POP = el("div","en9-fpop"); POP.hidden = true;
+  document.body.appendChild(POP);                 /* A6: <body>, never the <th> */
+  return POP;
+}
+/* A5: shared with the React filters so both behave identically. */
+function place(rect, w, h){
+  if(window.EN9popPlace) return window.EN9popPlace(rect, {w:w,h:h}, {w:innerWidth,h:innerHeight});
+  var ww = Math.max(180, Math.min(w, innerWidth-16)),
+      left = Math.max(8, Math.min(rect.left, innerWidth-ww-8)),
+      below = innerHeight-rect.bottom-8, above = rect.top-8,
+      flip = below < Math.min(h,160) && above > below,
+      hh = Math.min(h, Math.max(120, flip?above:below)),
+      top = flip ? Math.max(8, rect.top-hh-4) : Math.min(rect.bottom+4, Math.max(8, innerHeight-hh-8));
+  return {left:Math.round(left), top:Math.round(top), width:Math.round(ww), maxHeight:Math.round(hh), flip:flip};
+}
+function popPosition(){
+  if(!POP || POP.hidden || !POPANCHOR || !POPANCHOR.isConnected) return;
+  var p = place(POPANCHOR.getBoundingClientRect(), 288, 320);
+  POP.style.left = p.left+"px"; POP.style.top = p.top+"px";
+  POP.style.width = p.width+"px"; POP.style.maxHeight = p.maxHeight+"px";
+  POP.classList.toggle("en9-flip", !!p.flip);
+}
+function popClose(){ if(POP){ POP.hidden = true; } POPFOR = null; POPANCHOR = null; }
+function popBind(){
+  if(POPBOUND) return; POPBOUND = true;
+  addEventListener("scroll", popPosition, true);
+  addEventListener("resize", popPosition);
+  document.addEventListener("mousedown", function(ev){
+    if(!POP || POP.hidden) return;
+    if(POP.contains(ev.target)) return;
+    if(ev.target.closest && ev.target.closest(".en9-caret")) return;
+    popClose();
+  }, true);
+  document.addEventListener("keydown", function(ev){ if(ev.key === "Escape") popClose(); });
+}
+function popOpen(tb, key, idx, caret){
+  popBind();
+  var p = popEl(), id = key+"::"+idx;
+  if(POPFOR === id && !p.hidden){ popClose(); return; }
+  POPFOR = id; POPANCHOR = caret; p.hidden = false;
+  p.textContent = "";
+  var name = thName(tb.tHead.rows[0].cells[idx]);
+  var f = colFilter(key, idx) || {q:"", ex:{}};
+  var save = function(next){
+    S.cf[key] = S.cf[key] || {};
+    if(!next.q && !Object.keys(next.ex||{}).length) delete S.cf[key][idx];
+    else S.cf[key][idx] = next;
+    S.page[key] = 0;
+    rebuildAll();
+  };
+  var box = el("input","en9-search"); box.type = "search";
+  box.placeholder = "Search "+name.toLowerCase()+"\u2026"; box.value = f.q||"";
+  box.addEventListener("input", function(){
+    /* keep the closed-over state in step: the value checkboxes below read `f`,
+       and a stale q here would silently AND itself against every exclusion */
+    f = {q:box.value.toLowerCase(), ex:f.ex||{}};
+    save(f);
+    popPosition();
+  });
+  p.appendChild(box);
+  var acts = el("div","en9-fpop-acts");
+  var all = el("button","en9-fchip","Select all"); all.type = "button";
+  var none = el("button","en9-fchip","Clear"); none.type = "button";
+  acts.appendChild(all); acts.appendChild(none); p.appendChild(acts);
+  var listWrap = el("div","en9-fpop-list");
+  var opts = colOptions(tb, key, idx);
+  all.addEventListener("click", function(){ save({q:f.q||"", ex:{}}); popOpen(tb,key,idx,caret); });
+  none.addEventListener("click", function(){
+    var ex = {}; for(var i=0;i<opts.length;i++) ex[opts[i]] = true;
+    save({q:f.q||"", ex:ex}); popOpen(tb,key,idx,caret);
+  });
+  if(!opts.length) listWrap.appendChild(el("div","en9-fpop-empty","No values in this column yet."));
+  for(var i=0;i<opts.length;i++){
+    (function(v){
+      var lab = el("label","en9-fpop-opt");
+      var cb = el("input"); cb.type = "checkbox"; cb.checked = !(f.ex && f.ex[v]);
+      cb.addEventListener("change", function(){
+        var ex = {}; for(var k in (f.ex||{})) ex[k] = f.ex[k];
+        if(cb.checked) delete ex[v]; else ex[v] = true;
+        f = {q:f.q||"", ex:ex};
+        save(f);
+      });
+      var sp = el("span",null, v === "" ? "(blank)" : v); sp.title = v;
+      lab.appendChild(cb); lab.appendChild(sp); listWrap.appendChild(lab);
+    })(opts[i]);
+  }
+  p.appendChild(listWrap);
+  popPosition();
+  /* A1 ROOT CAUSE: focusing inside a scrollable ancestor scrolls it into view.
+     preventScroll keeps the page exactly where the user left it. */
+  if(window.EN9focusNoScroll) window.EN9focusNoScroll(box);
+  else try{ box.focus({preventScroll:true}); }catch(e){}
+}
 function injectColFilters(item){
-  if(item.table.tHead && item.table.tHead.querySelector("button")) return; /* React column filters already present */
-  var tb=item.table, head=tb.tHead; if(!head||!head.rows.length) return;
-  var EN9r0=tb.tBodies[0]&&tb.tBodies[0].rows[0];
-  if(EN9r0 && !EN9r0.hasAttribute("data-en9") && EN9r0.cells.length!==head.rows[0].cells.length) return;
-  var key=tkey(tb);
-  if(head.querySelector("tr[data-en9]")) {
-    var ins=head.querySelectorAll("tr[data-en9] input");
-    for(var r0=0;r0<ins.length;r0++){ var i0=ins[r0].getAttribute("data-en9c");
-      ins[r0].value=(S.cf[key]&&S.cf[key][i0])||""; }
-    return;
-  }
-  var ths=head.rows[0].cells, fr=el("tr","en9-cfrow");
-  var EN9h0=Math.max(0, head.rows[0].getBoundingClientRect().height||0);
+  var tb = item.table, head = tb.tHead;
+  if(!head || !head.rows.length) return;
+  if(head.querySelector("button:not([data-en9])")) return; /* React column filters already here */
+  var r0 = tb.tBodies[0] && tb.tBodies[0].rows[0];
+  if(r0 && !r0.hasAttribute("data-en9") && r0.cells.length !== head.rows[0].cells.length) return;
+  var old = head.querySelector("tr.en9-cfrow"); if(old) old.remove();   /* A2: no separate row */
+  var key = tkey(tb), ths = head.rows[0].cells;
   for(var i=0;i<ths.length;i++){
-    var td=el("th");
-    var name=(ths[i].textContent||"").trim();
-    if(name){
-      var inp=el("input"); inp.type="search"; inp.placeholder=name;
-      inp.setAttribute("data-en9c",String(i));
-      inp.value=(S.cf[key]&&S.cf[key][i])||"";
-      (function(k2,idx,box){ box.addEventListener("input",function(){
-        S.cf[k2]=S.cf[k2]||{}; S.cf[k2][idx]=box.value.toLowerCase();
-        S.page[k2]=0; rebuildAll(); }); })(key,i,inp);
-      td.appendChild(inp);
+    var th = ths[i], has = th.querySelector(":scope > .en9-caret");
+    if(!colFilterable(tb, i)){ if(has) has.remove(); continue; }
+    if(!has){
+      has = el("button","en9-caret","\u25BC"); has.type = "button";
+      has.setAttribute("data-en9c", String(i));
+      th.appendChild(has);
     }
-    td.style.top=EN9h0+"px";
-    fr.appendChild(td);
+    has.setAttribute("data-en9c", String(i));
+    has.classList.toggle("on", colActive(key, i));
+    has.title = colActive(key, i) ? "Filtered \u2014 click to change" : "Filter "+thName(th);
+    has.setAttribute("aria-label", "Filter "+thName(th));
   }
-  head.appendChild(fr);
 }
 function fixSticky(tb){ /* re-measure every pass: header heights vary per table/view */
   var head=tb.tHead; if(!head||!head.rows.length) return;
   var h0=Math.max(0, head.rows[0].getBoundingClientRect().height||0);
-  var fr=head.querySelector("tr[data-en9]");
-  if(fr) for(var i=0;i<fr.cells.length;i++) fr.cells[i].style.top=h0+"px";
   var band=Math.max(0, head.getBoundingClientRect().height||0)||h0;
   var gs=tb.querySelectorAll("tr.en9-group td");
   for(var j=0;j<gs.length;j++) gs[j].style.top=band+"px";
 }
 /* ---------- pagination bar for long tables ---------- */
 function injectPager(item){
-  if(item.kind==="map") return;
+  if(item.kind!=="big") return;
   var tb=item.table, wrap=item.wrap, parent=wrap.parentElement; if(!parent) return;
   var key=tkey(tb), rows=dataRows(tb);
   var bar=parent.querySelector(':scope > .en9-pager[data-en9t="'+key+'"]');
@@ -936,6 +1117,9 @@ function rebuildAll(){
       injectPager(items[i]);
       fixSticky(items[i].table);
     }
+    /* the popup lives on <body>, so a header rebuild cannot take it with it --
+       but its anchor may have moved, so follow it */
+    popPosition();
     /* wide tables scroll inside their panel instead of spilling off-screen */
     document.querySelectorAll(".view-stack table").forEach(function(tb){
       if(tb.closest(".wp-table")) return;
@@ -982,6 +1166,11 @@ document.addEventListener("click",function(ev){
   if(pen){ ev.stopPropagation(); var x=pen.nextElementSibling;
     if(x && x.tagName==="SELECT"){ x.classList.toggle("en9-hide");
       if(!x.classList.contains("en9-hide")) x.focus(); } return; }
+  var ct=t.closest(".en9-caret");
+  if(ct){ ev.preventDefault(); ev.stopPropagation();
+    var tb2=ct.closest("table"), ix=parseInt(ct.getAttribute("data-en9c"),10);
+    if(tb2 && isFinite(ix)) popOpen(tb2, tkey(tb2), ix, ct);
+    return; }
   var lb=t.closest(".en9-logbtn");
   if(lb){ var l=lb.nextElementSibling;
     if(l && l.classList.contains("log-list")){ S.logOpen=!S.logOpen;
@@ -995,7 +1184,10 @@ document.addEventListener("keydown",function(ev){
   if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT"||(t&&t.isContentEditable)) return;
   var ins=document.querySelectorAll(".en9-fb .en9-search");
   for(var i=0;i<ins.length;i++){ var r=ins[i].getBoundingClientRect();
-    if(r.width>0&&r.height>0){ ev.preventDefault(); ins[i].focus(); ins[i].select(); return; } }
+    if(r.width>0&&r.height>0){ ev.preventDefault();
+      if(window.EN9focusNoScroll) window.EN9focusNoScroll(ins[i]);
+      else try{ ins[i].focus({preventScroll:true}); }catch(e){ ins[i].focus(); }
+      ins[i].select(); return; } }
 });
 if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",schedule);
 else schedule();

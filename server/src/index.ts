@@ -11,6 +11,7 @@ import fastifyMultipart from "@fastify/multipart";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { migrate, pool, q } from "./db";
+import { readProxyConfig, registerAiProxy } from "./aiProxy";
 
 const PORT = Number(process.env.PORT || 8471);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 25);
@@ -38,16 +39,22 @@ async function main() {
     if (origin && origins.includes(origin)) {
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Access-Control-Allow-Credentials", "true");
-      reply.header("Access-Control-Allow-Headers", "Content-Type");
+      reply.header("Access-Control-Allow-Headers", "Content-Type, X-AI-Proxy-Token");
       reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
     }
     if (req.method === "OPTIONS") reply.code(204).send();
   });
 
+  const aiCfg = readProxyConfig();
+
   app.get("/api/health", async () => {
     const [{ now }] = await q<{ now: string }>("select now()");
-    return { ok: true, db: now };
+    // aiProxy tells the browser whether a server-side key exists, so it can
+    // choose the proxy over its own per-browser key. The key never leaves here.
+    return { ok: true, db: now, aiProxy: !!aiCfg.key, aiTokenRequired: !!aiCfg.token };
   });
+
+  registerAiProxy(app, aiCfg);
 
   /* ---------------- workpapers ---------------- */
 
@@ -288,6 +295,11 @@ async function main() {
   await migrate(MIGRATIONS);
   await app.listen({ port: PORT, host: "0.0.0.0" });
   console.log(`5471 work-paper server on :${PORT}${DIST ? ` serving ${DIST}` : " (API only)"}`);
+  console.log(
+    aiCfg.key
+      ? `AI proxy: ON (key held server-side, ${aiCfg.perMin}/min per IP${aiCfg.token ? ", token required" : ", NO token — rely on CORS_ORIGINS"})`
+      : "AI proxy: OFF (no GROQ_API_KEY) — browsers fall back to their own per-browser key",
+  );
 }
 
 main().catch((err) => {
