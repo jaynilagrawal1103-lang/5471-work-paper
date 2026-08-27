@@ -44,6 +44,8 @@ export type ProxyConfig = {
   maxTokens: number;
   models: string[];
   origins: string[];
+  /** Only honor X-Forwarded-For when explicitly told there is a trusted proxy in front. */
+  trustProxy?: boolean;
 };
 
 export function readProxyConfig(env: NodeJS.ProcessEnv = process.env): ProxyConfig {
@@ -51,14 +53,26 @@ export function readProxyConfig(env: NodeJS.ProcessEnv = process.env): ProxyConf
     (v || "").split(",").map((s) => s.trim()).filter(Boolean).length
       ? (v || "").split(",").map((s) => s.trim()).filter(Boolean)
       : fallback;
+  // Fail closed: a mistyped limit must never silently disable rate limiting
+  // (Number("abc") is NaN and `count >= NaN` is always false).
+  const num = (v: string | undefined, fallback: number, name: string) => {
+    if (v === undefined || v === "") return fallback;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.warn(`[ai-proxy] ${name}="${v}" is not a positive number — using the default ${fallback}`);
+      return fallback;
+    }
+    return n;
+  };
   return {
     key: (env.GROQ_API_KEY || "").trim(),
     token: (env.AI_PROXY_TOKEN || "").trim(),
-    perMin: Number(env.AI_RATE_PER_MIN || 20),
-    perDay: Number(env.AI_RATE_PER_DAY || 2000),
-    maxTokens: Number(env.AI_MAX_TOKENS || 4000),
+    perMin: num(env.AI_RATE_PER_MIN, 20, "AI_RATE_PER_MIN"),
+    perDay: num(env.AI_RATE_PER_DAY, 2000, "AI_RATE_PER_DAY"),
+    maxTokens: num(env.AI_MAX_TOKENS, 4000, "AI_MAX_TOKENS"),
     models: list(env.AI_MODELS, DEFAULT_MODELS),
     origins: list(env.CORS_ORIGINS, []),
+    trustProxy: env.TRUST_PROXY === "1",
   };
 }
 
@@ -66,6 +80,10 @@ export function readProxyConfig(env: NodeJS.ProcessEnv = process.env): ProxyConf
 
 type Bucket = { minute: number[]; day: number[] };
 const buckets = new Map<string, Bucket>();
+/** Hard cap on distinct rate-limit keys — a spoofing loop must not grow memory
+    without bound. On overflow the oldest entry is evicted (Map preserves
+    insertion order). */
+export const MAX_BUCKETS = 10_000;
 
 export function rateCheck(
   ip: string,
@@ -86,6 +104,10 @@ export function rateCheck(
   }
   b.minute.push(now);
   b.day.push(now);
+  if (!store.has(ip) && store.size >= MAX_BUCKETS) {
+    const oldest = store.keys().next().value;
+    if (oldest !== undefined) store.delete(oldest);
+  }
   store.set(ip, b);
   return { ok: true };
 }
@@ -129,8 +151,12 @@ export function validateChatBody(raw: unknown, cfg: ProxyConfig): Validated {
     temperature: typeof b.temperature === "number" ? Math.max(0, Math.min(2, b.temperature)) : 0,
     max_tokens: Math.max(16, Math.min(cfg.maxTokens, isFinite(asked) ? asked : 1500)),
   };
-  if (b.response_format && typeof b.response_format === "object") out.response_format = b.response_format;
-  if (typeof b.reasoning_effort === "string") out.reasoning_effort = b.reasoning_effort;
+  if (b.response_format && typeof b.response_format === "object") {
+    const rf = b.response_format as Record<string, unknown>;
+    if (rf.type === "json_object" || rf.type === "json_schema") out.response_format = b.response_format;
+  }
+  if (typeof b.reasoning_effort === "string" && ["low", "medium", "high"].includes(b.reasoning_effort))
+    out.reasoning_effort = b.reasoning_effort;
   return { ok: true, body: out };
 }
 
@@ -149,6 +175,13 @@ export function originAllowed(origin: string | undefined, host: string | undefin
 /* ---------------- route --------------------------------------------------- */
 
 export function registerAiProxy(app: FastifyInstance, cfg: ProxyConfig = readProxyConfig()) {
+  if (cfg.key && !cfg.token) {
+    console.warn(
+      "[ai-proxy] GROQ_API_KEY is set with NO AI_PROXY_TOKEN — anyone who can reach this " +
+      "port can spend the key's quota (the origin allow-list only stops browsers, not scripts). " +
+      "Set AI_PROXY_TOKEN to require a shared secret.",
+    );
+  }
   const sweeper = setInterval(() => sweepBuckets(), 10 * 60_000);
   if (typeof sweeper.unref === "function") sweeper.unref();
 
@@ -172,7 +205,12 @@ export function registerAiProxy(app: FastifyInstance, cfg: ProxyConfig = readPro
     if (cfg.token && req.headers["x-ai-proxy-token"] !== cfg.token)
       return reply.code(401).send({ error: "missing or invalid X-AI-Proxy-Token" });
 
-    const ip = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0].trim() || req.ip || "unknown";
+    // X-Forwarded-For is client-supplied and trivially spoofable. Only honor it
+    // when the operator has declared a trusted proxy hop (TRUST_PROXY=1);
+    // otherwise the socket address is the identity.
+    const ip = cfg.trustProxy
+      ? ((req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0].trim() || req.ip || "unknown")
+      : (req.ip || "unknown");
     const rl = rateCheck(ip, cfg);
     if (!rl.ok) {
       reply.header("Retry-After", String(rl.retryAfter));
@@ -197,7 +235,10 @@ export function registerAiProxy(app: FastifyInstance, cfg: ProxyConfig = readPro
       });
       const text = await upstream.text();
       reply.code(upstream.status);
-      reply.header("content-type", upstream.headers.get("content-type") || "application/json");
+      // Only ever serve JSON from our origin — an upstream that answered with
+      // text/html must not become reflected content on the app's origin.
+      const ct = upstream.headers.get("content-type") || "";
+      reply.header("content-type", ct.includes("application/json") ? ct : "application/json");
       const ra = upstream.headers.get("retry-after");
       if (ra) reply.header("Retry-After", ra);
       // Pass the provider's own body through so the client's 413/429 handling

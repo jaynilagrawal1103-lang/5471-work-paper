@@ -132,5 +132,40 @@ const bundle = fs.readFileSync(path.join(root, "dist-server", "server.cjs"), "ut
 a(bundle.includes("/api/ai/chat"), "the built server bundle contains the proxy route");
 a(!/gsk_[A-Za-z0-9]{10}/.test(bundle), "no key is baked into the server bundle either");
 
+/* ---------------- hardening (S1-S6): the defences must actually defend ---- */
+
+// S4: a mistyped limit fails CLOSED (falls back to the default), never open.
+let hcfg = P.readProxyConfig({ GROQ_API_KEY: "k", AI_RATE_PER_MIN: "abc", AI_RATE_PER_DAY: "-5" });
+a(hcfg.perMin === 20 && hcfg.perDay === 2000, "non-numeric / negative rate limits fall back to defaults (never NaN-disable)");
+a(P.readProxyConfig({ AI_RATE_PER_MIN: "7" }).perMin === 7, "a valid numeric limit is honored");
+
+// S2: X-Forwarded-For is ignored unless TRUST_PROXY=1.
+a(P.readProxyConfig({}).trustProxy !== true, "XFF is not trusted by default");
+a(P.readProxyConfig({ TRUST_PROXY: "1" }).trustProxy === true, "TRUST_PROXY=1 opts in to XFF");
+const proxySrc = fs.readFileSync(path.join(root, "server", "src", "aiProxy.ts"), "utf8");
+a(proxySrc.includes("cfg.trustProxy") && proxySrc.includes('? ((req.headers["x-forwarded-for"]'),
+  "the route reads XFF only behind the trustProxy flag");
+
+// S3: the bucket map is bounded.
+{
+  const store = new Map();
+  const cfg3 = { perMin: 100, perDay: 1000 };
+  for (let i = 0; i < P.MAX_BUCKETS + 50; i++) P.rateCheck("ip" + i, cfg3, Date.now(), store);
+  a(store.size <= P.MAX_BUCKETS, "spoofed identities cannot grow the bucket map without bound");
+}
+
+// S5: response_format shapes are allow-listed.
+let rf = P.validateChatBody({ messages: [{ role: "user", content: "x" }], response_format: { type: "text", evil: 1 } }, vcfg);
+a(rf.ok && !rf.body.response_format, "an unknown response_format shape is dropped, not forwarded");
+let rf2 = P.validateChatBody({ messages: [{ role: "user", content: "x" }], reasoning_effort: "extreme" }, vcfg);
+a(rf2.ok && !rf2.body.reasoning_effort, "an unknown reasoning_effort is dropped");
+
+// S6: our origin only ever serves JSON.
+a(proxySrc.includes('ct.includes("application/json") ? ct : "application/json"'),
+  "a non-JSON upstream content-type is not reflected on our origin");
+
+// S1: keyed-but-tokenless deployments warn loudly at boot.
+a(proxySrc.includes("NO AI_PROXY_TOKEN"), "open-relay configuration warns at registration");
+
 if (fails) { console.error(`${fails} FAILURE(S)`); process.exit(1); }
 console.log("ALL AI-KEY TESTS PASSED");

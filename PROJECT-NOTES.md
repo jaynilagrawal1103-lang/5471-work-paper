@@ -200,3 +200,33 @@ total 29,641.42 identically.
 `tests/fixtures/harness.cjs` (jsdom driver), `tests/fixtures/2hats_rows.json`,
 `tests/fixtures/2hats_ai_mappings.json`, `tests/test_fixture_2hats.cjs`
 (20 checks, wired into `test:all`). `window.__EN9MAP` debug hook in the bundle.
+
+### Correction + wiring (2026-08-27, follow-up session)
+The "11% -> 90%" fixture number was measured through `tests/fixtures/harness.cjs`,
+which applied rules 1/2/3 itself — at `c087eb9` those rules were DEFINED in dist but
+never called by the app (only `window.__EN9MAP` referenced them), so the shipped
+pipeline scored ~10% on the same rows and the newly-wired balance check then blocked
+generation undismissably. Fixed in this session:
+- Rules 1-3 wired into the real pipeline: PDF feed items now carry `x0` and run
+  `EN9tagSections` -> `EN9structRows` per document/feed side; structurally-skipped
+  rows are honored (and logged) by stage 3; `EN9sectionRoute` now actually fires
+  (F.section exists); `EN9sectionOk` vetoes AI proposals that cross a banner.
+- Cross-document booking dedupe (same target+caption+value+field from a different
+  document books once, with an info item) replaces the dead `EN9dedupeRows` wiring;
+  `EN9dedupeRows` itself remains harness-only (its key would merge legitimate
+  identical rows).
+- Schedule F tie-out block is dismissible per entity (merged through the dismissal
+  lookup in gn(), navigable target, no duplicate ids). EN9tieTax is wired (warn).
+- `EN9clearPlaceholders` no longer mutates entity state from render (sl() works on
+  a local copy; polluted saves heal on restore).
+- Schedule E writes CURRENT tax only (|IS:54|) — deferred tax is not "paid or
+  accrued"; the old `abs(54+55)` overstated tax when a deferred benefit existed and
+  fed the Sch-H -> I-1 -> 8992 chain. I16/K16 receive the year, not a full date.
+- aiProxy hardened: rate-limit config fails closed, XFF honored only behind
+  TRUST_PROXY=1, bounded bucket map, response_format/reasoning_effort allow-listed,
+  JSON-only content-type on our origin, loud boot warning for keyed-but-tokenless
+  deployments. Proxy 401/403/503 no longer reported as "Groq rejected the API key".
+- FX copy corrected everywhere to the real rule: the last rate published on or
+  before the date, searching back 10 days (was "nearest on or before the date (10-day search)").
+- `tests/test_wired.cjs` guards against dead-wiring regressions (call-site counts,
+  dismissal behavior, extraWrites stability).

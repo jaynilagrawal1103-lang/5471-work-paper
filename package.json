@@ -27,7 +27,8 @@
     "test:schedc": "node tests/test_schedc.cjs",
     "test:boot": "node tests/test_boot.cjs",
     "test:fixture": "node tests/test_fixture_2hats.cjs",
-    "test:all": "npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture",
+    "test:wired": "node tests/test_wired.cjs",
+    "test:all": "npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture && npm run test:wired",
     "build:full": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs"
   },
   "dependencies": {

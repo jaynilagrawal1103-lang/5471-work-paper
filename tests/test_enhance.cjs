@@ -143,14 +143,17 @@ const run = () => new Promise(r => setTimeout(r, 250));
   const inp=bar.querySelector('.en9-search');
   inp.value='purchases'; inp.dispatchEvent(new window.Event('input',{bubbles:true}));
   await run();
-  const vis=[...d.querySelectorAll('tbody tr')].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
+  const mapTb=d.querySelector('.wp-table table'); // the mapping table; map filters are scoped to it
+  const vis=[...mapTb.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
   assert(vis.length===1 && vis[0].textContent.includes('Purchases'), 'search filters to Purchases row');
+  assert([...d.querySelectorAll('#ev tbody tr')].some(r=>!r.classList.contains('en9-hidden')),
+    'map search does NOT hide other tables (filter-leak regression)');
   assert([...d.querySelectorAll('tr.en9-group')].some(g=>/1 of 2/.test(g.textContent)), 'group count shows "1 of 2" when filtered');
   // schedule filter
   bar.querySelector('.en9-fchip:last-child').click(); await run(); // Clear
   const sel=bar.querySelector('select'); sel.value='Sch F'; sel.dispatchEvent(new window.Event('change',{bubbles:true}));
   await run();
-  const vis2=[...d.querySelectorAll('tbody tr')].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
+  const vis2=[...mapTb.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
   assert(vis2.length===1 && vis2[0].textContent.includes('Cash'), 'schedule filter isolates Sch F');
   sel.value='ALL'; sel.dispatchEvent(new window.Event('change',{bubbles:true})); await run();
 
@@ -185,7 +188,7 @@ const run = () => new Promise(r => setTimeout(r, 250));
   // regression: search index refreshed -> searching the NEW value finds the row
   const inp2=d.querySelector('.en9-fb .en9-search');
   inp2.value='993,558'; inp2.dispatchEvent(new window.Event('input',{bubbles:true})); await run();
-  const vf=[...d.querySelectorAll('tbody tr')].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
+  const vf=[...mapTb.tBodies[0].rows].filter(r=>!r.classList.contains('en9-hidden')&&!r.hasAttribute('data-en9'));
   assert(vf.length===1 && vf[0].textContent.includes('Purchases'), 'search finds row by its NEW user-edited value');
   inp2.value=''; inp2.dispatchEvent(new window.Event('input',{bubbles:true})); await run();
 

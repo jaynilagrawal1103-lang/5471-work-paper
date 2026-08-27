@@ -228,9 +228,10 @@ function enhanceOcrBadges(){
 }
 
 /* ---------- grouping, subtotals, filtering ---------- */
-function matches(r, key){
-  if(S.q && (r.getAttribute("data-en9s")||"").indexOf(S.q)===-1) return false;
+function matches(r, key, kind){
   if(!rowPasses(r, key)) return false;
+  if(kind!=="map") return true;      /* global map filters must not hide other views' tables */
+  if(S.q && (r.getAttribute("data-en9s")||"").indexOf(S.q)===-1) return false;
   if(S.sch!=="ALL" && r.getAttribute("data-en9sch")!==S.sch) return false;
   if(S.multi && !r.classList.contains("en9-multi")) return false;
   if(S.edited && !r.classList.contains("en9-edited")) return false;
@@ -244,7 +245,7 @@ function rebuild(tb, kind){
   for(var i=0;i<olds.length;i++) olds[i].remove();
   var rows = dataRows(tb), cols = tb.tHead.rows[0].cells.length, visTotal=0;
   for(var i2=0;i2<rows.length;i2++){
-    var ok = matches(rows[i2], key);
+    var ok = matches(rows[i2], key, kind);
     rows[i2].classList.toggle("en9-hidden", !ok || (kind==="map" && !!S.collapsed[rows[i2].getAttribute("data-en9sch")]));
     if(ok) visTotal++;
   }
@@ -252,7 +253,7 @@ function rebuild(tb, kind){
     var cur=null, groupRows=[];
     function flush(){
       if(!cur||!groupRows.length) return;
-      var vis=groupRows.filter(function(r){return matches(r, key);});
+      var vis=groupRows.filter(function(r){return matches(r, key, kind);});
       var head=el("tr","en9-x en9-group"+(S.collapsed[cur]?" en9-closed":""));
       var td=el("td"); td.colSpan=cols;
       td.appendChild(el("span","en9-chev","\u25BE"));

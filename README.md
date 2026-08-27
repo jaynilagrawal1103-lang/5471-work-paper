@@ -172,7 +172,7 @@ None are required; all are keyless except Groq.
 |---|---|---|
 | MyMemory | Translation | 5,000 characters/day |
 | Lingva | Translation fallback | none published |
-| OFX | Historical daily FX — period averages and nearest-day (±7 d) date lookups, tried first | none published |
+| OFX | Historical daily FX — period averages and last-published-on-or-before date lookups (10-day search), tried first | none published |
 | Frankfurter (ECB) | Historical FX, after OFX | none published |
 | ExchangeRate-API | Live FX, latest only | none published |
 | Groq | Translation and automatic mapping of leftover captions | your own API key |
@@ -192,8 +192,8 @@ turns this off. Without a key the pass is skipped silently and the tool remains 
 offline.
 
 Exchange rates follow a fixed chain: (1) the bundled IRS yearly-average / US Treasury
-12/31 tables; (2) OFX daily data — a period average for C59 and the nearest daily rate
-within 7 days of the requested date for C60/C61 and dividend payment dates, always
+12/31 tables; (2) OFX daily data — a period average for C59 and the last daily rate published on or
+before the requested date (searching back 10 days) for C60/C61 and dividend payment dates, always
 labelled with the resolved date; (3) the other configured live providers; (4) manual
 entry. Every rate displays its source (IRS / Treasury / OFX / ECB / Manual) throughout
 the app. Fiscal-year entities skip the calendar tables but do receive the OFX steps
