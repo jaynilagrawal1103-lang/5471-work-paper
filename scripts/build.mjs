@@ -7,6 +7,22 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = path.join(root, "dist");
+
+/* GUARD: the committed dist/index.html carries months of fixes applied directly
+   to the built file (see PROJECT-NOTES.md) plus the SheetJS script this build
+   does not emit. Rebuilding from src/ would silently destroy all of it. */
+const existing = path.join(out, "index.html");
+if (fs.existsSync(existing) && process.env.FORCE_REBUILD !== "1") {
+  const cur = fs.readFileSync(existing, "utf8");
+  if (cur.includes("EN9") || /xlsx\.js \(C\) 2013-present\s+SheetJS/.test(cur)) {
+    throw new Error(
+      "dist/index.html contains dist-only fixes (EN9*) and/or the SheetJS library " +
+      "that this build does NOT reproduce — a rebuild would destroy them. " +
+      "See PROJECT-NOTES.md. If you have truly ported everything back into src/, " +
+      "re-run with FORCE_REBUILD=1.",
+    );
+  }
+}
 fs.mkdirSync(out, { recursive: true });
 
 /* 1. Bundle the React application. */
@@ -39,6 +55,14 @@ if (!fs.existsSync(jszipPath)) {
 // Strip the sourcemap comment; it is not needed inline.
 const jszip = fs.readFileSync(jszipPath, "utf8").replace(/\/\/# sourceMappingURL=.*$/m, "");
 
+/* SheetJS is vendored (vendor/xlsx.full.min.js) because it is not an npm dep of
+   this project; without it .xls/.xlsb parsing dies silently. */
+const sheetjsPath = path.join(root, "vendor/xlsx.full.min.js");
+if (!fs.existsSync(sheetjsPath)) {
+  throw new Error("vendor/xlsx.full.min.js not found - SheetJS must be inlined or .xls support is lost");
+}
+const sheetjs = fs.readFileSync(sheetjsPath, "utf8");
+
 const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -69,6 +93,7 @@ ${appCss}
 <!-- JSZip loads after the app: its setImmediate polyfill hooks MessageChannel,
      which the React scheduler also uses, so it must not run first. -->
 <script>${jszip}</script>
+<script>${sheetjs}</script>
 </body>
 </html>`;
 

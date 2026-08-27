@@ -28,8 +28,10 @@
     "test:boot": "node tests/test_boot.cjs",
     "test:fixture": "node tests/test_fixture_2hats.cjs",
     "test:wired": "node tests/test_wired.cjs",
-    "test:all": "npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture && npm run test:wired",
-    "build:full": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs"
+    "test:integrity": "node tests/test_dist_integrity.cjs",
+    "test:guide": "node scripts/check-guide.mjs",
+    "test:all": "npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture && npm run test:wired && npm run test:integrity && npm run test:guide",
+    "build:full-DESTRUCTIVE": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs"
   },
   "dependencies": {
     "@fastify/multipart": "^10.1.0",

@@ -230,3 +230,34 @@ generation undismissably. Fixed in this session:
   before the date, searching back 10 days (was "nearest on or before the date (10-day search)").
 - `tests/test_wired.cjs` guards against dead-wiring regressions (call-site counts,
   dismissal behavior, extraWrites stability).
+
+## Wave 2 — P3 quick wins (2026-08-27)
+
+- **Re-process confirm**: `processEntity` asks before recomputing when results
+  exist; dismissed reviewItems (sign-offs) are carried across the wipe
+  (`reviewItems:(e.reviewItems||[]).filter(q=>q.dismissed)` — `gn()` merges by id).
+- **removeEntity** now also calls `ss.deleteWorkpaper()` and prunes
+  `workpaperIds`, so deleted entities no longer resurrect on hydrate.
+- **Duplicate uploads**: `addFiles` is async and SHA-256-digests each file
+  (`EN9sha`; fallback key `nk:name|size|lastModified` off secure contexts). A
+  byte-identical re-upload is refused with a toast + audit entry. All three
+  call sites are fire-and-forget, so the signature change is safe.
+- **Build safety**: `scripts/build.mjs` now REFUSES to overwrite a
+  dist/index.html containing EN9 fixes or SheetJS unless `FORCE_REBUILD=1`.
+  SheetJS is vendored at `vendor/xlsx.full.min.js` (extracted from dist) and
+  emitted by the build, so even a forced rebuild keeps `.xls` support.
+  `build:full` renamed `build:full-DESTRUCTIVE`. New suites:
+  `tests/test_dist_integrity.cjs` (blocks + sentinel pairs + size floor) and
+  `scripts/check-guide.mjs` (user-guide drift guard) — test:all is 18 checks.
+- **Quota honesty**: Settings tab relabeled "Usage".
+- **Few-shot examples** added to the pass-1 mapping prompt (Creditors→BS:46,
+  Salaries→IS:26, Depreciation→IS:30, two subtotal→null examples).
+- **docs/user-guide.md** (interim) replaces the stale docx as the authoritative
+  written guide; `check-guide.mjs` extracts tab count / models / FX copy FROM
+  dist so the guide cannot silently drift. Full illustrated regen = Wave 4.
+- **json_schema DEFERRED (decision)**: the mapping response keys are dynamic
+  row indices; OpenAI-compatible strict `json_schema` requires fixed
+  properties + `additionalProperties:false`, so adopting it means reshaping
+  the response to an array and rewriting `EN9parseMap`. gpt-oss support for
+  json_schema on Groq is unverified. Revisit only if Wave 3 shows real-world
+  `json_object` parse failures; the proxy already allow-lists both shapes.
