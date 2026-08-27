@@ -261,3 +261,52 @@ generation undismissably. Fixed in this session:
   the response to an array and rewriting `EN9parseMap`. gpt-oss support for
   json_schema on Groq is unverified. Revisit only if Wave 3 shows real-world
   `json_object` parse failures; the proxy already allow-lists both shapes.
+
+## Wave 5 — reproducibility fixes (2026-08-27, after the live client-doc run)
+
+The reviewed client run needed ~30 manual corrections; these fixes move them into
+the pipeline so a fresh run converges on its own. Verified by four full fresh-state
+reruns of the 4-document case (wipe → load → process, zero interventions):
+
+- **q1 emits section banners.** Label-only rows ("Current Liabilities", "Cash
+  Assets", "Equity") were silently dropped (`if(!c.length)continue`) so
+  EN9tagSections never saw a real banner — tags only ever came from *valued*
+  total rows, whose stale carry-over poisoned neighbouring sections. q1 now
+  pushes EN9banner rows (raw mode excluded); stage-3 skips them
+  (`if(F.EN9skip||F.row&&F.row.EN9banner)continue`).
+- **EN9SECTB lexicon** covers real statement banners (current/non-current
+  assets & liabilities, cash assets, inventories, current tax assets, equity,
+  issued capital, P&L page titles, Dutch variants). Cross-statement scrub: the
+  IS feed drops assets/liabilities tags, the BS feed drops income/costs tags.
+- **Stage-3 rule veto**: a rule target that contradicts the row's banner is
+  nulled and re-routed (EN9sectionRoute) or queued. EN9sectionOk now knows the
+  pseudo-targets (BS:OCA=assets, BS:OCL/BS:OL=liabilities) — GST rules resolve
+  to BS:OCL, which previously slipped past the side check. sectionRoute assets
+  branch gained gst; Keystone's net GST asset now lands in current tax assets.
+- **Fiscal year-end from the title**: "year ended 30 June 2024" scanned from the
+  raw profile grids sets cyEnd/pyEnd (Feb-29 clamped) with a review note —
+  before the 12/31 statement-year default. AU June-years now automatic.
+- **Profile writes type-checked** at both choke points (detection q() and the
+  AI profile pass): dates must parse (EN9dv), currency must be a 3-letter code;
+  rejects raise review items. Kills the year-end-overwritten-with-entity-name
+  corruption (source: "Balance sheet as of 2024" caption).
+- Bank-account captions (account #s, IBAN, cheque/savings account) can never
+  book to the income statement; stock-movement rules (opening/closing → IS:12
+  with closing negated post-pass, stock on hand → BS:14); issued-capital rule →
+  BS:59; negative deduction bookings raise info review items; address fields
+  refuse pure numbers; sl() falls back legalName→entityShort/name for B11;
+  Provenance now lists rule and manual bookings too; AI prompt shows each
+  caption's banner and clarifies IS:12 is COGS-only.
+- **fs-equity pages** also feed generic-bs. KNOWN LIMITATION: Keystone's
+  equity page (p12) still yields no candidate rows (q1 column-ruler fails on
+  the sparse 2-row page) — equity needs manual entry there; a completeness
+  check is the follow-up.
+- Debug tap: `window.__EN9FEED[docName]` records the tagged feed per document.
+- tests/detect_test_src.cjs chunk 5 (q1) regenerated; test_wired pin updated.
+
+Fresh-run result (run 4): Keystone assets/liabilities tie the statement exactly
+both years (equity manual); Shaka balances exactly incl. negative equity; 2Hats
+balances to the cent, 0 unmatched (year-end needs one manual click — no title
+in the Dutch report). Manual steps left for the operator: confirm currency,
+2Hats year end, Keystone equity (4 values), dismiss the $1-$3 statement-rounding
+tie-outs, and the by-design judgment fields.

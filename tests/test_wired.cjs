@@ -23,7 +23,7 @@ a(dist.includes("EN9section:F.section"), "unmatched rows carry the section banne
 a(dist.includes("EN9bkSeen"), "cross-document booking dedupe is present in stage 3");
 a(dist.includes("structural subtotal/total row(s) dropped before mapping"),
   "structurally-skipped rows are logged per document");
-a(dist.includes('if(F.EN9skip)continue'), "the booking loop honors structural skips");
+a(dist.includes('if(F.EN9skip||F.row&&F.row.EN9banner)continue'), "the booking loop honors structural skips and section banners");
 a(!dist.includes("function EN9sumSide"), "the dead-and-broken EN9sumSide helper is gone");
 a(dist.includes('target:Ce.bs+"!F62"'), "tie-out items carry a navigable target");
 
