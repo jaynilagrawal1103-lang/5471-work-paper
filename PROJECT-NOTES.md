@@ -310,3 +310,29 @@ balances to the cent, 0 unmatched (year-end needs one manual click — no title
 in the Dutch report). Manual steps left for the operator: confirm currency,
 2Hats year end, Keystone equity (4 values), dismiss the $1-$3 statement-rounding
 tie-outs, and the by-design judgment fields.
+
+## Wave 6 — mixed-page classification fix (2026-08-27, from the user's gold-vs-export recon)
+
+The user's fresh 2Hats export booked the revenue into "Other deduction 1"
+(income statement unusable) while the balance sheet was exact. Trace: the Dutch
+report's P&L pages classify into the generic-bs page set; the Wave-5
+cross-statement scrub then deleted their income/costs banner tags and the
+feed-prefix guard stopped rules from booking IS lines — the AI guessed blind.
+
+- **Banner-driven re-feed** replaces the scrub: a row tagged income/costs in
+  the BS feed moves to the IS feed (and vice versa), with a log line
+  ("N row(s) re-routed ... by their statement section banners"). Rules now book
+  the P&L: 2Hats IS is fully rule-mapped and lands on the gold composition
+  (gross receipts 174,223.36, other income 18,503.33, compensation 186,640.63).
+- **Income-statement sanity blocker** `EN9-tie-is-rev` in EN9tieOut: zero
+  revenue/other income with >1,000 of deductions blocks generation
+  (dismissible, same flow as the Schedule F tie-out).
+- Rules: wkr expense/werkkostenregeling -> IS:26; small material/kleinmateriaal
+  -> IS:OD. Negative-deduction review items upgraded info -> warn (the -49
+  interest sign surfaces in the Exception center; not auto-flipped because
+  genuine contra-costs exist, e.g. 40990 Other personnel costs -9.37).
+
+Regression-verified with a full wipe-and-reprocess of the 4-document case:
+Keystone/Shaka unchanged (exact statement ties), 2Hats balanced 29,641.42 both
+sides with 0 unmatched and the IS now matching the preparer's workbook net of
+the flagged interest sign and gold's whole-euro rounding.
