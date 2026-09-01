@@ -75,7 +75,7 @@ import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
 import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
-import { collectCaptionLabels, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
+import { collectCaptionLabels, detectLanguage, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
 declare const JSZip: any;
@@ -1399,8 +1399,27 @@ export const actions = {
           ledger?.counterparty || "", ledger?.subjectEntity || "", cf?.holderName || "",
         ]);
 
+        // A caption that no rule recognises may simply be in another language.
+        // The tool already translates captions, but mapping used to run on the
+        // raw label only, so a Spanish or Portuguese statement mapped nothing
+        // even after translation. Try the raw label first (it is authoritative
+        // and free), then the stored translation. Amounts are never affected —
+        // only which template line the caption is matched to.
+        let viaTranslation = 0;
+        const matchWithTranslation = (label: string): { target: string | null; translated: boolean } => {
+          const direct = matchRule(label, state.rules);
+          if (direct) return { target: direct, translated: false };
+          const en = ent.translations?.[label];
+          if (!en || en === label) return { target: null, translated: false };
+          const t = matchRule(en, state.rules);
+          if (!t) return { target: null, translated: false };
+          viaTranslation++;
+          return { target: t, translated: true };
+        };
+
         for (const m of mapRows) {
-          let target = matchRule(m.row.label, state.rules);
+          const matched = matchWithTranslation(m.row.label);
+          let target = matched.target;
           if (target === "SKIP") continue;
           const ov = overrides[norm(m.row.label)];
           if (ov !== undefined) {
@@ -3113,6 +3132,20 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   }
   if (ent.unmatched.length) {
     out.push({ id: "mapping-unmatched", level: "warn", category: "mapping", message: `${ent.unmatched.length} extracted label(s) are still unassigned` });
+  }
+  /* A statement in a language the rules do not cover reads as "0 lines" with
+     no explanation, which looks like a parse failure. If captions WERE
+     extracted and almost none matched, say what is actually happening. */
+  if (ent.unmatched.length >= 6 && Object.keys(ent.lines).length <= 1) {
+    const nonEnglish = ent.unmatched.filter((u) => detectLanguage(u.label) !== "English");
+    const share = nonEnglish.length / ent.unmatched.length;
+    if (share >= 0.4) {
+      const langs = [...new Set(nonEnglish.map((u) => detectLanguage(u.label)))].join(", ");
+      out.push({
+        id: "mapping-language", level: "block", category: "mapping",
+        message: `${ent.unmatched.length} captions were read from the documents but almost none matched a template line, and ${nonEnglish.length} of them are not in English (${langs}). This is a language gap, not a failed read. Translate the captions on the Multilingual evidence tab — mapping now retries a caption against its translation — or add an AI key in Settings, or map the lines by hand in Mapping & adjustments.`,
+      });
+    }
   }
   if (!Object.keys(ent.categories).some((k) => ent.categories[k])) {
     out.push({ id: "profile-category", level: "warn", category: "profile", message: "No filing category selected" });

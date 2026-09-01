@@ -33,7 +33,8 @@
     "test:translate": "node tests/test_translate_scope.cjs",
     "test:item2d": "node tests/test_item2d.cjs",
     "test:schedb": "node tests/test_schedule_b.cjs",
-    "test:all": "npm run test:schedb && npm run test:item2d && npm run test:translate && npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture && npm run test:wired && npm run test:integrity && npm run test:guide",
+    "test:spanish": "node tests/test_spanish_mapping.cjs",
+    "test:all": "npm run test:spanish && npm run test:schedb && npm run test:item2d && npm run test:translate && npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture && npm run test:wired && npm run test:integrity && npm run test:guide",
     "build:full-DESTRUCTIVE": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs"
   },
   "dependencies": {
