@@ -124,7 +124,12 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
   // House registration lines — all count as the band.
   const fsBand = opts?.assumeFsBand
     || /\babn\b|\bacn\b|\ba\.\s?b\.\s?n\.?\b|company\s+(no\.?\s|number|registration)|registered\s+(number|office)|companies house/.test(head)
-    || /page \d+ of \d+/.test(foot);
+    // Non-Anglo company/tax identifiers. Without these a Colombian, Mexican,
+    // Brazilian or French statement never enters the band, so its pages
+    // classify as "unknown" and never reach the mapper at all — the entity
+    // then shows "0 lines" with nothing extracted to explain it.
+    || /\bnit\b|\bru[tc]\b|\brfc\b|\bcuit\b|\bcnpj\b|\bnif\b|\bcif\b|\bsiren\b|\bsiret\b|\bkvk\b|\bcoc\b|c\.?o\.?c\.?\s*:|\bust-?idnr\b/.test(head)
+    || /page \d+ of \d+|p\u00e1gina \d+ de \d+|p\u00e1gina \d+\/\d+/.test(foot);
   if (fsBand) {
     // Cover/administrative pages mention every section name — test them first.
     if (/\bcontents\b|directors'? (statement|report)|accountants'? report|compilation report|independent auditor/.test(head)) return mk("fs-cover", 3);
@@ -134,11 +139,11 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     if (/trading account/.test(head)) return mk("fs-trading", 3);
     // A balance-sheet TITLE wins over equity-movement content: a balance sheet
     // may mention retained profits in a note, but never carries the movement.
-    if (/statement of financial position|balance sheet/.test(head)) return mk("fs-balance-sheet", 3);
+    if (/statement of financial position|balance sheet|balance general|estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o patrimonial|balanco patrimonial|balan\u00e7o|balanco|bilan\b|bilancio|balans|bilanz/.test(head)) return mk("fs-balance-sheet", 3);
     // Equity movements need the strong anchor — a P&L-titled page carrying the
     // retained-profits roll-forward is the equity statement, not a P&L.
     if (/statement of changes in equity/.test(head) || /opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
-    if (/statement of financial performance|profit (and|or) loss|income statement|statement of comprehensive income/.test(head)) return mk("fs-pnl", 3);
+    if (/statement of financial performance|profit (and|or) loss|income statement|statement of comprehensive income|estado de resultados?|estado de ganancias y p\u00e9rdidas|estado de ganancias y perdidas|cuenta de resultados|demonstra\u00e7\u00e3o do resultado|demonstracao do resultado|compte de r\u00e9sultat|compte de resultat|conto economico|winst- en verliesrekening|gewinn- und verlustrechnung/.test(head)) return mk("fs-pnl", 3);
     if (/accounting policies|notes to /.test(head)) return mk("fs-notes", 2);
     if (/financial statements/.test(head)) return mk("fs-cover", 2);
   }
@@ -146,10 +151,10 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
   // but an EXACT statement title plus a period line in the first rows.
   const head5 = doc.rows.filter((r) => r.page === page).slice(0, 5)
     .map((r) => r.cells.map((c) => c.text).join(" ").trim().toLowerCase());
-  const periodLine = /^(as of .*\d{4}|(january|february|march|april|may|june|july|august|september|october|november|december)[^]{0,40}\d{4}|all dates)$/;
+  const periodLine = /^(as of .*\d{4}|(january|february|march|april|may|june|july|august|september|october|november|december)[^]{0,40}\d{4}|all dates|a (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)[^]{0,40}\d{4}|al \d{1,2} de [a-z\u00e1\u00e9\u00ed\u00f3\u00fa]+ de \d{4}|(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)[^]{0,40}\d{4})$/;
   if (head5.some((t) => periodLine.test(t))) {
-    if (head5.some((t) => /^balance sheet(\s*[-–]\s*\d{4})?$/.test(t))) return mk("fs-balance-sheet", 2);
-    if (head5.some((t) => /^(profit (and|&) loss|income statement|statement of activity)(\s*[-–]\s*\d{4})?$/.test(t))) return mk("fs-pnl", 2);
+    if (head5.some((t) => /^(balance sheet|balance general|balan\u00e7o)(\s*[-–]\s*\d{4})?$/.test(t))) return mk("fs-balance-sheet", 2);
+    if (head5.some((t) => /^(profit (and|&) loss|income statement|statement of activity|estado de resultados?)(\s*[-–]\s*\d{4})?$/.test(t))) return mk("fs-pnl", 2);
   }
   if (/terms\s*(&|and)\s*conditions|letter of engagement|engagement terms/.test(head)) return mk("tandc", 2);
   return mk("unknown", 0);

@@ -115,5 +115,82 @@ t("the statements are detected as Spanish for the diagnostic", () => {
   assert.ok(spanish.length >= 1, "no caption detected as non-English");
 });
 
+/* ---- The gate BEFORE mapping: page classification. ----
+   Even with Spanish keywords in the rules, these statements produced 0 lines
+   because their PAGES never reached the mapper. Two English-only gates:
+     1. the FS "band" needed an Anglo company identifier (ABN/ACN/company
+        number/Companies House). Colombia prints "NIT No. 900,574,408-0".
+     2. the titles are "BALANCE GENERAL" and "ESTADO DE RESULTADO", not
+        "Balance Sheet" / "Income Statement".
+   Both failed, the page classified as "unknown", and nothing was extracted —
+   which is why the entity showed 0 lines with 0 unmatched captions too. */
+const CLS = load("src/prototype/wp/classify.ts");
+
+const mkDoc = (lines) => {
+  const rows = lines.map((l) => ({
+    page: 1,
+    cells: l.split("|").map((c) => ({ text: c.trim(), x0: 0 })).filter((c) => c.text),
+  }));
+  return { rows, pageCount: 1, pages: [{ page: 1 }] };
+};
+
+t("a Colombian balance sheet is recognised as a balance sheet", () => {
+  const doc = mkDoc([
+    "PREMIUM CARE PLASTIC SURGERY SAS",
+    "NIT No. 900,574,408-0",
+    "BALANCE GENERAL",
+    "A DICIEMBRE 31 DE 2024",
+    "A C T I V O S",
+    "CAJA GENERAL | 0",
+    "BANCOS NACIONALES | 18,178",
+  ]);
+  assert.strictEqual(CLS.classifyPages(doc)[0].kind, "fs-balance-sheet");
+});
+
+t("a Colombian income statement is recognised as a P&L", () => {
+  const doc = mkDoc([
+    "PREMIUM CARE PLASTIC SURGERY SAS",
+    "NIT No. 900,574,408-0",
+    "ESTADO DE RESULTADO",
+    "A DICIEMBRE 31 DE 2024",
+    "INGRESOS OPERACIONALES",
+    "GASTOS DEL PERSONAL | 81,704,489",
+  ]);
+  assert.strictEqual(CLS.classifyPages(doc)[0].kind, "fs-pnl");
+});
+
+t("other non-English statement titles are recognised too", () => {
+  const cases = [
+    ["BALANCE GENERAL", "NIT No. 900.123-4", "fs-balance-sheet"],
+    ["ESTADO DE SITUACION FINANCIERA", "RUC 20123456789", "fs-balance-sheet"],
+    ["BALANCO PATRIMONIAL", "CNPJ 12.345.678/0001-95", "fs-balance-sheet"],
+    ["BILAN", "SIREN 123456789", "fs-balance-sheet"],
+    ["ESTADO DE RESULTADOS", "RFC ABC123456XYZ", "fs-pnl"],
+    ["COMPTE DE RESULTAT", "SIRET 12345678900011", "fs-pnl"],
+  ];
+  for (const [title, id, want] of cases) {
+    const got = CLS.classifyPages(mkDoc(["ACME LTDA", id, title, "A DICIEMBRE 31 DE 2024", "CAJA | 100"]))[0].kind;
+    assert.strictEqual(got, want, `${title} -> ${got}`);
+  }
+});
+
+t("English statements still classify exactly as before", () => {
+  const uk = mkDoc([
+    "ACME TRADING LIMITED", "Company number 01234567", "Balance Sheet",
+    "as at 31 December 2024", "Cash at bank | 1,000",
+  ]);
+  assert.strictEqual(CLS.classifyPages(uk)[0].kind, "fs-balance-sheet");
+  const pl = mkDoc([
+    "ACME TRADING LIMITED", "Company number 01234567", "Profit and Loss Account",
+    "for the year ended 31 December 2024", "Turnover | 5,000",
+  ]);
+  assert.strictEqual(CLS.classifyPages(pl)[0].kind, "fs-pnl");
+});
+
+t("an unrelated page is still not mistaken for a statement", () => {
+  const junk = mkDoc(["SOME COVER LETTER", "Dear Sir or Madam", "Please find enclosed"]);
+  assert.strictEqual(CLS.classifyPages(junk)[0].kind, "unknown");
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
