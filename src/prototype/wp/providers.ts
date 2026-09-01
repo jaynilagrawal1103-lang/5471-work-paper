@@ -20,6 +20,8 @@ export type ProviderSpec = {
   notes: string;
 };
 
+import { isServiceErrorText } from "./captions";
+
 export const PROVIDERS: ProviderSpec[] = [
   {
     id: "mymemory",
@@ -126,8 +128,11 @@ export async function translateMyMemory(text: string, from = "auto"): Promise<Pr
     const data = await getJson(url);
     const out = data?.responseData?.translatedText;
     if (typeof out !== "string" || !out.trim()) throw new Error("empty response");
-    // The service returns its quota complaints inside the payload.
+    // The service returns its complaints INSIDE a 200 response, in the same
+    // field a real translation occupies. Treat them as failures, or an error
+    // string gets stored as the caption's translation and is never retried.
     if (/MYMEMORY WARNING|QUOTA EXCEEDED/i.test(out)) throw new Error("daily quota exceeded");
+    if (isServiceErrorText(out)) throw new Error(out.trim().slice(0, 80));
     return { ok: true, value: out, provider: "mymemory", units };
   } catch (err) {
     return { ok: false, error: (err as Error).message, provider: "mymemory", units };

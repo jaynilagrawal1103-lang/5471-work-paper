@@ -74,7 +74,8 @@ import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./
 import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
-import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, sourceLangHint, translateFree, type LiveRate } from "./providers";
+import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
+import { collectCaptionLabels, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
 declare const JSZip: any;
@@ -1557,6 +1558,9 @@ export const actions = {
             propose(profile, "formed", cf.formed || "", `${cfSource} · 5471 face`);
             propose(profile, "countryInc", cf.countryInc || "", `${cfSource} · 5471 face`);
             propose(profile, "activity", cf.activity || "", `${cfSource} · 5471 face`);
+            propose(profile, "booksPerson", cf.booksPerson || "", `${cfSource} · 5471 item 2d`);
+            propose(profile, "booksAddr1", cf.booksAddress[0] || "", `${cfSource} · 5471 item 2d`);
+            propose(profile, "booksAddr2", cf.booksAddress[1] || "", `${cfSource} · 5471 item 2d`);
             propose(profile, "currency", cf.functionalCurrency || "", `${cfSource} · 5471 face`);
             // No template cells exist for these three — they live on the
             // profile (and refId keys the fan-out idempotence + Sch E E16).
@@ -1827,11 +1831,11 @@ export const actions = {
   async translateLabels() {
     if (!state.groq.key) { toast("Add a Groq API key in Settings first", "bad"); return; }
     const work: Array<{ entityId: string; labels: string[] }> = state.entities.map((ent) => {
-      const all = [
-        ...Object.values(ent.sourceLabels).map((s2) => s2.label),
-        ...ent.unmatched.map((u) => u.label),
-      ];
-      return { entityId: ent.id, labels: [...new Set(all)].filter((l) => !ent.translations[l]) };
+      // collectCaptionLabels covers contributions + sourceLabels + unmatched,
+      // so the work list can never be narrower than the evidence table.
+      const all = collectCaptionLabels(ent);
+      const poisoned = new Set(poisonedTranslationKeys(ent.translations));
+      return { entityId: ent.id, labels: all.filter((l) => !ent.translations[l] || poisoned.has(l)) };
     }).filter((w) => w.labels.length);
 
     if (!work.length) { toast("Nothing left to translate"); return; }
@@ -1854,7 +1858,7 @@ export const actions = {
         w.labels.forEach((label, i) => {
           const v = parsed?.t?.[String(i)];
           const value = typeof v === "string" ? v.trim() : "";
-          if (value && !(isMostlyNonLatin(label) && isMostlyNonLatin(value))) {
+          if (value && !isServiceErrorText(value) && !(isMostlyNonLatin(label) && isMostlyNonLatin(value))) {
             translations[label] = value;
             delete failures[label];
             n++;
@@ -1878,17 +1882,16 @@ export const actions = {
       the configured order; Groq is only used when it is first in the order. */
   async translateFreeLabels() {
     const work = state.entities.map((ent) => {
-      const all = [
-        ...Object.values(ent.sourceLabels).map((s2) => s2.label),
-        ...ent.unmatched.map((u) => u.label),
-      ];
-      return { entityId: ent.id, labels: [...new Set(all)].filter((l) => !ent.translations[l]) };
+      const all = collectCaptionLabels(ent);
+      const poisoned = new Set(poisonedTranslationKeys(ent.translations));
+      return { entityId: ent.id, labels: all.filter((l) => !ent.translations[l] || poisoned.has(l)) };
     }).filter((w) => w.labels.length);
 
     if (!work.length) { toast("Nothing left to translate"); return; }
     set({ busy: true });
     let done = 0, failed = 0;
     let lastError = "";
+    let consecutive = 0;
 
     for (const w of work) {
       const ent = state.entities.find((e) => e.id === w.entityId);
@@ -1902,15 +1905,17 @@ export const actions = {
           continue;
         }
         const t0 = Date.now();
-        const { result, attempts } = await translateFree(label, state.translateOrder, sourceLangHint(label));
+        const { result, attempts } = await translateFree(label, state.translateOrder, translateSourceCode(label));
         const latency = Date.now() - t0;
         for (const a of attempts) recordProvider(a.provider, 0, false, a.error, null);
         if (result.ok) {
           const value = result.value.trim();
           const unusable =
             !value ||
+            isServiceErrorText(value) ||
             (isMostlyNonLatin(label) && (value === label.trim() || isMostlyNonLatin(value)));
           if (unusable) {
+            delete translations[label];   // clear any error string saved earlier
             // The service echoed the input or stayed in the source script —
             // that is not a translation, and storing it would be a guess.
             failures[label] = "Unreadable characters or unsupported text — the service returned nothing usable.";
@@ -1920,13 +1925,18 @@ export const actions = {
             translations[label] = value;
             delete failures[label];
             done++;
+            consecutive = 0;
           }
         } else {
           recordProvider("mymemory", 0, false, result.error, latency);
           failures[label] = `Translation service unavailable (${result.error}) — retry later.`;
           lastError = result.error;
           failed++;
-          break;   // a failing provider will keep failing; stop burning the quota
+          consecutive++;
+          // One bad caption must not strand the rest of the queue. Only give up
+          // when the provider is clearly down, not on a single refusal.
+          if (consecutive >= 3) break;
+          continue;
         }
         set({ usage: { ...state.usage, api: state.usage.api + 1 } });
       }
@@ -2589,12 +2599,73 @@ async function materializeCaseWrites(
       if (row > 19) w({ sheet: SHEET.shareholding, ref: `H${row}`, value: "", source: "template demo data cleared" });
     }
     if (cf && !holderRows.length) {
+      // Distinguish "the return has no Schedule B" from "we could not read it".
+      // A second 5471 filed as page 1 only is common and is NOT a parse failure;
+      // saying so stops the preparer hunting for a bug that does not exist.
+      const itemH = (cf.itemH || []).filter((p) => p.isShareholder || p.isDirector || p.isOfficer);
+      const message = cf.hasScheduleB === false
+        ? `The prior-year return contains only page 1 for this corporation — no Schedule B was filed with it, so there are no shareholder rows to carry forward.${
+            itemH.length
+              ? ` Item H names ${itemH.map((p) => p.name).join(", ")}; share counts are not stated on that page.`
+              : ""
+          } Enter the holders in the Shareholders tab, or add this corporation's own prior return.`
+        : "A prior-year 5471 was recognized but no shareholder rows could be read from its Schedule B — the template's DEMO shareholders were cleared. Enter the real holders in the Shareholders tab before generating.";
       rv({
-        id: "cf-holders-missing", level: "warn", category: "carry-forward",
-        message: "A prior-year 5471 was recognized but no shareholder rows could be read from its Schedule B Part II — the template's DEMO shareholders were cleared. Enter the real holders in the Shareholders tab before generating.",
+        id: "cf-holders-missing", level: "warn", category: cf.hasScheduleB === false ? "source-gap" : "carry-forward",
+        message, target: `${SHEET.shareholding}!B19`, source: cfSource,
+      });
+    }
+    // Part I holders carry the pro rata % and the SSN — neither appears in
+    // Part II. Surface them even when the direct rows came from Part II, so the
+    // combined US ownership (which drives CFC status) is visible.
+    if (cf?.usHolders?.length) {
+      rv({
+        id: "cf-us-holders", level: "info", category: "carry-forward", applied: true,
+        message: `Schedule B Part I lists ${cf.usHolders.length} U.S. shareholder(s): ${
+          cf.usHolders.map((h) => `${h.name}${h.pct !== undefined ? ` (${h.pct}%)` : ""}`).join(", ")
+        }${
+          cf.usHolders.every((h) => h.pct !== undefined)
+            ? ` — combined ${cf.usHolders.reduce((n, h) => n + (h.pct || 0), 0).toFixed(2)}%`
+            : ""
+        }. Template rows 19-26 carry DIRECT shareholders; Part I names are shown here because the same person is often counted through a trust.`,
         target: `${SHEET.shareholding}!B19`, source: cfSource,
       });
     }
+  }
+  /* Schedule A states the shares issued and outstanding for the corporation as
+     a whole. The shareholder rows must add up to it. When they do not, a holder
+     was dropped during extraction — which silently inflates everyone else's
+     ownership percentage (one holder read out of two turns 50% into 100%).
+     The tool can see this contradiction itself, so it must not wait to be told. */
+  if (cf?.shares && holderRows.length) {
+    const sumBoy = holderRows.reduce((n, h) => n + (Number(h.boy) || 0), 0);
+    const sumEoy = holderRows.reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+    const tol = 0.01;
+    const offBoy = Math.abs(sumBoy - cf.shares.boy) > tol;
+    const offEoy = Math.abs(sumEoy - cf.shares.eoy) > tol;
+    if (offBoy || offEoy) {
+      const shortfall = cf.shares.eoy - sumEoy;
+      rv({
+        id: "cf-share-reconcile", level: "block", category: "carry-forward",
+        message: `Shareholder rows do not reconcile to Schedule A. Schedule A reports ${cf.shares.boy} share(s) at the beginning and ${cf.shares.eoy} at the end of the year; the ${holderRows.length} shareholder row(s) total ${sumBoy} and ${sumEoy}.${
+          shortfall > 0
+            ? ` ${shortfall} share(s) are unaccounted for — a holder is probably missing from Schedule B, which would overstate the remaining holders' ownership (each row would compute against a total of ${sumEoy} instead of ${cf.shares.eoy}).`
+            : ""
+        } Add the missing holder(s) in the Shareholders tab before generating.`,
+        target: `${SHEET.shareholding}!H19`, source: cfSource,
+      });
+    }
+  }
+  /* The form's column width truncates long names mid-word. Never guessed. */
+  const truncated = (cf?.holders || []).filter((h) => h.truncated);
+  if (truncated.length) {
+    rv({
+      id: "cf-holder-truncated", level: "warn", category: "carry-forward",
+      message: `The prior return prints ${truncated.length === 1 ? "a shareholder name" : "shareholder names"} cut off at the column edge: ${
+        truncated.map((h) => `"${h.name}"`).join(", ")
+      }. The value was carried across exactly as printed — complete ${truncated.length === 1 ? "it" : "them"} in the Shareholders tab.`,
+      target: `${SHEET.shareholding}!B19`, source: cfSource,
+    });
   }
   if (holderRows.length && ent.shareholders?.length) {
     rv({
@@ -2624,6 +2695,13 @@ async function materializeCaseWrites(
             ? ` the template will compute ${translated.toLocaleString()} from the local balance at the ${ent.profile.pyEnd || "12/31"} spot rate — ${ties ? "ties" : "DOES NOT tie; reconcile with the accountant"}.`
             : ` compare against the template's computed ${gcell} after opening the workbook.`),
         target: `${SHEET.bs}!${gcell}`, source: cfSource,
+      });
+    }
+    if (!cf.booksPerson) {
+      rv({
+        id: "cf-books-blank", level: "warn", category: "source-gap",
+        message: "Item 2d (person with custody of the books and records) was blank on the prior-year Form 5471, so Basic Information B21-B23 could not be carried forward. Enter the custodian's name and address before filing — the field is required.",
+        target: `${SHEET.basic}!B21`, source: cfSource,
       });
     }
     if (cf.referenceIds.length) {

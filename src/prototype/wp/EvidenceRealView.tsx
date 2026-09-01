@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useSyncExternalStore } from "react";
+import { detectLanguage } from "./captions";
 import { Callout, SectionHeader } from "../primitives";
 import { BS_LINES, IS_LINES } from "./engine";
 import { actions, entityCaseCy, getSnapshot, subscribe } from "./store";
@@ -29,17 +30,6 @@ const HINTS: Array<{ name: string; words: string[] }> = [
   { name: "Portuguese", words: ["receita", "despesa", "clientes", "fornecedores", "imobilizado", "capital"] },
   { name: "Italian", words: ["ricavi", "costi", "crediti", "debiti", "immobilizzazioni", "capitale"] },
 ];
-
-/** Script and vocabulary detection over an extracted label. */
-function detectLanguage(label: string): string {
-  for (const s of SCRIPTS) if (s.re.test(label)) return s.name;
-  const l = label.toLowerCase();
-  for (const h of HINTS) if (h.words.some((w) => l.includes(w))) return h.name;
-  if (/[àâçéèêëîïôûùüÿœ]/.test(l)) return "French";
-  if (/[áéíóúñ¿¡]/.test(l)) return "Spanish";
-  if (/[äöüß]/.test(l)) return "German";
-  return "English";
-}
 
 const lineLabel = (target: string) => {
   const [kind, row] = target.split(":");

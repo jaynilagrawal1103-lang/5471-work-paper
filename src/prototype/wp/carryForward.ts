@@ -26,7 +26,20 @@ export type CarryForward = {
       BOY/EOY share counts (the template ships demo rows A/B/C/D otherwise).
       `single` marks a row where only ONE count printed — taken as BOY = EOY
       and flagged for the preparer to confirm. */
-  holders?: { name: string; classOfShares: string; boy: number; eoy: number; page: number; single?: boolean }[];
+  holders?: { name: string; classOfShares: string; boy: number; eoy: number; page: number; single?: boolean; pct?: number; fromPartI?: boolean; truncated?: boolean }[];
+  /** Schedule B Part I — U.S. shareholders. The ONLY place the SSN and the
+      pro rata subpart F percentage appear; Part II carries neither. Kept
+      separate from `holders` because the same person often appears in both
+      (directly and through a trust) and merging would double-count. */
+  usHolders?: { name: string; classOfShares: string; boy: number; eoy: number; page: number; single?: boolean; pct?: number }[];
+  /** False when this block has a face page but no Schedule B at all — common
+      for a second 5471 filed as page 1 only. Distinguishes "nothing filed"
+      from "we failed to read it". */
+  hasScheduleB?: boolean;
+  /** Item H — "Person(s) on whose behalf this return is filed", with the
+      Shareholder / Officer / Director boxes. On a page-1-only 5471 this is the
+      only shareholder-ish data in the document. */
+  itemH?: { name: string; isShareholder: boolean; isOfficer: boolean; isDirector: boolean }[];
   holderName?: string;
   /** Filer's SSN-shaped ID, already masked at extraction — never stored raw. */
   filerIdMasked?: string;
@@ -42,6 +55,12 @@ export type CarryForward = {
   principalPlace?: string;              // e — principal place of business
   cfcName?: string;
   cfcAddress: string[];                 // street / suburb lines as printed
+  /** Item 2d — the person with custody of the books and records. Unlike the
+      questionnaire fields this is a BLOCK: the caption wraps over three lines
+      and the value rows sit BELOW it, so `valueAfter` (right-of-caption) can
+      never see it. Extracted with the same look-ahead used for item 1a. */
+  booksPerson?: string;
+  booksAddress: string[];               // up to 2 lines, as printed
   /** Annual accounting period as printed on the face, "MM/DD/YYYY". A
       non-December end month is a fiscal year — calendar rate tables do not
       apply and the store must leave the rates blank for manual entry. */
@@ -67,6 +86,51 @@ const rowsOnPagesGeo = (parsed: ParsedDoc, pages: Set<number>): PdfRow[] =>
   parsed.pdf ? parsed.pdf.rows.filter((r) => pages.has(r.page)) : [];
 
 /** A cell that is a form caption, not a value. */
+/* ---------- item 2d caption detection (wrap-independent) ----------
+   Every tax package wraps this caption at a different point, so the phrase
+   "person (or persons) with custody" may straddle a line break. Matching a
+   single row is therefore unreliable; we join a short window instead. */
+
+/** Words that only ever belong to the 2d caption, never to a name or address.
+    Used to walk past the caption regardless of where it wrapped. */
+export const isBooksCaptionText = (t: string): boolean =>
+  /name and address|corporate department|if applicable|\(or\s*$|^persons?\)|person\s*\(or|with custody|custody of|books and records|of the foreign|foreign corporation|location of such|if different|^and\b|^the location/i
+    .test(t.trim());
+
+/** True when row `ri` starts the 2d caption. Looks at the joined text of this
+    row and the next few, so the match does not depend on the wrap position. */
+export function isBooksCaptionStart(
+  face: Array<{ page: number; cells: string[] }>, ri: number, r: { page: number; cells: string[] },
+): boolean {
+  const head = r.cells.join(" ").replace(/\s+/g, " ").trim();
+  // The 2d caption is NOT necessarily at the start of the row: 2c's wrapped
+  // tail ("…agent in country") prints on the same line in many packages. Search
+  // anywhere in the row instead of anchoring at position 0.
+  if (!/name and address\s*\(including corporate department/i.test(head)) return false;
+  let win = head;
+  for (let k = ri + 1; k <= ri + 3 && k < face.length; k++) {
+    if (face[k].page !== r.page) break;
+    win += " " + face[k].cells.join(" ");
+  }
+  win = win.replace(/\s+/g, " ");
+  // Distinguishes 2d from 2c ("statutory or resident agent"), which shares the
+  // "Name and address" opening.
+  return /custody of the books and records/i.test(win);
+}
+
+/** Fragments of the form's own scaffolding — enumerators like "(a) …",
+    "(b) …", "(i) …", and table headers. These appear directly beneath an EMPTY
+    2d box (Schedule A begins there), and must never be mistaken for a
+    custodian's name or address. */
+export const isFormStructure = (t: string): boolean => {
+  const v = t.trim();
+  if (/^\(?\s*(?:[a-z]|i{1,3}|iv|v)\s*\)/i.test(v)) return true;          // (a) (b) (i) (ii)
+  if (/number of shares|description of each class|accounting period|issued and outstanding/i.test(v)) return true;
+  if (/^(beginning|end) of annual/i.test(v)) return true;
+  if (/^for paperwork reduction|^see instructions|^form \d{3,}/i.test(v)) return true;
+  return false;
+};
+
 export const looksLikeCaption = (t: string): boolean =>
   /reference id|identif\w* number|previous reference|^instructions|country under whose laws|^[b-d]\(?\d?\)?\s|^\(?see instructions/i.test(t.trim());
 
@@ -223,7 +287,7 @@ export function extractCarryForward(
   pageFilter?: Set<number>,
   scanRange?: { from: number; to: number },
 ): CarryForward {
-  const out: CarryForward = { priorClosingUSD: {}, categories: [], referenceIds: [], cfcAddress: [] };
+  const out: CarryForward = { priorClosingUSD: {}, categories: [], referenceIds: [], cfcAddress: [], booksAddress: [] };
   if (!parsed.pdf) return out;
 
   const schJ = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schJ"), pageFilter));
@@ -269,6 +333,7 @@ export function extractCarryForward(
 
   /* The face page is a form grid: values print on the row(s) BELOW their
      caption row, and checkbox marks are glued into cells ("1a X 1b"). */
+  let booksBoxSeen = false;   // item 2d is scanned once, even when empty
   for (let ri = 0; ri < face.length; ri++) {
     const r = face[ri];
     const text = r.cells.join(" ");
@@ -411,6 +476,57 @@ export function extractCarryForward(
       }
     }
 
+    // Item 2d — "Name and address … of person (or persons) with custody of the
+    // books and records of the foreign corporation".
+    //
+    // The caption wraps differently in every vendor's PDF — one package breaks
+    // it as "…applicable) of / person (or persons) with custody…", another as
+    // "…applicable) of person (or / persons) with custody…". Anchoring on an
+    // exact phrase inside ONE row therefore works for some clients and silently
+    // reads nothing for others. So: match the caption across a JOINED window of
+    // rows, and find where it ends by content, never by counting rows.
+    if (!out.booksPerson && !booksBoxSeen && isBooksCaptionStart(face, ri, r)) {
+      booksBoxSeen = true;
+      // 2d sits in the RIGHT column of the 2c/2d band. Keep the x-geometry, or
+      // the Schedule A table underneath bleeds into the harvest.
+      // Anchor the column on the cell that actually holds the 2d caption. Using
+      // cells[0] puts the boundary at the LEFT column whenever 2c's tail shares
+      // the row, which lets left-column text through the filter.
+      const geoCaption = faceGeo[ri];
+      const boxCell = geoCaption?.cells.find((c) => /name and address\s*\(including/i.test(c.text))
+        ?? geoCaption?.cells[0];
+      const boxX = boxCell ? boxCell.x0 : null;
+      const booksLines: string[] = [];
+      let started = false;   // false while we are still walking the caption text
+      for (let j = ri + 1; j <= ri + 12 && j < face.length; j++) {
+        const cand = face[j];
+        if (cand.page !== r.page) break;
+        // HARD STOP at the next form section. An empty 2d box is normal, and
+        // without this the scan runs on into Schedule A and harvests its
+        // column headers as if they were a person's name.
+        if (/^schedule\s+[a-z]\b|stock of the foreign corporation/i.test(cand.cells.join(" "))) break;
+        const geo = faceGeo[j];
+        const cells = geo && boxX !== null
+          ? geo.cells.filter((c) => c.x0 >= boxX - 8).map((c) => c.text)
+          : cand.cells;
+        const first = (cells[0] || "").trim();
+        if (!first) continue;
+        // Still inside the wrapped caption — skip, however it happens to break.
+        if (!started && isBooksCaptionText(first)) continue;
+        if (!/[A-Za-z]/.test(first) || looksLikeCaption(first)) continue;
+        // Structural fragments of the form itself are never a custodian name.
+        if (isFormStructure(first)) continue;
+        started = true;
+        booksLines.push(first);
+        if (booksLines.length >= 4) break;
+      }
+      if (booksLines.length) {
+        out.booksPerson = booksLines[0];
+        if (booksLines[1]) out.booksAddress.push(booksLines[1]);
+        if (booksLines.length > 2) out.booksAddress.push(booksLines.slice(2).join(", "));
+      }
+    }
+
     // Filer categories: glued checkbox tokens ("1a X 1b … 4 X 5a X 5b … 5c").
     // First-win like every other face field — a later 5471's checkbox row
     // (multi-CFC copies) must not overwrite this block's categories.
@@ -430,16 +546,29 @@ export function extractCarryForward(
     }
   }
 
-  /* Schedule B Part II — one row per direct shareholder:
+  const CLASS_EXACT = /^(common|ordinary|preferred|class [a-z0-9]+)( shares?)?$/i;
+  /** Same token, matched INSIDE a cell that also carries the holder's name. */
+  const CLASS_INLINE = /\b(common|ordinary|preferred|class\s+[a-z0-9]+)(\s+shares?)?\b\s*$/i;
+  /** The form's column width cuts long names off mid-word, usually leaving an
+      unclosed bracket: "MATTHEW J METCALFE (NRA SPOU". Flagged, not guessed. */
+  const TRUNCATED_NAME = /\([^)]*$/;
+
+  /* Schedule B — BOTH parts share one row shape:
        "JOYCE C LANGAN | COMMON | 40.000 40.000"        (name-first layout)
-       "87-1188632 | US | Ordinary Shares | 120 | 120"  (ID-first; name on the NEXT row)
-     Share counts print separated OR glued ("100.000100.000"). */
-  const partII = face.findIndex((r) => /part ii\b.*direct shareholders/i.test(r.cells.join(" ")));
-  if (partII >= 0) {
+       "87-1188632 | US | Ordinary Shares | 120 | 120"  (ID-first; name next row)
+     Share counts print separated OR glued ("100.000100.000").
+
+     Part I  = U.S. Shareholders  — carries the SSN and the pro rata % and is
+               the ONLY place those appear.
+     Part II = Direct Shareholders — the legal owners.
+     They answer different questions and a holder can appear in one, the other,
+     or both, so each is scanned separately and neither is assumed present. */
+  const scanHolderRows = (from: number): NonNullable<CarryForward["holders"]> => {
     const holders: NonNullable<CarryForward["holders"]> = [];
-    const isIdish = (s: string) =>
-      /^\d{2}-\d{7}\b|^\d{3}-\d{2}-\d{4}\b/.test(s) || /^[A-Z]{2}$/.test(s) || !/[A-Za-z]{3}/.test(s);
-    for (let j = partII + 1; j < Math.min(partII + 40, face.length); j++) {
+    if (from < 0) return holders;
+    const isIdish = (s2: string) =>
+      /^\d{2}-\d{7}\b|^\d{3}-\d{2}-\d{4}\b/.test(s2) || /^[A-Z]{2}$/.test(s2) || !/[A-Za-z]{3}/.test(s2);
+    for (let j = from + 1; j < Math.min(from + 40, face.length); j++) {
       const r = face[j];
       const joined = r.cells.join(" ").trim();
       // Section break — but the column-header wrap "…entered in Schedule A,
@@ -447,8 +576,23 @@ export function extractCarryForward(
       if (/^part\b|^schedule [a-z]\b(?!\s*,\s*column)|income statement/i.test(joined)) break;
       const cells = r.cells.map((c) => (c || "").trim()).filter(Boolean);
       if (cells.length < 2) continue;
-      const ci = cells.findIndex((c) => /^(common|ordinary|preferred|class [a-z0-9]+)( shares?)?$/i.test(c));
-      if (ci < 0) continue;
+      // The class of stock does NOT reliably get its own cell. When a
+      // shareholder's name is long enough to run up to the column rule, the row
+      // builder merges them ("MATTHEW J METCALFE (NRA SPOU COMMON"), and an
+      // exact whole-cell match silently drops that holder — so short names are
+      // read and long ones vanish. Match the class token ANYWHERE instead.
+      let ci = cells.findIndex((c) => CLASS_EXACT.test(c));
+      let className = ci >= 0 ? cells[ci] : "";
+      let nameCells = ci >= 0 ? cells.slice(0, ci) : [];
+      if (ci < 0) {
+        const k = cells.findIndex((c) => CLASS_INLINE.test(c));
+        if (k < 0) continue;
+        const m = CLASS_INLINE.exec(cells[k]);
+        if (!m || m.index === 0) continue;   // class-only cell would have matched above
+        className = m[0].trim();
+        nameCells = [...cells.slice(0, k), cells[k].slice(0, m.index).trim()].filter(Boolean);
+        ci = k;   // share counts still follow this cell
+      }
       let pair = parseSharePair(cells.slice(ci + 1));
       let single = false;
       if (!pair) {
@@ -458,18 +602,74 @@ export function extractCarryForward(
         if (n !== null && n >= 0) { pair = { boy: n, eoy: n }; single = true; }
       }
       if (!pair) continue;
-      let name = cells.slice(0, ci).join(" ").trim();
+      let name = nameCells.join(" ").trim();
       if ((!name || isIdish(name)) && j + 1 < face.length) {
         // ID-first layout: the shareholder's name prints on the row below.
         const cand = (face[j + 1].cells[0] || "").trim();
         if (/[A-Za-z]{3}/.test(cand) && !looksLikeCaption(cand)) name = cand;
       }
       if (!name || isIdish(name) || /name, address|^\(a\)/i.test(name)) continue;
+      // The pro rata % (Part I column (e)) prints a row or two below the name.
+      let pct: number | undefined;
+      for (let k = j; k <= j + 4 && k < face.length; k++) {
+        const m = /(\d+(?:\.\d+)?)\s*%/.exec(face[k].cells.join(" "));
+        if (m) { pct = Number(m[1]); break; }
+      }
       if (!holders.some((h) => h.name.toLowerCase() === name.toLowerCase())) {
-        holders.push({ name, classOfShares: cells[ci].replace(/\s*shares?$/i, ""), boy: pair.boy, eoy: pair.eoy, page: r.page, ...(single ? { single: true } : {}) });
+        holders.push({
+          name, classOfShares: className.replace(/\s*shares?$/i, ""),
+          ...(TRUNCATED_NAME.test(name) ? { truncated: true } : {}),
+          boy: pair.boy, eoy: pair.eoy, page: r.page,
+          ...(pct !== undefined ? { pct } : {}),
+          ...(single ? { single: true } : {}),
+        });
       }
     }
-    if (holders.length) out.holders = holders;
+    return holders;
+  };
+
+  const partII = face.findIndex((r) => /part ii\b.*direct shareholders/i.test(r.cells.join(" ")));
+  const partI = face.findIndex((r) => /part i\b.*u\.?\s*s\.?\s*shareholders/i.test(r.cells.join(" ")));
+  out.hasScheduleB = partI >= 0 || partII >= 0;
+
+  const direct = scanHolderRows(partII);
+  const usHolders = scanHolderRows(partI);
+  if (usHolders.length) out.usHolders = usHolders;
+
+  // Direct shareholders drive template rows 19-26. Part I holders are US
+  // shareholders — often the SAME people counted through a trust — so they are
+  // NOT merged into the direct rows (that would double-count ownership). They
+  // seed the rows only when Part II is absent, which is better than blank.
+  if (direct.length) out.holders = direct;
+  else if (usHolders.length) out.holders = usHolders.map((h) => ({ ...h, fromPartI: true }));
+
+  /* Item H — "Person(s) on whose behalf this information return is filed",
+     with the Shareholder / Officer / Director check boxes. When a corporation
+     is filed as page 1 only (no Schedule B), this is the sole shareholder and
+     role evidence in the document, so it is read on every block. */
+  {
+    const hIdx = face.findIndex((r) =>
+      /person\(s\)\s*on whose behalf this information return is filed/i.test(r.cells.join(" ")));
+    if (hIdx >= 0) {
+      const people: NonNullable<CarryForward["itemH"]> = [];
+      for (let j = hIdx + 1; j <= hIdx + 10 && j < face.length; j++) {
+        const joined = face[j].cells.join(" ");
+        // Item H ends where the "Important:" note or item 1a begins.
+        if (/^important\b|name and address of foreign corporation/i.test(joined.trim())) break;
+        const first = (face[j].cells[0] || "").trim();
+        if (!first || looksLikeCaption(first) || isFormStructure(first)) continue;
+        // A person row carries a name; the check marks print as separate cells.
+        if (!/[A-Za-z]{3}/.test(first) || /^\(\d\)|^name\b|^address\b/i.test(first)) continue;
+        const name = first.replace(/\s{2,}.*$/, "").replace(/\s+/g, " ").trim();
+        if (!name || /identifying|check applicable/i.test(name)) continue;
+        // The three boxes print in order: Shareholder, Officer, Director.
+        const marks = (joined.match(/\bX\b/g) || []).length;
+        if (!people.some((q) => q.name.toLowerCase() === name.toLowerCase())) {
+          people.push({ name, isShareholder: marks >= 1, isOfficer: marks >= 2, isDirector: marks >= 3 });
+        }
+      }
+      if (people.length) out.itemH = people;
+    }
   }
 
   // Holder: the row under "Name of person filing Form 5471". Scoped to this

@@ -35,6 +35,8 @@ export const PROFILE_FIELDS: FieldSpec[] = [
   { key: "formed", cell: "B17", label: "Date of formation" },
   { key: "countryInc", cell: "B19", label: "Country of incorporation" },
   { key: "booksPerson", cell: "B21", label: "Person in charge of books" },
+  { key: "booksAddr1", cell: "B22", label: "Books custodian address 1" },
+  { key: "booksAddr2", cell: "B23", label: "Books custodian address 2" },
   { key: "activity", cell: "B25", label: "Principal business activity" },
   // Placeholder must read as an EXAMPLE — an analyst took a bare "GBP" for a
   // detected value on the Thompson (KYD) case.
