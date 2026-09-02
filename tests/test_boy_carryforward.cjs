@@ -20,25 +20,40 @@ const PY_RATE = 0.905;
 
 /** The seeding rule, exactly as store.ts applies it. */
 function seedBoy(priorClosingUSD, existingLines, rate) {
+  // Each key lists the rows that can hold it. Sch F lines 5 and 16 are =SUM()
+  // subtotals in the template (rows 15/47) and are NOT in BS_LINES, so the
+  // aggregate lands on the first free detail row the subtotal spans.
   const map = [
-    ["cash", 10, false], ["ar", 11, false], ["oca", 15, false],
-    ["depreciable", 28, false], ["accumDep", 29, true],
-    ["ap", 46, false], ["ocl", 47, false],
-    ["commonStock", 59, false], ["re", 61, false],
+    ["cash", [10], false], ["ar", [11], false], ["oca", [16, 17, 18], false],
+    ["depreciable", [28], false], ["accumDep", [29], true],
+    ["ap", [46], false], ["ocl", [48, 49, 50], false],
+    ["commonStock", [59], false], ["re", [61], false],
   ];
   const lines = { ...existingLines };
+  const relabels = {};
   const seeded = [];
-  for (const [key, row, negate] of map) {
+  for (const [key, rows, negate] of map) {
     const filed = priorClosingUSD[key]?.value;
     if (typeof filed !== "number") continue;
+    const row = rows.find((r) => typeof lines[`BS:${r}`]?.boy !== "number");
+    if (row === undefined) continue;                    // never overwrite
     const k = `BS:${row}`;
-    if (typeof lines[k]?.boy === "number") continue;      // never overwrite
     const local = Math.round(filed * rate * 100) / 100;
     lines[k] = { ...(lines[k] || {}), boy: negate ? -Math.abs(local) : local };
+    if (rows.length > 1 && !relabels[k]) {
+      relabels[k] = key === "oca"
+        ? "Other current assets (per prior-year Form 5471)"
+        : "Other current liabilities (per prior-year Form 5471)";
+    }
     seeded.push(k);
   }
-  return { lines, seeded };
+  return { lines, seeded, relabels };
 }
+
+/* The rows the generator actually exports (engine.ts BS_LINES). Every subtotal
+   row is absent: a value seeded on one is dropped before it reaches the writer. */
+const BS_LINES_ROWS = [10,11,12,13,14,16,17,18,19,21,22,23,25,26,27,28,29,30,31,
+  32,34,35,36,37,39,40,41,46,48,49,50,51,52,54,55,56,58,59,60,61,62];
 
 /* Real 2023 Form 5471 Schedule F column (b), in whole USD. */
 const FILED = {
@@ -56,7 +71,7 @@ const FILED = {
 t("column (a) is populated where it used to be blank", () => {
   const { seeded } = seedBoy(FILED, {}, PY_RATE);
   assert.ok(seeded.length >= 8, `only ${seeded.length} lines seeded`);
-  for (const k of ["BS:10", "BS:15", "BS:28", "BS:29", "BS:47", "BS:59", "BS:61"]) {
+  for (const k of ["BS:10", "BS:16", "BS:28", "BS:29", "BS:48", "BS:59", "BS:61"]) {
     assert.ok(seeded.includes(k), `${k} not seeded`);
   }
 });
@@ -66,7 +81,7 @@ t("the converted figures match the reviewed work paper", () => {
   // Reviewed work paper column (a), EUR. Whole-dollar filing rounds to ~+/-1.
   const expected = {
     "BS:10": 12056.41,   // cash
-    "BS:15": 220,        // other current assets
+    "BS:16": 220,        // other current assets (detail row under the line-5 subtotal)
     "BS:28": 1449.37,    // depreciable assets
     "BS:29": -1153.15,   // accumulated depreciation
     "BS:61": -1737.15,   // retained earnings
@@ -85,7 +100,7 @@ t("accumulated depreciation is carried as a negative", () => {
 
 t("total assets reconcile to the reviewed figure", () => {
   const { lines } = seedBoy(FILED, {}, PY_RATE);
-  const total = lines["BS:10"].boy + lines["BS:15"].boy + lines["BS:28"].boy + lines["BS:29"].boy;
+  const total = lines["BS:10"].boy + lines["BS:16"].boy + lines["BS:28"].boy + lines["BS:29"].boy;
   assert.ok(Math.abs(total - 12572.63) <= 2.0, `total ${total}, expected ~12,572.63`);
 });
 
@@ -95,7 +110,7 @@ t("a value already present is NEVER overwritten", () => {
   const { lines, seeded } = seedBoy(FILED, existing, PY_RATE);
   assert.strictEqual(lines["BS:10"].boy, 99999, "carry-forward clobbered a real value");
   assert.ok(!seeded.includes("BS:10"));
-  assert.ok(seeded.includes("BS:15"), "other lines should still seed");
+  assert.ok(seeded.includes("BS:16"), "other lines should still seed");
 });
 
 t("the end-of-year column is left untouched", () => {
@@ -118,7 +133,7 @@ t("lines absent from the prior return stay blank rather than zero", () => {
   const partial = { cash: { value: 13322 } };
   const { lines, seeded } = seedBoy(partial, {}, PY_RATE);
   assert.strictEqual(seeded.length, 1);
-  assert.strictEqual(lines["BS:47"], undefined, "invented an opening balance");
+  assert.strictEqual(lines["BS:48"], undefined, "invented an opening balance");
 });
 
 t("the line 15/16 grouping difference is detectable", () => {
@@ -126,6 +141,55 @@ t("the line 15/16 grouping difference is detectable", () => {
   const priorAllOnOne = (!FILED.ap.value || FILED.ap.value === 0) && !!FILED.ocl.value;
   const currentSplit = !!6087 && !!20944.69;
   assert.ok(priorAllOnOne && currentSplit, "should raise one review item");
+});
+
+/* REGRESSION. The carry-forward used to seed Sch F line 5 on row 15 and line 16
+   on row 47. Both are =SUM() subtotals and neither is in BS_LINES, so the
+   generator never read them: the two figures were silently dropped and column
+   (a) came out short by the whole of other current assets and other current
+   liabilities. For 2Hats that is US$243 of assets and US$10,840 of liabilities
+   — the largest single liability on the return. */
+t("every seeded row is one the generator actually exports", () => {
+  const { seeded } = seedBoy(FILED, {}, PY_RATE);
+  for (const k of seeded) {
+    const row = Number(k.split(":")[1]);
+    assert.ok(BS_LINES_ROWS.includes(row), `${k} is not in BS_LINES — it would be dropped`);
+  }
+});
+
+t("no figure is ever seeded onto a =SUM() subtotal row", () => {
+  const SUBTOTALS = [15, 20, 24, 38, 42, 47, 53, 57, 63];
+  const { seeded } = seedBoy(FILED, {}, PY_RATE);
+  for (const k of seeded) {
+    assert.ok(!SUBTOTALS.includes(Number(k.split(":")[1])), `${k} targets a formula cell`);
+  }
+});
+
+t("the filed aggregates land on detail rows under their subtotal", () => {
+  const { lines } = seedBoy(FILED, {}, PY_RATE);
+  assert.ok(Math.abs(lines["BS:16"].boy - 219.92) <= 1.0, "other current assets -> row 16");
+  assert.ok(Math.abs(lines["BS:48"].boy - 9810.20) <= 1.0, "other current liabilities -> row 48");
+});
+
+t("an aggregate does not keep the detail row's stock caption", () => {
+  const { relabels } = seedBoy(FILED, {}, PY_RATE);
+  assert.match(relabels["BS:16"], /other current assets/i);
+  assert.match(relabels["BS:48"], /other current liabilities/i);
+});
+
+t("a spare detail row is used when the first is already taken", () => {
+  const existing = { "BS:16": { boy: 500 } };          // preparer typed a prepaid
+  const { lines } = seedBoy(FILED, existing, PY_RATE);
+  assert.strictEqual(lines["BS:16"].boy, 500, "clobbered a real value");
+  assert.ok(Math.abs(lines["BS:17"].boy - 219.92) <= 1.0, "should fall through to row 17");
+});
+
+t("column (a) balances once the aggregates are carried", () => {
+  const { lines } = seedBoy(FILED, {}, PY_RATE);
+  const assets = lines["BS:10"].boy + lines["BS:16"].boy + lines["BS:28"].boy + lines["BS:29"].boy;
+  const liabEq = lines["BS:48"].boy + lines["BS:59"].boy + lines["BS:61"].boy;
+  assert.ok(Math.abs(assets - liabEq) <= 2.0,
+    `column (a) out by ${(assets - liabEq).toFixed(2)} (assets ${assets.toFixed(2)}, L+E ${liabEq.toFixed(2)})`);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

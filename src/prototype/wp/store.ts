@@ -1705,26 +1705,42 @@ export const actions = {
           if (cur0 && isFinite(rate) && rate > 0) {
             type BoyKey = "cash" | "ar" | "oca" | "depreciable" | "accumDep"
               | "ap" | "ocl" | "commonStock" | "re";
-            const boyMap: Array<[BoyKey, number, boolean]> = [
-              ["cash", 10, false], ["ar", 11, false], ["oca", 15, false],
-              ["depreciable", 28, false], ["accumDep", 29, true],
-              ["ap", 46, false], ["ocl", 47, false],
-              ["commonStock", 59, false], ["re", 61, false],
+            /* Each key lists the template row(s) that can hold it. Sch F lines 5
+               and 16 print as one figure but are =SUM() subtotals here (rows 15
+               and 47) and are absent from BS_LINES, so a value seeded on the
+               subtotal is dropped before it ever reaches the writer. Carry the
+               filed aggregate onto the first free detail row the subtotal spans
+               instead — the subtotal then computes it, and column (a) balances. */
+            const boyMap: Array<[BoyKey, number[], boolean]> = [
+              ["cash", [10], false], ["ar", [11], false], ["oca", [16, 17, 18], false],
+              ["depreciable", [28], false], ["accumDep", [29], true],
+              ["ap", [46], false], ["ocl", [48, 49, 50], false],
+              ["commonStock", [59], false], ["re", [61], false],
             ];
             const lines = { ...cur0.lines };
+            const relabels = { ...cur0.relabels };
             const seeded: string[] = [];
-            for (const [key, row, negate] of boyMap) {
+            for (const [key, rows, negate] of boyMap) {
               const filed = cf.priorClosingUSD[key]?.value;
               if (typeof filed !== "number") continue;
-              const k = `BS:${row}`;
               // Never overwrite a value the documents or the preparer supplied.
-              if (typeof lines[k]?.boy === "number") continue;
+              const row = rows.find((r) => typeof lines[`BS:${r}`]?.boy !== "number");
+              if (row === undefined) continue;      // every detail row already taken
+              const k = `BS:${row}`;
               const local = Math.round(filed * rate * 100) / 100;
               lines[k] = { ...(lines[k] || {}), boy: negate ? -Math.abs(local) : local };
+              // An aggregate parked on a detail row must not keep that row's
+              // stock caption ("Prepaid expenses"), or the attached statement
+              // would describe money that is not there.
+              if (rows.length > 1 && !relabels[k]) {
+                relabels[k] = key === "oca"
+                  ? "Other current assets (per prior-year Form 5471)"
+                  : "Other current liabilities (per prior-year Form 5471)";
+              }
               seeded.push(`${k}=${local.toLocaleString()}`);
             }
             if (seeded.length) {
-              updateEntity(entityId, { lines });
+              updateEntity(entityId, { lines, relabels });
               log.push(`${seeded.length} beginning-of-year balance(s) carried from the prior-year Form 5471`);
               logEvent("Beginning-of-year balances carried forward",
                 `${seeded.length} line(s) from ${cfSource} Sch F col (b), converted at the ${cur0.profile?.pyEnd || "prior year-end"} rate ${rate}`,
