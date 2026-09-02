@@ -265,9 +265,16 @@ function matchFormLine(
       // Strict cells only: numeric() would book the digit residue of prose
       // like "(combine lines 7 through 13)" as −713 on the legacy parser path.
       let nums = r.cells.slice(i + 1).map((c) => numericCell(c)).filter((n): n is number => n !== null);
-      // IRS forms repeat the line number to the right of the caption.
+      // IRS forms repeat the line number to the right of the caption. Strip it
+      // whenever it leads, not only when a value follows it: on a line the
+      // filer left blank the line number is the ONLY number on the row, and
+      // taking it as the amount invents a figure that is not on the return
+      // (2Hats 2023 filed no accounts payable and line 15 was read as $15).
+      // A genuine amount that happens to equal its own line number is dropped
+      // instead, which leaves the line blank for the preparer — the safe way
+      // to be wrong.
       const ln = /^(\d{1,2})[a-c]?\b/.exec(cell) || /^(\d{1,2})[a-c]?$/.exec((r.cells[i - 1] || "").trim());
-      if (ln && nums.length > 1 && nums[0] === Number(ln[1])) nums = nums.slice(1);
+      if (ln && nums.length && nums[0] === Number(ln[1])) nums = nums.slice(1);
       if (!nums.length) continue;
       return {
         value: pick === "first" ? nums[0] : nums[nums.length - 1],
