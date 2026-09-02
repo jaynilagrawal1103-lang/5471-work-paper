@@ -1689,6 +1689,50 @@ export const actions = {
 
       /* Step 4 — materialize schedule writes and the review record. */
       if (step === 4) {
+        /* Beginning-of-year Schedule F column.
+           A single-period statement (Yuki, most software exports) carries only
+           the current year, so column (a) has no source in the CURRENT-year
+           documents. The prior return's closing column IS the opening column,
+           and the tool already read it — it was only ever used to print a
+           comparison note, never written. Carry it AS FILED per the agreed
+           policy: no re-splitting across lines, source stamped, and one review
+           item where the prior grouping differs from this year's.
+           Filed figures are USD; column (a) is local currency, so multiply by
+           the prior year-end rate (EUR = USD x 0.905). */
+        if (cf?.priorClosingUSD) {
+          const cur0 = state.entities.find((e) => e.id === entityId);
+          const rate = Number(cur0?.fx?.pyRate);
+          if (cur0 && isFinite(rate) && rate > 0) {
+            type BoyKey = "cash" | "ar" | "oca" | "depreciable" | "accumDep"
+              | "ap" | "ocl" | "commonStock" | "re";
+            const boyMap: Array<[BoyKey, number, boolean]> = [
+              ["cash", 10, false], ["ar", 11, false], ["oca", 15, false],
+              ["depreciable", 28, false], ["accumDep", 29, true],
+              ["ap", 46, false], ["ocl", 47, false],
+              ["commonStock", 59, false], ["re", 61, false],
+            ];
+            const lines = { ...cur0.lines };
+            const seeded: string[] = [];
+            for (const [key, row, negate] of boyMap) {
+              const filed = cf.priorClosingUSD[key]?.value;
+              if (typeof filed !== "number") continue;
+              const k = `BS:${row}`;
+              // Never overwrite a value the documents or the preparer supplied.
+              if (typeof lines[k]?.boy === "number") continue;
+              const local = Math.round(filed * rate * 100) / 100;
+              lines[k] = { ...(lines[k] || {}), boy: negate ? -Math.abs(local) : local };
+              seeded.push(`${k}=${local.toLocaleString()}`);
+            }
+            if (seeded.length) {
+              updateEntity(entityId, { lines });
+              log.push(`${seeded.length} beginning-of-year balance(s) carried from the prior-year Form 5471`);
+              logEvent("Beginning-of-year balances carried forward",
+                `${seeded.length} line(s) from ${cfSource} Sch F col (b), converted at the ${cur0.profile?.pyEnd || "prior year-end"} rate ${rate}`,
+                cur0.name, "system");
+            }
+          }
+        }
+
         // Shareholders seed from the prior 5471's Sch B Part II first —
         // merge-by-name, so hand-edited or hand-added rows always survive.
         if (cf?.holders?.length) {
@@ -2715,6 +2759,24 @@ async function materializeCaseWrites(
             : ` compare against the template's computed ${gcell} after opening the workbook.`),
         target: `${SHEET.bs}!${gcell}`, source: cfSource,
       });
+    }
+    /* One review item where the prior return's line 15/16 split differs from
+       this year's. Carried AS FILED by policy, so the two years can present
+       the same money on different lines — the preparer decides, not the tool. */
+    {
+      const filedAp = cf.priorClosingUSD.ap?.value;
+      const filedOcl = cf.priorClosingUSD.ocl?.value;
+      const cyAp = numeric(String(ent.lines["BS:46"]?.eoy ?? ""));
+      const cyOcl = numeric(String(ent.lines["BS:47"]?.eoy ?? ""));
+      const priorAllOnOne = (!filedAp || filedAp === 0) && !!filedOcl;
+      const currentSplit = !!cyAp && !!cyOcl;
+      if (priorAllOnOne && currentSplit) {
+        rv({
+          id: "cf-boy-grouping", level: "warn", category: "carry-forward",
+          message: `Beginning-of-year liabilities were carried exactly as filed: the prior-year return reports nothing on line 15 and US$${filedOcl!.toLocaleString()} on line 16, while the current year splits payables across lines 15 and 16. The two columns therefore present the same money on different lines. Re-split the opening column if you want the years shown consistently — the amounts are unchanged either way.`,
+          target: `${SHEET.bs}!D46`, source: cfSource,
+        });
+      }
     }
     if (!cf.booksPerson) {
       rv({

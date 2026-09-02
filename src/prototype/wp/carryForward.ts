@@ -18,7 +18,10 @@ export type CarryForward = {
   openingEP?: SourcedValue;
   /** Prior-year Schedule F column (b) — closing USD balances as filed. */
   priorClosingUSD: Partial<Record<
-    "cash" | "ar" | "oca" | "totalAssets" | "ap" | "ocl" | "re",
+    "cash" | "ar" | "oca" | "totalAssets" | "ap" | "ocl" | "re"
+    // Schedule F lines that were read but never captured, so the
+    // beginning-of-year column could not be completed from the prior return.
+    | "depreciable" | "accumDep" | "commonStock" | "totalLiabCap",
     SourcedValue
   >>;
   shares?: { classOfShares: string; boy: number; eoy: number; page: number };
@@ -316,6 +319,10 @@ export function extractCarryForward(
   out.priorClosingUSD.ap = f(/^accounts payable/i);
   out.priorClosingUSD.ocl = f(/^other current liabilities/i);
   out.priorClosingUSD.re = f(/^retained earnings/i);
+  out.priorClosingUSD.depreciable = f(/^buildings and other depreciable assets/i);
+  out.priorClosingUSD.accumDep = f(/^less accumulated depreciation/i);
+  out.priorClosingUSD.commonStock = f(/^common stock/i);
+  out.priorClosingUSD.totalLiabCap = f(/^total liabilities and shareholders/i);
 
   // Prior-year foreign tax accrued (Schedule E) — E-1 redetermination review.
   // The payor row reads: line | income | ccy | tax(functional) | rate | tax(USD).

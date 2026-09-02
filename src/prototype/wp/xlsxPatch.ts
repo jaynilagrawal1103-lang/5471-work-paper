@@ -102,6 +102,32 @@ async function sheetIndex(zip: any): Promise<Record<string, string>> {
   return map;
 }
 
+/* A formula cell stores BOTH the formula and the last computed result. The
+   tool writes formulas but cannot evaluate them, so every untouched formula
+   keeps whatever the template last cached — usually 0 or #DIV/0!.
+
+   fullCalcOnLoad (below) makes Excel recompute on open, but ANY reader that
+   does not run a calculation engine still sees the stale cache: the in-app
+   preview, a PDF/print export, an OS preview pane, a reviewer's automated
+   check. A reconciliation done that way scores correct totals as zeros and
+   correct rates as 0.000, which reads as "the tool computed nothing".
+
+   Deleting the cached value leaves the formula intact and makes such readers
+   show an EMPTY cell — honest ("not yet computed") instead of misleading
+   ("zero"). Excel fills them in on open exactly as before. */
+export function stripStaleFormulaValues(xml: string): string {
+  return xml.replace(/<c\b[^>]*>[\s\S]*?<\/c>/g, (cell) => {
+    if (!/<f[\s>]/.test(cell)) return cell;          // not a formula cell
+    if (/<f[^>]*\bt="shared"[^>]*\/>/.test(cell) && !/<f[^>]*>[^<]/.test(cell)) {
+      // shared-formula child: drop the value, keep the reference
+      return cell.replace(/<v>[\s\S]*?<\/v>/, "");
+    }
+    return cell
+      .replace(/<v>[\s\S]*?<\/v>/, "")              // the cached result
+      .replace(/\s+t="(e|str)"/, "");                // and its error/string type
+  });
+}
+
 /* Untouched formulas now hold stale cached results, so ask the spreadsheet
    application to recalculate everything the moment the file opens. */
 function forceRecalc(wbXml: string): string {
@@ -146,6 +172,15 @@ export async function applyWrites(zip: any, writes: Writes): Promise<PatchReport
     const relXml: string = await wbRels.async("string");
     zip.file("xl/_rels/workbook.xml.rels", relXml.replace(/<Relationship\b[^>]*Target="calcChain\.xml"[^>]*\/>/g, ""));
   }
+  // Clear stale cached results on EVERY sheet, not only the ones written to —
+  // an untouched sheet (Sch H, Worksheet A, 8992) carries the same dead cache.
+  for (const path of Object.values(sheets)) {
+    const f = zip.file(path);
+    if (!f) continue;
+    const sheetXml: string = await f.async("string");
+    zip.file(path, stripStaleFormulaValues(sheetXml));
+  }
+
   const wbXml: string = await zip.file("xl/workbook.xml").async("string");
   zip.file("xl/workbook.xml", forceRecalc(wbXml));
   return report;
