@@ -259,8 +259,20 @@ function matchFormLine(
     for (let i = 0; i < r.cells.length; i++) {
       const cell = (r.cells[i] || "").trim();
       if (!cell) continue;
-      // The line number may print glued to the caption ("2a Trade notes and…").
-      const bare = cell.replace(/^\d{1,2}[a-c]?\s+/, "");
+      /* Normalise the caption before matching. Three producer habits break an
+         anchored caption regex, and each one silently loses a Schedule F line:
+           "2a Trade notes and…"          the line number glued to the caption
+           "b Less accumulated depreciation"  a sub-line prints its letter alone,
+                                              with no digit for the rule above
+           "Cash ~~~~~~~~~~~~~~~~"        the dotted/tilde leader glued on, which
+                                          defeats an exact ("/^cash$/") match
+         2Hats 2023 lost cash (US$13,322), accumulated depreciation (US$1,274)
+         and common stock (US$4,973) to the last two. */
+      const bare = cell
+        .replace(/^\d{1,2}\s*[a-d]?\s+/i, "")
+        .replace(/^[a-d]\s+/i, "")
+        .replace(/[\s~.·•…_-]+$/, "")
+        .trim();
       if (!labelRe.test(bare)) continue;
       // Strict cells only: numeric() would book the digit residue of prose
       // like "(combine lines 7 through 13)" as −713 on the legacy parser path.
