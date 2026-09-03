@@ -1699,32 +1699,71 @@ export const actions = {
            item where the prior grouping differs from this year's.
            Filed figures are USD; column (a) is local currency, so multiply by
            the prior year-end rate (EUR = USD x 0.905). */
+        /* Deduction lines are summed into row 51 and subtracted from income, so
+           a line whose total came out negative would ADD to profit. Correct it
+           once every contribution is in — see negativeDeductionTotals. */
+        {
+          const curD = state.entities.find((e) => e.id === entityId);
+          const flip = curD ? negativeDeductionTotals(curD.lines) : [];
+          if (curD && flip.length) {
+            const lines = { ...curD.lines };
+            for (const k of flip) {
+              const amt = lines[k].amount as number;
+              lines[k] = { ...lines[k], amount: -amt };
+              const spec = IS_LINES.find((l) => `IS:${l.row}` === k);
+              rv({
+                id: `deduction-sign-${k}`, level: "warn", category: "mapping", applied: true,
+                message: `${spec?.label ?? k} totalled ${amt.toLocaleString()} — a negative deduction. Total deductions (row 51) is subtracted from income, so that would ADD ${Math.abs(amt).toLocaleString()} to profit; it has been booked as ${Math.abs(amt).toLocaleString()}. Statements commonly print financial costs as negatives while operating costs print positive. If this line is genuinely a net credit, edit it in the Exception Center.`,
+                target: `${SHEET.is}!F${k.split(":")[1]}`, suggestedValue: Math.abs(amt),
+              });
+            }
+            updateEntity(entityId, { lines });
+            log.push(`${flip.length} deduction line(s) re-signed so they reduce income`);
+          }
+        }
+
         if (cf?.priorClosingUSD) {
           const cur0 = state.entities.find((e) => e.id === entityId);
           const rate = Number(cur0?.fx?.pyRate);
           if (cur0 && isFinite(rate) && rate > 0) {
             type BoyKey = "cash" | "ar" | "oca" | "depreciable" | "accumDep"
               | "ap" | "ocl" | "commonStock" | "re";
-            const boyMap: Array<[BoyKey, number, boolean]> = [
-              ["cash", 10, false], ["ar", 11, false], ["oca", 15, false],
-              ["depreciable", 28, false], ["accumDep", 29, true],
-              ["ap", 46, false], ["ocl", 47, false],
-              ["commonStock", 59, false], ["re", 61, false],
+            /* Each key lists the template row(s) that can hold it. Sch F lines 5
+               and 16 print as one figure but are =SUM() subtotals here (rows 15
+               and 47) and are absent from BS_LINES, so a value seeded on the
+               subtotal is dropped before it ever reaches the writer. Carry the
+               filed aggregate onto the first free detail row the subtotal spans
+               instead — the subtotal then computes it, and column (a) balances. */
+            const boyMap: Array<[BoyKey, number[], boolean]> = [
+              ["cash", [10], false], ["ar", [11], false], ["oca", [16, 17, 18], false],
+              ["depreciable", [28], false], ["accumDep", [29], true],
+              ["ap", [46], false], ["ocl", [48, 49, 50], false],
+              ["commonStock", [59], false], ["re", [61], false],
             ];
             const lines = { ...cur0.lines };
+            const relabels = { ...cur0.relabels };
             const seeded: string[] = [];
-            for (const [key, row, negate] of boyMap) {
+            for (const [key, rows, negate] of boyMap) {
               const filed = cf.priorClosingUSD[key]?.value;
               if (typeof filed !== "number") continue;
-              const k = `BS:${row}`;
               // Never overwrite a value the documents or the preparer supplied.
-              if (typeof lines[k]?.boy === "number") continue;
+              const row = rows.find((r) => typeof lines[`BS:${r}`]?.boy !== "number");
+              if (row === undefined) continue;      // every detail row already taken
+              const k = `BS:${row}`;
               const local = Math.round(filed * rate * 100) / 100;
               lines[k] = { ...(lines[k] || {}), boy: negate ? -Math.abs(local) : local };
+              // An aggregate parked on a detail row must not keep that row's
+              // stock caption ("Prepaid expenses"), or the attached statement
+              // would describe money that is not there.
+              if (rows.length > 1 && !relabels[k]) {
+                relabels[k] = key === "oca"
+                  ? "Other current assets (per prior-year Form 5471)"
+                  : "Other current liabilities (per prior-year Form 5471)";
+              }
               seeded.push(`${k}=${local.toLocaleString()}`);
             }
             if (seeded.length) {
-              updateEntity(entityId, { lines });
+              updateEntity(entityId, { lines, relabels });
               log.push(`${seeded.length} beginning-of-year balance(s) carried from the prior-year Form 5471`);
               logEvent("Beginning-of-year balances carried forward",
                 `${seeded.length} line(s) from ${cfSource} Sch F col (b), converted at the ${cur0.profile?.pyEnd || "prior year-end"} rate ${rate}`,
@@ -2459,8 +2498,35 @@ function pruneRemovedDocData(ent: Entity): Partial<Entity> | null {
 /** Row-56 net income is a plain SUM of rows 52–55 — income tax expense must
     book NEGATIVE, or a statement-positive tax would INCREASE profit (RAT-003). */
 const TAX_TARGETS = new Set(["IS:54", "IS:55"]);
+/** Total deductions (row 51) is SUM(F26:F33) and net income is F25 − F51, so
+    every deduction must book POSITIVE. Statements that present financial costs
+    as negatives — "86000 Interest paid  −49,00" in the 2Hats accounts, where
+    operating costs print positive but financial ones print negative — would
+    otherwise ADD to income: that €49 booked as −49 understated deductions by
+    €98 and turned a €153.53 loss into a €55.53 one. */
+const DEDUCTION_TARGETS = new Set(
+  IS_LINES.filter((l) => l.group === "Deductions").map((l) => `IS:${l.row}`),
+);
 const taxBookValue = (target: string, field: "amount" | "eoy" | "boy", value: number): number =>
   field === "amount" && TAX_TARGETS.has(target) && value > 0 ? -value : value;
+
+/** Correct a deduction line whose AGGREGATED total came out negative.
+    This runs after every contribution is summed, never per contribution: a
+    negative detail inside a positive aggregate is a real credit and must
+    survive ("40990 Other personnel costs −9,37" nets against +2,400 of WKR
+    expenses inside compensation, and 186,640.63 is right). A line whose whole
+    total is negative is the presentation artifact — the 2Hats accounts print
+    operating costs positive but financial ones negative, so €49 of interest
+    arrived as −49, and row 51 being subtracted from income turned that into
+    €98 of extra profit. Returns the lines to flip, so the caller can log it. */
+function negativeDeductionTotals(lines: Record<string, LineValue>): string[] {
+  const out: string[] = [];
+  for (const key of DEDUCTION_TARGETS) {
+    const amt = lines[key]?.amount;
+    if (typeof amt === "number" && isFinite(amt) && amt < 0) out.push(key);
+  }
+  return out;
+}
 
 function manualApply(
   ent: Entity,
@@ -2971,8 +3037,27 @@ async function materializeCaseWrites(
     }
   }
 
-  /* ---- Schedule E: a nil-tax year is documented, not skipped ---- */
-  if (ato.taxPayable === 0 || (equity && (equity.profitCY ?? 0) < 0)) {
+  /* ---- Schedule E ----
+     Row 16 documents the year's foreign income tax. A year WITH tax carries the
+     amount; a nil-tax year carries an explicit zero rather than a blank row, so
+     the return shows the position was considered.
+
+     The nil-tax branch used to be reachable only through an Australian return
+     (`ato.taxPayable === 0`) or a derived equity movement. `ato` is `{}` when no
+     AU return is present, so `undefined === 0` was false and a Dutch CFC with no
+     tax fell through to the tax branch, which then found nothing to write and
+     left Schedule E blank — 2Hats 2024 books no tax at all ("Total Taxes –") and
+     got no row. Drive the choice off the tax figure itself instead, so it works
+     for any country. */
+  const taxBooked = ent.lines["IS:54"]?.amount;
+  const taxCur = typeof taxBooked === "number" && isFinite(taxBooked) ? taxBooked : null;
+  const taxAbs = taxCur ? Math.abs(taxCur) : 0;
+  /* The AU engagement's prior-year facts (E-1 pool closed at zero under the
+     high-tax reduction) are only true where that return is in evidence — never
+     assert them for another client. */
+  const auReturn = ato.taxPayable !== undefined;
+  if (taxAbs === 0) {
+    const where = ent.profile.countryInc || "the foreign jurisdiction";
     if (ent.profile.legalName) w({ sheet: SHEET.schE, ref: "B16", value: ent.profile.legalName, source: "nil-tax documentation row" });
     if (cf?.referenceIds[0]) w({ sheet: SHEET.schE, ref: "E16", value: cf.referenceIds[0], source: "reference ID" });
     if (ent.profile.countryInc) w({ sheet: SHEET.schE, ref: "G16", value: ent.profile.countryInc, source: "country" });
@@ -2980,48 +3065,45 @@ async function materializeCaseWrites(
       w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
     }
-    w({ sheet: SHEET.schE, ref: "O16", value: 0, source: "loss year — no Australian tax", reviewId: "sch-e-nil" });
+    w({ sheet: SHEET.schE, ref: "O16", value: 0, source: "nil-tax year — no income tax booked", reviewId: "sch-e-nil" });
     if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
-    w({ sheet: SHEET.schE, ref: "E48", value: 0, source: "prior E-1 closed at zero", reviewId: "sch-e1-opening" });
     rv({
       id: "sch-e-nil", level: "info", category: "fx", applied: true,
-      message: "Schedule E carries an explicit zero row: taxable income is nil (loss year), so no Australian tax was paid or accrued on current-year income — recorded deliberately rather than left blank.",
+      message: `Schedule E carries an explicit zero row: the statements book no income tax for the year, so no ${where} tax was paid or accrued on current-year income — recorded deliberately rather than left blank. Confirm against the tax computation before filing.`,
       target: `${SHEET.schE}!O16`,
     });
-    rv({
-      id: "sch-e1-opening", level: "warn", category: "carry-forward", applied: true,
-      message: "Schedule E-1 opening tax pool pre-filled at 0 — the prior-year E-1 closed at zero (taxes removed under the high-tax reduction). Confirm the opening pool is nil.",
-      target: `${SHEET.schE}!E48`,
-    });
-    rv({
-      id: "high-tax-2024", level: "info", category: "consistency",
-      message: "The prior year excluded all tested income under the GILTI high-tax exception (23.7% effective rate). This year there is a LOSS and NO Australian tax — the high-tax exception is not available and must not be repeated.",
-    });
+    if (auReturn) {
+      w({ sheet: SHEET.schE, ref: "E48", value: 0, source: "prior E-1 closed at zero", reviewId: "sch-e1-opening" });
+      rv({
+        id: "sch-e1-opening", level: "warn", category: "carry-forward", applied: true,
+        message: "Schedule E-1 opening tax pool pre-filled at 0 — the prior-year E-1 closed at zero (taxes removed under the high-tax reduction). Confirm the opening pool is nil.",
+        target: `${SHEET.schE}!E48`,
+      });
+      rv({
+        id: "high-tax-2024", level: "info", category: "consistency",
+        message: "The prior year excluded all tested income under the GILTI high-tax exception (23.7% effective rate). This year there is a LOSS and NO Australian tax — the high-tax exception is not available and must not be repeated.",
+      });
+    }
   } else {
     /* ---- Schedule E: current-year income tax flows from the P&L ----
        Row 16 gets the local tax; S16/U16/U21 are template formulas, and
        Schedule I & I-1's D45 reads Sch E&E-1!U21 — the tested-taxes flow
        happens in the template itself, no I-1 writes needed (RAT-003). */
-    const taxBooked = ent.lines["IS:54"]?.amount;
-    const taxCur = typeof taxBooked === "number" && isFinite(taxBooked) ? taxBooked : null;
-    if (taxCur && Math.abs(taxCur) > 0) {
-      const taxAbs = Math.abs(taxCur);
-      if (ent.profile.legalName) w({ sheet: SHEET.schE, ref: "B16", value: ent.profile.legalName, source: "current-year tax row" });
-      const refId = cf?.referenceIds[0] || ent.profile.refId;
-      if (refId) w({ sheet: SHEET.schE, ref: "E16", value: refId, source: "reference ID" });
-      if (ent.profile.countryInc) w({ sheet: SHEET.schE, ref: "G16", value: ent.profile.countryInc, source: "country" });
-      if (ent.profile.cyEnd) {
-        w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
-        w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
-      }
-      w({ sheet: SHEET.schE, ref: "O16", value: taxAbs, source: "P&L income tax expense", reviewId: "sch-e-current-tax" });
-      if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
-      rv({
-        id: "sch-e-current-tax", level: "warn", category: "consistency", applied: true,
-        message: `Schedule E row 16 carries the ${taxAbs.toLocaleString()} income tax expense from the P&L. Confirm whether it was PAID or ACCRUED in the year (Schedule E wants taxes paid or accrued — an accrual-only figure may need the accrued column treatment). The USD amount and the Schedule I-1 tested-taxes flow compute in the template's own formulas.`,
-        target: `${SHEET.schE}!O16`, source: "income statement", suggestedValue: taxAbs,
-      });
+    if (ent.profile.legalName) w({ sheet: SHEET.schE, ref: "B16", value: ent.profile.legalName, source: "current-year tax row" });
+    const refId = cf?.referenceIds[0] || ent.profile.refId;
+    if (refId) w({ sheet: SHEET.schE, ref: "E16", value: refId, source: "reference ID" });
+    if (ent.profile.countryInc) w({ sheet: SHEET.schE, ref: "G16", value: ent.profile.countryInc, source: "country" });
+    if (ent.profile.cyEnd) {
+      w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
+      w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
     }
+    w({ sheet: SHEET.schE, ref: "O16", value: taxAbs, source: "P&L income tax expense", reviewId: "sch-e-current-tax" });
+    if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
+    rv({
+      id: "sch-e-current-tax", level: "warn", category: "consistency", applied: true,
+      message: `Schedule E row 16 carries the ${taxAbs.toLocaleString()} income tax expense from the P&L. Confirm whether it was PAID or ACCRUED in the year (Schedule E wants taxes paid or accrued — an accrual-only figure may need the accrued column treatment). The USD amount and the Schedule I-1 tested-taxes flow compute in the template's own formulas.`,
+      target: `${SHEET.schE}!O16`, source: "income statement", suggestedValue: taxAbs,
+    });
   }
 
   /* ---- franking items: recognized and deliberately excluded ---- */
