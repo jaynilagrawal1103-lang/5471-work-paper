@@ -114,3 +114,26 @@ export function poisonedTranslationKeys(translations: Record<string, string>): s
     .filter(([, v]) => typeof v === "string" && isServiceErrorText(v))
     .map(([k]) => k);
 }
+
+/* ------------------------------------------------------------------ */
+
+/** The caption to SHOW and to WRITE for a label, once the document has been
+    translated: the stored English if there is a usable one, else the original.
+
+    Translation runs as its own step AFTER processing, so this must be called
+    at render/write time, never baked into a stored string — a message built
+    during processing would keep the original wording until the entity was
+    processed again. The Multilingual evidence tab already resolves this way,
+    which is why it was the only surface showing English.
+
+    An error string a service returned in the translation field is not a
+    translation (see isServiceErrorText); those fall back to the original
+    rather than printing "MYMEMORY WARNING …" onto a work paper. */
+export function displayLabel(
+  translations: Record<string, string> | undefined,
+  label: string,
+): string {
+  const en = translations?.[label];
+  if (!en || en === label) return label;
+  return isServiceErrorText(en) ? label : en;
+}

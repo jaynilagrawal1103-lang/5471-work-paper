@@ -4,6 +4,7 @@ import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader, StatusPill } from "../primitives";
 import type { ViewId } from "../Shell";
 import { BS_LINES, CATEGORY_CELLS, IS_LINES, OWNERSHIP_FIELDS } from "./engine";
+import { displayLabel } from "./captions";
 import {
   actions, allReviewItems, buildWrites, cellCount, getSnapshot, subscribe, validateEntity,
   PROCESS_STEPS, type Entity,
@@ -528,7 +529,11 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
   });
   const [drafts, setDrafts] = useState<Record<string, { value: string; note: string }>>({});
   const draftKey = (b: { entityId: string; id: string }) => b.entityId + "|" + b.id;
-  const unmatched = state.entities.flatMap((e) => e.unmatched.map((u, i) => ({ entity: e.name, entityId: e.id, index: i, ...u })));
+  /* Resolve the caption against the entity's translations here, so the
+     Exception Centre shows the same English the evidence tab does. */
+  const unmatched = state.entities.flatMap((e) => e.unmatched.map((u, i) => ({
+    entity: e.name, entityId: e.id, index: i, ...u, english: displayLabel(e.translations, u.label),
+  })));
   return (
     <div className="view-stack">
       <SectionHeader
@@ -705,7 +710,8 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
                 {unmatched.map((u, i) => (
                   <tr key={u.entityId + u.label + i}>
                     <td>
-                      <strong>{u.label}</strong>
+                      <strong>{u.english}</strong>
+                      {u.english !== u.label ? <small style={{ display: "block", opacity: 0.7 }}>{u.label}</small> : null}
                       {u.docName ? <small style={{ display: "block", opacity: 0.7 }}>{u.docName}{u.page ? ` · p.${u.page}` : ""}</small> : null}
                       {u.reason ? <small style={{ display: "block", color: "var(--muted)" }}>{u.reason}</small> : null}
                     </td>

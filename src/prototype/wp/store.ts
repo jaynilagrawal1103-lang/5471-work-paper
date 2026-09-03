@@ -75,7 +75,7 @@ import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
 import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
-import { collectCaptionLabels, detectLanguage, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
+import { collectCaptionLabels, detectLanguage, displayLabel, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
 declare const JSZip: any;
@@ -136,6 +136,11 @@ export type ReviewItem = {
   target?: string;                    // "Balance Sheet!F54"
   source?: string;
   suggestedValue?: string | number;
+  /** The document caption this item quotes, kept as a field so the message can
+      be re-resolved against the entity's translations when it is read. The
+      message is built during processing but translation runs afterwards, so
+      baking the wording in would strand the original text in the item. */
+  sourceLabel?: string;
   applied?: boolean;                  // suggestion was pre-filled into a write
   dismissed?: boolean;
   dismissedNote?: string;
@@ -889,10 +894,10 @@ export const actions = {
     const contributions = { ...ent.contributions };
     const relabels = { ...ent.relabels };
     if (!manualApply(ent, lines, contributions, relabels, target, row, "manual")) {
-      toast(`"${row.label}" could not be booked to ${target} — the row's year columns don't identify a current-year value. Enter it directly on the line instead.`, "bad");
+      toast(`"${displayLabel(ent.translations, row.label)}" could not be booked to ${target} — the row's year columns don't identify a current-year value. Enter it directly on the line instead.`, "bad");
       return;
     }
-    logEvent("Unmatched label assigned", `"${row.label}" → ${target}`, ent.name);
+    logEvent("Unmatched label assigned", `"${displayLabel(ent.translations, row.label)}" → ${target}`, ent.name);
     updateEntity(entityId, {
       lines,
       relabels,
@@ -908,7 +913,7 @@ export const actions = {
     if (kw.length >= 3 && !state.rules.some((r) => r.kw.some((k) => k.toLowerCase() === kw))) {
       set({ rules: [...state.rules, { kw: [kw], t: target }] });
       logEvent("Mapping rule learned", `"${kw}" → ${target} (from a manual assignment)`, ent.name);
-      toast(`Mapped and remembered — future documents will map "${row.label}" automatically`, "ok");
+      toast(`Mapped and remembered — future documents will map "${displayLabel(ent.translations, row.label)}" automatically`, "ok");
     }
   },
 
@@ -1438,6 +1443,7 @@ export const actions = {
                 target = rp;
                 rv({
                   level: "warn", category: "related-party",
+                  sourceLabel: m.row.label,
                   message: `"${m.row.label}" was routed to ${rp === "BS:19" ? "loans to related persons (Sch F line 6)" : "loans from related persons (Sch F line 18)"} because the caption names a group entity — confirm, and consider Schedule M.`,
                   target: `${SHEET.bs}!${rp === "BS:19" ? "D/F19" : "D/F52"}`, source: m.docName,
                 });
@@ -1484,7 +1490,8 @@ export const actions = {
             if (dupe) {
               rv({
                 level: "info", category: "mapping",
-                message: `"${m.row.label}" (${r.value.toLocaleString()}) appears on two pages of ${m.docName} — counted once.`,
+                sourceLabel: m.row.label,
+                  message: `"${m.row.label}" (${r.value.toLocaleString()}) appears on two pages of ${m.docName} — counted once.`,
                 source: m.docName,
               });
               continue;
@@ -1493,7 +1500,8 @@ export const actions = {
             if (booked !== r.value) {
               rv({
                 id: `tax-sign-${resolved.target}`, level: "warn", category: "mapping", applied: true,
-                message: `"${m.row.label}" ${r.value.toLocaleString()} was booked to ${resolved.target === "IS:54" ? "income tax expense — current (row 54)" : "deferred tax (row 55)"} as a NEGATIVE amount: the template's net income (row 56) is a plain SUM of rows 52–55, so a positive tax would increase profit. If this line is genuinely a tax credit, edit the value in the Exception Center.`,
+                sourceLabel: m.row.label,
+                  message: `"${m.row.label}" ${r.value.toLocaleString()} was booked to ${resolved.target === "IS:54" ? "income tax expense — current (row 54)" : "deferred tax (row 55)"} as a NEGATIVE amount: the template's net income (row 56) is a plain SUM of rows 52–55, so a positive tax would increase profit. If this line is genuinely a tax credit, edit the value in the Exception Center.`,
                 target: `${SHEET.is}!F${resolved.target.split(":")[1]}`, source: m.docName,
               });
             }
@@ -3166,8 +3174,13 @@ export function buildWrites(ent: Entity): Writes {
   IS_LINES.forEach((l) => {
     const d = ent.lines[`IS:${l.row}`];
     if (d && typeof d.amount === "number") is[`F${l.row}`] = d.amount;
+    /* Resolve the caption at WRITE time, not when the mapping was made:
+       translation runs as its own step after processing, so a caption fixed
+       at mapping time would ship the original wording into the workbook until
+       the entity was processed again. A relabel the preparer typed by hand is
+       not a key in the translations map, so it passes through untouched. */
     const rl = ent.relabels[`IS:${l.row}`];
-    if (l.relabel && rl) is[`C${l.row}`] = rl;
+    if (l.relabel && rl) is[`C${l.row}`] = displayLabel(ent.translations, rl);
   });
 
   const bs: Record<string, string | number> = {};
@@ -3178,7 +3191,7 @@ export function buildWrites(ent: Entity): Writes {
       if (typeof d.eoy === "number") bs[`F${l.row}`] = d.eoy;
     }
     const rl = ent.relabels[`BS:${l.row}`];
-    if (l.relabel && rl) bs[`B${l.row}`] = rl;
+    if (l.relabel && rl) bs[`B${l.row}`] = displayLabel(ent.translations, rl);
   });
 
   const writes: Writes = {};
@@ -3318,7 +3331,14 @@ export function allReviewItems(ent: Entity, opts?: { raw?: boolean }): ReviewIte
   });
   const currentIds = new Set(derived.map((d) => d.id));
   // A dismissal of a derived item whose condition no longer holds is a ghost.
-  const merged = [...derived, ...ent.reviewItems.filter((r) => !currentIds.has(r.id) && !DERIVED_IDS.has(r.id))];
+  const merged = [...derived, ...ent.reviewItems.filter((r) => !currentIds.has(r.id) && !DERIVED_IDS.has(r.id))]
+    .map((r) => {
+      // Every review surface reads through here, so this is the one place the
+      // quoted caption has to be resolved to the translated wording.
+      if (!r.sourceLabel) return r;
+      const en = displayLabel(ent.translations, r.sourceLabel);
+      return en === r.sourceLabel ? r : { ...r, message: r.message.split(r.sourceLabel).join(en) };
+    });
   if (opts?.raw || !state.policies.length) return merged;
   return merged.map((r) => applyPolicy(r, state.policies)).filter((r): r is ReviewItem => r !== null);
 }
