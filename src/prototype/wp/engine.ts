@@ -317,6 +317,14 @@ export function numeric(v: unknown): number | null {
       : s.replace(/,/g, "");
   } else if ((s.match(/,/g) || []).length === 1 && /,\d{1,2}$/.test(s)) {
     s = s.replace(",", ".");
+  } else if (!s.includes(",") && (s.match(/\./g) || []).length > 1) {
+    /* More than one dot and no comma: the dots group thousands, as Chile,
+       Spain, Germany and Brazil print them. parseFloat stops at the second
+       dot, so a Chilean balance sheet read 2.555.002.379 as 2.555 — every
+       figure understated by a factor of a billion. One dot stays a decimal
+       point: "1.234" is genuinely ambiguous and the existing reading of it
+       is left alone. */
+    s = s.replace(/\./g, "");
   } else {
     s = s.replace(/,/g, "");
   }

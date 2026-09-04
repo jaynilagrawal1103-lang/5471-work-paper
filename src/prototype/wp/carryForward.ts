@@ -21,7 +21,13 @@ export type CarryForward = {
     "cash" | "ar" | "oca" | "totalAssets" | "ap" | "ocl" | "re"
     // Schedule F lines that were read but never captured, so the
     // beginning-of-year column could not be completed from the prior return.
-    | "depreciable" | "accumDep" | "commonStock" | "totalLiabCap",
+    | "depreciable" | "accumDep" | "commonStock" | "totalLiabCap"
+    // Lines the map never covered at all. A Chilean CFC filed US$1,367,778 on
+    // line 19 -- 49% of its balance sheet -- and column (a) came out short by
+    // exactly that, so it could not balance.
+    | "badDebts" | "inventories" | "loansToShareholders" | "land"
+    | "otherAssets" | "loansFromShareholders" | "otherLiabilities"
+    | "preferredStock" | "paidInSurplus" | "treasuryStock",
     SourcedValue
   >>;
   shares?: { classOfShares: string; boy: number; eoy: number; page: number };
@@ -247,6 +253,65 @@ const rowsOnPages = (parsed: ParsedDoc, pages: Set<number>): { page: number; cel
     .map((r) => ({ page: r.page, cells: r.cells.map((c) => c.text) }));
 };
 
+/** The x of Schedule F's column (b), inferred from the rows that print BOTH
+    columns. Needed because a line where only ONE column is filled gives no
+    other clue which column it is: the Chilean CFC prints 101,437 on line 6 in
+    column (a) only, and reading "the last number on the row" carried a 2022
+    opening balance into the 2024 opening column. Total assets proves it —
+    2,788,678 already balances without that figure. */
+function columnBAnchor(rows: PdfRow[]): number | null {
+  const rights: number[] = [];
+  for (const r of rows) {
+    const nums = r.cells.filter((c) => numericCell(c.text) !== null);
+    if (nums.length >= 2) rights.push(nums[nums.length - 1].x0);
+  }
+  if (rights.length < 3) return null;           // too little evidence to judge
+  rights.sort((a, b) => a - b);
+  return rights[Math.floor(rights.length / 2)]; // median resists a stray total
+}
+
+/** Money off a Schedule F caption row, taking the value that sits in column
+    (b). A value outside that column is left alone: on a filing, a line the
+    preparer must fill in is safer than one carried from the wrong year. */
+function matchFormLineAtColumn(
+  rows: PdfRow[],
+  labelRe: RegExp,
+  anchorX: number | null,
+  tolerance = 45,
+): SourcedValue | null {
+  for (const r of rows) {
+    for (let i = 0; i < r.cells.length; i++) {
+      const cell = (r.cells[i].text || "").trim();
+      if (!cell) continue;
+      const bare = cell
+        .replace(/^\d{1,2}\s*[a-d]?\s+/i, "")
+        .replace(/^[a-d]\s+/i, "")
+        .replace(/[\s~.·•…_-]+$/, "")
+        .trim();
+      if (!labelRe.test(bare)) continue;
+      const cands = r.cells.slice(i + 1)
+        .map((c) => ({ v: numericCell(c.text), x: c.x0 }))
+        .filter((c): c is { v: number; x: number } => c.v !== null);
+      if (!cands.length) continue;
+      // Drop the line number the form echoes to the right of the caption.
+      const ln = /^(\d{1,2})[a-c]?\b/.exec(cell)
+        || /^(\d{1,2})[a-c]?$/.exec((r.cells[i - 1]?.text || "").trim());
+      const kept = ln && cands.length && cands[0].v === Number(ln[1]) ? cands.slice(1) : cands;
+      if (!kept.length) continue;
+      if (anchorX === null) {
+        // No geometry to judge by — fall back to the rightmost value.
+        const last = kept[kept.length - 1];
+        return { value: last.v, page: r.page, rowText: r.cells.map((c) => c.text).join(" | ") };
+      }
+      const inColumnB = kept.filter((c) => Math.abs(c.x - anchorX) <= tolerance);
+      if (!inColumnB.length) continue;          // this line filled only column (a)
+      const best = inColumnB[inColumnB.length - 1];
+      return { value: best.v, page: r.page, rowText: r.cells.map((c) => c.text).join(" | ") };
+    }
+  }
+  return null;
+}
+
 /** Find the first row whose textual cell matches, and read a money value off
     it. `pick` chooses among the numeric cells right of the caption after the
     leading line-number echo is dropped. */
@@ -329,8 +394,11 @@ export function extractCarryForward(
   // Schedule J line 14 — the single most important carry-forward number.
   out.openingEP = matchFormLine(schJ, /balance at beginning of next year/i, "first") ?? undefined;
 
-  // Schedule F column (b): both columns print, so the last numeric is EOY.
-  const f = (re: RegExp) => matchFormLine(schF, re) ?? undefined;
+  /* Schedule F column (b). Where both columns print, the rightmost value is
+     EOY; where only one prints, only its x tells us which column it is. */
+  const schFGeo = rowsOnPagesGeo(parsed, intersect(pagesOfKind(cls, "us-5471-schF"), pageFilter));
+  const colB = columnBAnchor(schFGeo);
+  const f = (re: RegExp) => matchFormLineAtColumn(schFGeo, re, colB) ?? undefined;
   out.priorClosingUSD.cash = f(/^cash$/i);
   out.priorClosingUSD.ar = f(/^trade notes and accounts receivable/i);
   out.priorClosingUSD.oca = f(/^other current assets/i);
@@ -342,6 +410,18 @@ export function extractCarryForward(
   out.priorClosingUSD.accumDep = f(/^less accumulated depreciation/i);
   out.priorClosingUSD.commonStock = f(/^common stock/i);
   out.priorClosingUSD.totalLiabCap = f(/^total liabilities and shareholders/i);
+  /* Remaining Schedule F lines. Contra lines are captured as filed (positive
+     on the form, printed in brackets) and negated when they are seeded. */
+  out.priorClosingUSD.badDebts = f(/^less allowance for bad debts/i);
+  out.priorClosingUSD.inventories = f(/^inventories/i);
+  out.priorClosingUSD.loansToShareholders = f(/^loans to shareholders/i);
+  out.priorClosingUSD.land = f(/^land\b/i);
+  out.priorClosingUSD.otherAssets = f(/^other assets/i);
+  out.priorClosingUSD.loansFromShareholders = f(/^loans from shareholders/i);
+  out.priorClosingUSD.otherLiabilities = f(/^other liabilities/i);
+  out.priorClosingUSD.preferredStock = f(/^preferred stock/i);
+  out.priorClosingUSD.paidInSurplus = f(/^paid-in or capital surplus/i);
+  out.priorClosingUSD.treasuryStock = f(/^less cost of treasury stock/i);
 
   // Prior-year foreign tax accrued (Schedule E) — E-1 redetermination review.
   // The payor row reads: line | income | ccy | tax(functional) | rate | tax(USD).
@@ -384,10 +464,26 @@ export function extractCarryForward(
       }
     }
 
-    // Country of incorporation: caption row, value on the next row.
+    /* Country of incorporation: caption row, value on the next row.
+       The country prints to the RIGHT of the address on this form, so the row
+       reads ["VALPARAISO CHILE", "CHILE"] and taking the first match stored
+       the city as the country — which then flowed into Schedule E as the
+       country the tax was paid to. Take the last candidate, and where a
+       package glues the whole lot into one cell ("VALPARAISO CHILE CHILE"),
+       keep only the trailing word it repeats. */
     if (!out.countryInc && /country under whose laws incorporated/i.test(text)) {
-      const cand = nextRows[0]?.cells.map((c) => c.trim()).find((c) => /^[A-Za-z][A-Za-z ]{2,30}$/.test(c));
-      if (cand) out.countryInc = cand;
+      const cands = (nextRows[0]?.cells || [])
+        .map((c) => c.trim())
+        .filter((c) => /^[A-Za-z][A-Za-z ]{2,30}$/.test(c));
+      let cand = cands.length ? cands[cands.length - 1] : undefined;
+      if (cand) {
+        const words = cand.split(/\s+/);
+        const last = words[words.length - 1];
+        if (words.length > 1 && words.slice(0, -1).some((w) => w.toUpperCase() === last.toUpperCase())) {
+          cand = last;
+        }
+        out.countryInc = cand;
+      }
     }
 
     // "d Date of incorporation … h Functional currency code" caption row —

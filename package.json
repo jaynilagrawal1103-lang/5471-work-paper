@@ -36,7 +36,8 @@
     "test:spanish": "node tests/test_spanish_mapping.cjs",
     "test:stale": "node tests/test_stale_values.cjs",
     "test:boy": "node tests/test_boy_carryforward.cjs",
-    "test:all": "npm run test:stale && npm run test:boy && npm run test:spanish && npm run test:schedb && npm run test:item2d && npm run test:translate && npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture && npm run test:wired && npm run test:integrity && npm run test:guide",
+    "test:numfmt": "node tests/test_number_format.cjs",
+    "test:all": "npm run test:stale && npm run test:boy && npm run test:numfmt && npm run test:spanish && npm run test:schedb && npm run test:item2d && npm run test:translate && npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fx && npm run test:ai && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:boot && npm run test:fixture && npm run test:wired && npm run test:integrity && npm run test:guide",
     "build:full-DESTRUCTIVE": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs"
   },
   "dependencies": {

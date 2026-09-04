@@ -172,7 +172,12 @@ export function FxRatesView() {
 
         <div className="fact-row"><span>Convention</span><strong>Divide rate — functional currency units per 1 USD</strong></div>
         <div className="fact-row"><span>Balance Sheet header</span><strong>G6 = C61 (PY) · H6 = C60 (CY)</strong></div>
-        <div className="fact-row"><span>Coverage</span><strong>{CURRENCY_CODES.length} currencies · average 2017–2025 · spot 2016–2025</strong></div>
+        {/* Spot covers far more currencies than the IRS yearly average: Chile and
+            Colombia, among others, have a 12/31 spot but no average, and the line
+            used to imply both were complete. Count each table rather than claim it. */}
+        <div className="fact-row"><span>Coverage</span><strong>
+          {Object.keys(IRS_AVERAGE).length} currencies with a yearly average (2017–2025) · {Object.keys(TREASURY_SPOT).length} with a 12/31 spot (2016–2025)
+        </strong></div>
       </section>
 
       <section className="panel">

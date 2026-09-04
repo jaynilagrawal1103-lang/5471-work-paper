@@ -1735,23 +1735,38 @@ export const actions = {
           const rate = Number(cur0?.fx?.pyRate);
           if (cur0 && isFinite(rate) && rate > 0) {
             type BoyKey = "cash" | "ar" | "oca" | "depreciable" | "accumDep"
-              | "ap" | "ocl" | "commonStock" | "re";
+              | "ap" | "ocl" | "commonStock" | "re"
+              | "badDebts" | "inventories" | "loansToShareholders" | "land"
+              | "otherAssets" | "loansFromShareholders" | "otherLiabilities"
+              | "preferredStock" | "paidInSurplus" | "treasuryStock";
             /* Each key lists the template row(s) that can hold it. Sch F lines 5
                and 16 print as one figure but are =SUM() subtotals here (rows 15
                and 47) and are absent from BS_LINES, so a value seeded on the
                subtotal is dropped before it ever reaches the writer. Carry the
                filed aggregate onto the first free detail row the subtotal spans
                instead — the subtotal then computes it, and column (a) balances. */
-            const boyMap: Array<[BoyKey, number[], boolean]> = [
-              ["cash", [10], false], ["ar", [11], false], ["oca", [16, 17, 18], false],
+            /* Signs follow the template's own totals, not the form's brackets:
+               D42 sums D10:D15 and D28:D38, so bad debts and the accumulated
+               contra lines must be NEGATIVE; D63 ends "- D62", so treasury
+               stock enters POSITIVE and the formula does the subtracting. */
+            const boyMap: Array<[BoyKey, number[], boolean, string?]> = [
+              ["cash", [10], false], ["ar", [11], false], ["badDebts", [12], true],
+              ["inventories", [14], false], ["oca", [16, 17, 18], false, "Other current assets"],
+              ["loansToShareholders", [19], false],
               ["depreciable", [28], false], ["accumDep", [29], true],
-              ["ap", [46], false], ["ocl", [48, 49, 50], false],
-              ["commonStock", [59], false], ["re", [61], false],
+              ["land", [32], false],
+              ["otherAssets", [39, 40, 41], false, "Other assets"],
+              ["ap", [46], false], ["ocl", [48, 49, 50], false, "Other current liabilities"],
+              ["loansFromShareholders", [52], false],
+              ["otherLiabilities", [54, 55, 56], false, "Other liabilities"],
+              ["preferredStock", [58], false], ["commonStock", [59], false],
+              ["paidInSurplus", [60], false], ["re", [61], false],
+              ["treasuryStock", [62], false],
             ];
             const lines = { ...cur0.lines };
             const relabels = { ...cur0.relabels };
             const seeded: string[] = [];
-            for (const [key, rows, negate] of boyMap) {
+            for (const [key, rows, negate, aggregateLabel] of boyMap) {
               const filed = cf.priorClosingUSD[key]?.value;
               if (typeof filed !== "number") continue;
               // Never overwrite a value the documents or the preparer supplied.
@@ -1763,10 +1778,8 @@ export const actions = {
               // An aggregate parked on a detail row must not keep that row's
               // stock caption ("Prepaid expenses"), or the attached statement
               // would describe money that is not there.
-              if (rows.length > 1 && !relabels[k]) {
-                relabels[k] = key === "oca"
-                  ? "Other current assets (per prior-year Form 5471)"
-                  : "Other current liabilities (per prior-year Form 5471)";
+              if (rows.length > 1 && aggregateLabel && !relabels[k]) {
+                relabels[k] = `${aggregateLabel} (per prior-year Form 5471)`;
               }
               seeded.push(`${k}=${local.toLocaleString()}`);
             }
@@ -3243,6 +3256,19 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   const hasBS = BS_LINES.some((l) => ent.lines[`BS:${l.row}`]);
   const hasIS = IS_LINES.some((l) => ent.lines[`IS:${l.row}`]);
 
+  /* Every rate and balance check below is gated on there being lines to check,
+     so an entity that mapped NOTHING raised no blocker at all and would have
+     generated an empty work paper. Two Chilean CFCs did exactly that: their
+     SII Form 22 filings yielded no rows, and the only thing standing between
+     the preparer and a blank workbook was the currency-confirmation prompt. */
+  if (ent.processedAt && !hasBS && !hasIS) {
+    out.push({
+      id: "no-lines-mapped", level: "block", category: "source-gap",
+      message: `Processing mapped no schedule line from ${ent.files.length} document(s) — the work paper would generate empty. `
+        + `Check the Exception center for unread documents, set a document type on the Documents tab, or assign the captions by hand.`,
+    });
+  }
+
   // The template divides by these; a blank or zero rate yields #DIV/0! in every
   // USD column of Schedule C and Schedule F.
   if (hasIS && !rate("avgRate")) {
@@ -3314,6 +3340,7 @@ export function validateEntity(ent: Entity): ReviewItem[] {
     must vanish once the underlying condition is resolved. */
 const DERIVED_IDS = new Set([
   "fx-avg-missing", "fx-cy-missing", "fx-py-missing", "fx-fiscal-manual", "fx-currency-unconfirmed",
+  "no-lines-mapped",
   "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
 ]);
 
