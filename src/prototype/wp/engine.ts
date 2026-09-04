@@ -243,12 +243,30 @@ export const DEFAULT_RULES: MappingRule[] = [
     // template recomputes the totals.
     "total net sales", "gross margin", "operating income", "total operating expenses",
     "net income", "total non-current liabilities", "total revenues",
+    // Spanish/Chilean return totals. Same reasoning: the components map and
+    // the template recomputes. "total de ingresos" must also outrank the bare
+    // "ingresos" income keyword, or an annual total is booked as a line.
+    "total de ingresos", "total de egresos", "total del activo", "total del pasivo",
+    "total de activos", "total de pasivos", "total ingresos", "total egresos",
+    /* A Chilean return states depreciation twice — financiera (book) and
+       tributaria (tax). Both matched the depreciation rule and the entity's
+       depreciation doubled. The book figure belongs in a book income
+       statement; the tax figure is a reconciling item the template does not
+       carry. */
+    "depreciacion tributaria", "depreciaci\u00f3n tributaria",
+    "resultado financiero", "resultado del ejercicio", "utilidad del ejercicio",
+    "perdida del ejercicio", "p\u00e9rdida del ejercicio",
   ], t: "SKIP" },
   { kw: ["gross receipt", "turnover", "revenue", "sales", "chiffre d'affaires", "ingresos", "ingresos operacionales", "ventas netas", "receita", "营业收入"], t: "IS:7" },
   { kw: ["service income", "services income", "consulting fees", "consultancy fees", "fees earned"], t: "IS:7" },
   { kw: ["returns and allowance", "sales return"], t: "IS:8" },
   { kw: ["cost of labor", "cost of labour", "direct labour"], t: "IS:10" },
-  { kw: ["purchase", "achats", "cost of goods", "cogs"], t: "IS:11" },
+  { kw: ["purchase", "achats", "cost of goods", "cogs", "costo directo", "costo de venta",
+         "costos de venta", "compras", "custo dos produtos",
+         // Chile's simplified-regime expense box: stock, supplies and bought-in
+         // services, PAID in the year. "existencias" alone is inventory on a
+         // balance sheet, so only the compound caption maps here.
+         "existencias, insumos", "insumos y servicios"], t: "IS:11" },
   // "Cost of sales" totals are deliberately absent: the components map here
   // and the template's F9 subtotal recomputes the total — both would double-count.
   { kw: ["direct hotel", "direct meals", "direct car rental", "direct airfare", "direct fuel", "direct parking", "direct taxi", "uber", "job cost"], t: "IS:12" },
@@ -259,9 +277,9 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["gain on sale", "loss on sale", "disposal of asset"], t: "IS:18" },
   { kw: ["unrealised exchange", "unrealized exchange"], t: "IS:19" },
   { kw: ["realised exchange", "realized exchange", "exchange gain", "exchange loss"], t: "IS:20" },
-  { kw: ["management fees earned", "management fee income", "management fees", "reimbursement", "recharge income", "sundry income", "other income", "other revenue", "other revenues"], t: "IS:OI" },
-  { kw: ["salaries", "salary", "payroll", "compensation", "personnel", "staff cost", "charges de personnel", "wages", "superannuation", "pension contribution", "gastos del personal", "gasto de personal", "gastos de personal", "sueldos", "salarios", "nomina", "n\u00f3mina", "cesantias", "cesant\u00edas", "vacaciones consolid", "primas consolid", "despesas com pessoal"], t: "IS:26" },
-  { kw: ["rent expense", "rent", "loyer", "premises rent"], t: "IS:27" },
+  { kw: ["management fees earned", "management fee income", "management fees", "reimbursement", "recharge income", "sundry income", "other income", "other revenue", "other revenues", "otros ingresos", "outras receitas"], t: "IS:OI" },
+  { kw: ["salaries", "salary", "payroll", "compensation", "personnel", "staff cost", "charges de personnel", "wages", "superannuation", "pension contribution", "gastos del personal", "gasto de personal", "gastos de personal", "sueldos", "salarios", "nomina", "n\u00f3mina", "remuneracion", "remunera\u00e7", "cesantias", "cesant\u00edas", "vacaciones consolid", "primas consolid", "despesas com pessoal"], t: "IS:26" },
+  { kw: ["rent expense", "rent", "loyer", "premises rent", "arriendo"], t: "IS:27" },
   { kw: ["royalty expense"], t: "IS:28" },
   { kw: ["interest expense", "finance cost", "charges financi", "gastos financieros", "intereses"], t: "IS:29" },
   { kw: ["depreciation", "amortisation expense", "amortization expense", "dotations aux amortissements", "depreciaciones", "amortizaciones", "depreciacion", "depreciaci\u00f3n"], t: "IS:30" },
@@ -273,6 +291,17 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["filing fee", "registration fee", "licence cost", "permits"], t: "IS:OD" },
   { kw: ["entertainment", "printing", "stationery", "postage", "advertising", "promotion"], t: "IS:OD" },
   { kw: ["insurance", "workers compensation", "bank fees", "bank charges", "sundry expense", "staff amenities", "motor vehicle", "travel expense", "legal fees", "professional fees", "consultants fees", "computer expense", "office expense", "cleaning", "utilities", "electricity", "repairs and maintenance", "gastos legales", "honorarios", "arrendamientos", "mantenimiento y reparaciones", "gastos de viaje", "seguros"], t: "IS:OD" },
+  /* Floor for Spanish deductions. "Otros gastos deducibles de los ingresos" is
+     a Chilean return's catch-all expense box, and the only keyword it used to
+     hit was "ingresos" — an expense booked as revenue, on both sides of the
+     wrong sign. A deduction landing in Other deductions is a mapping the
+     preparer can move; a deduction landing in income is one they may not
+     notice. More specific rules above still win, being longer. */
+  { kw: ["gastos", "egresos", "despesas", "gastos deducibles", "gastos deducidos",
+         // "…deducibles/deducidos DE LOS INGRESOS" — the caption of an expense
+         // box names the income it is deducted from, and that lone word
+         // "ingresos" was enough to book the expense as revenue.
+         "de los ingresos"], t: "IS:OD" },
   { kw: ["income tax - current", "current tax", "corporation tax", "tax on profit", "tax on ordinary activities", "income tax revenue", "income tax expense", "impot sur les societes"], t: "IS:54" },
   { kw: ["deferred tax"], t: "IS:55" },
   { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "货币资金"], t: "BS:10" },
@@ -518,6 +547,14 @@ function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
   if (label.length > 64) return null;                    // captions are short
   if (/[.!?]\s+\S/.test(label) || /\n/.test(label)) return null;  // prose, not a ledger line
   if (label.split(/\s+/).length > 9) return null;
+  /* Unmatched brackets mean the caption is the tail (or head) of a sentence
+     that wrapped across PDF lines, not a ledger line. A Chilean return's
+     "...deber\u00e1 declarar por Internet)" was nine words — just inside the prose
+     guard above — and booked the annual tax settlement as telephone expense
+     on the word "Internet". A leading enumerator ("a) Cash", "1) Sales") is
+     not a bracket and is discounted first. */
+  const body = label.replace(/^\s*[A-Za-z0-9]{1,3}[).]\s+/, "");
+  if ((body.match(/[([]/g) || []).length !== (body.match(/[)\]]/g) || []).length) return null;
   return { ...row, label, values, years, formLine };
 }
 
@@ -598,7 +635,7 @@ export function detectGridYearHeader(rows: string[][]): (number | null)[] | null
 declare const JSZip: any;
 
 import { pdfToDoc } from "./pdfText";
-import type { PdfDoc } from "./pdfText";
+import type { PdfDoc, PdfRow, PdfCell } from "./pdfText";
 
 /* ---------- positional extraction: column rulers and year snapping ---------- */
 
@@ -729,6 +766,151 @@ export async function readSpreadsheet(file: File): Promise<string[][] | null> {
   return doc ? doc.grid : null;
 }
 
+/* ---------- stacked-caption forms ---------- */
+
+/* Some official forms do not print a caption and its amount on one line. The
+   tax authority draws numbered boxes instead: the box's code sits at the far
+   left, its caption on the line above, and the amount right-aligned in the
+   box. The row reader needs label and number on the same row, so it sees
+   nothing at all on such a form.
+
+   The rescue below rebuilds caption/amount pairs from the geometry, then
+   appends them to the grid so the ordinary keyword mapping, translation and
+   review path apply unchanged. It is not tied to one country: the layout it
+   keys off — code left of caption, amount right-aligned in a column — is what
+   makes a boxed form a boxed form.
+
+   Two things on such a row look alike and must not be confused: the box CODE
+   and the AMOUNT are both bare digits. They are separated structurally, not by
+   shape. Amounts are right-aligned to a column the page repeats down its whole
+   length; codes are left-aligned where the box starts. So the page's amount
+   columns are measured first, from figures that are unambiguously money
+   (they carry a grouping separator), and only cells landing on one of those
+   columns can be read as amounts. A figure that is neither is dropped rather
+   than guessed at: against a filing, a missing number the preparer supplies
+   beats a box code booked as an amount. */
+
+/* Right-hand edges shared by enough money-shaped cells to be a column. */
+function valueColumnAnchors(rows: PdfRow[]): number[] {
+  const GROUPED = /^\(?-?\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?\)?$/;
+  const xs: number[] = [];
+  for (const r of rows) for (const c of r.cells) if (GROUPED.test(c.text.trim())) xs.push(c.x1);
+  xs.sort((a, b) => a - b);
+  const anchors: number[] = [];
+  let run: number[] = [];
+  const close = () => {
+    if (run.length >= 2) anchors.push(run[Math.floor(run.length / 2)]);
+    run = [];
+  };
+  for (const x of xs) {
+    if (run.length && x - run[0] > 6) close();
+    run.push(x);
+  }
+  close();
+  return anchors;
+}
+
+/* The amount, when a box code from the next column has been glued onto it by
+   the row builder ("928.368.104 1409"). Only a leading, self-contained figure
+   counts — never a digit residue of prose, and never a date. */
+function leadingAmount(text: string): string | null {
+  const tok = text.trim().split(/\s+/)[0];
+  return /^\(?-?\d[\d.,]*\)?$/.test(tok) && numericCell(tok) !== null ? tok : null;
+}
+
+/* A box caption is a heading and is printed as one. Long captions wrap, and
+   the tail of a wrap lands on a value row looking exactly like a caption of
+   its own — "resultado es negativo o cero, deber\u00e1 declarar por Internet)"
+   was pairing with a refund figure and mapping, on the word "Internet", to
+   telephone expense. Headings open with a capital or a digit; a continuation
+   opens mid-sentence. Scripts without case (Chinese, Arabic) are unaffected:
+   only a letter that is demonstrably lower-case rejects the caption. */
+function isBoxCaption(label: string): boolean {
+  const first = label.match(/\p{L}/u)?.[0];
+  if (!first) return false;
+  return !(first.toLowerCase() === first && first.toUpperCase() !== first);
+}
+
+export function stackedCaptionRows(pdf: PdfDoc): string[][] {
+  const TEXTUAL = (t: string) => textualCell(t) && t.trim().length > 2;
+  const GROUPED = (t: string) => /\d[.,]\d\d\d/.test(t);
+
+  // Captions the row reader can already pair on their own row are its business.
+  const alreadyPaired = new Set<string>();
+  for (const r of pdf.rows) {
+    if (!r.cells.some((c) => numericCell(c.text) !== null)) continue;
+    for (const c of r.cells) if (TEXTUAL(c.text)) alreadyPaired.add(c.text.trim());
+  }
+
+  const byPage = new Map<number, PdfRow[]>();
+  for (const r of pdf.rows) {
+    const list = byPage.get(r.page);
+    if (list) list.push(r); else byPage.set(r.page, [r]);
+  }
+
+  const out: string[][] = [];
+  const seen = new Set<string>();
+  for (const pageRows of byPage.values()) {
+    const anchors = valueColumnAnchors(pageRows);
+    if (!anchors.length) continue;
+    const onColumn = (x1: number) => anchors.some((a) => Math.abs(a - x1) <= 6);
+
+    const ordered = [...pageRows].sort((a, b) => b.y - a.y);   // top of page first
+    for (let i = 1; i < ordered.length; i++) {
+      const valRow = ordered[i];
+      const capRow = ordered[i - 1];                            // the line directly above
+      if (capRow.y - valRow.y > 12) continue;
+
+      const caps = capRow.cells.filter((c) => TEXTUAL(c.text));
+      if (!caps.length || capRow.cells.some((c) => numericCell(c.text) !== null)) continue;
+
+      const codes: Array<{ x0: number }> = [];
+      const vals: Array<{ x0: number; text: string }> = [];
+      /* Where a token sits inside a cell the row builder ran together, by
+         character offset. Only ever used to tell one box's span from the
+         next, so an approximation is enough. */
+      const charX = (c: PdfCell, i: number) =>
+        c.x0 + (c.x1 - c.x0) * (i / Math.max(1, c.text.length));
+      for (const c of valRow.cells) {
+        const text = c.text.trim();
+        // "928.368.104 1409" — this box's amount, then the next box's code.
+        const glued = /^(\(?-?\d[\d.,]*\)?)\s+(\d{1,4})(?:\s|$)/.exec(text);
+        if (glued && numericCell(glued[1]) !== null) {
+          vals.push({ x0: c.x0, text: glued[1] });
+          codes.push({ x0: charX(c, text.indexOf(glued[2], glued[1].length)) });
+          continue;
+        }
+        // "1109 imputación parcial de créditos…" — this box's code, then the
+        // caption above having wrapped down onto the value line.
+        const leadCode = /^(\d{1,4})\s+\D/.exec(text);
+        if (leadCode) { codes.push({ x0: c.x0 }); continue; }
+        const amt = leadingAmount(text);
+        if (amt === null) continue;
+        if (onColumn(c.x1) || GROUPED(amt)) vals.push({ x0: c.x0, text: amt });
+        else if (/^\d{1,4}$/.test(text)) codes.push({ x0: c.x0 });
+      }
+      codes.sort((a, b) => a.x0 - b.x0);
+      vals.sort((a, b) => a.x0 - b.x0);
+      // A boxed row opens with its own code, printed left of the caption above.
+      if (!codes.length || !vals.length || codes[0].x0 >= caps[0].x0) continue;
+
+      for (let k = 0; k < codes.length; k++) {
+        const from = codes[k].x0;
+        const to = k + 1 < codes.length ? codes[k + 1].x0 : Infinity;
+        const val = vals.find((v) => v.x0 >= from && v.x0 < to);
+        const cap = caps.find((c) => c.x0 >= from && c.x0 < to);
+        if (!val || !cap) continue;
+        const label = cap.text.trim();
+        if (!isBoxCaption(label)) continue;
+        if (alreadyPaired.has(label) || seen.has(label)) continue;
+        seen.add(label);
+        out.push([label, val.text]);
+      }
+    }
+  }
+  return out;
+}
+
 export async function readDocument(file: File): Promise<ParsedDoc | null> {
   const name = file.name.toLowerCase();
   if (/\.(csv|tsv|txt)$/.test(name)) {
@@ -743,7 +925,10 @@ export async function readDocument(file: File): Promise<ParsedDoc | null> {
   if (/\.pdf$/.test(name)) {
     const pdf = await pdfToDoc(await file.arrayBuffer());
     if (!pdf.rows.length) throw new Error("no text layer — this PDF is a scanned image");
-    return { kind: "pdf", grid: pdf.rows.map((r) => r.cells.map((c) => c.text)), pdf };
+    // Stacked pairs are appended, never substituted: the row reader keeps
+    // whatever it already finds and these fill in what it cannot see.
+    const grid = pdf.rows.map((r) => r.cells.map((c) => c.text));
+    return { kind: "pdf", grid: [...grid, ...stackedCaptionRows(pdf)], pdf };
   }
   if (!/\.(xlsx|xlsm)$/.test(name)) return null;
 

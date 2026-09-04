@@ -336,3 +336,53 @@ Regression-verified with a full wipe-and-reprocess of the 4-document case:
 Keystone/Shaka unchanged (exact statement ties), 2Hats balanced 29,641.42 both
 sides with 0 unmatched and the IS now matching the preparer's workbook net of
 the flagged interest sign and gold's whole-euro rounding.
+
+### Session 2026-09-04 — boxed tax forms (Chile SII Form 22)
+Two Chilean CFCs mapped **0 lines**. Root cause was not classification or
+translation: it was row extraction. `extractRows` requires a caption and a
+number on the same row (`if (!label) continue`), and the SII Form 22 prints a
+box CODE at the far left, the CAPTION on the line above, and the AMOUNT
+right-aligned inside the box — no row carries both.
+
+- **`stackedCaptionRows` (src) / `EN9stackRows` (dist)** rebuilds caption/amount
+  pairs from PDF geometry and appends them to the grid, so keyword mapping,
+  translation and review run unchanged. Codes and amounts are both bare digits
+  and are separated *structurally*: the page's amount columns are measured from
+  cells that are unambiguously money (a grouping separator), and only cells
+  landing on one of those right-edges — or carrying a separator themselves —
+  may be read as amounts. A code glued onto a neighbouring amount
+  ("928.368.104 1409") is split off and used as the next box's boundary; a code
+  glued in front of wrapped caption text opens its own box. A caption that
+  opens lower-case is a wrap fragment, not a heading, and is refused.
+- **`applyRowHygiene` bracket guard.** A caption with unmatched brackets is the
+  tail of a wrapped sentence. "…deberá declarar por Internet)" was nine words —
+  inside the existing prose guard — and booked the annual tax settlement as
+  telephone expense on the word "Internet". A leading enumerator ("a) Cash") is
+  discounted first.
+- **Mapping rules the reader exposed.** "Otros gastos deducibles **de los
+  ingresos**" hit only the keyword "ingresos" and was booked as revenue — an
+  expense on the wrong side of the statement. Added a Spanish deduction floor
+  ("gastos", "egresos", "de los ingresos"), cost-of-sales terms ("costo
+  directo", "existencias, insumos"), "remuneracion", "arriendo", "otros
+  ingresos" → Other income, the return's own totals → SKIP, and
+  "depreciación **tributaria**" → SKIP (the return states depreciation twice,
+  book and tax, and both matched the depreciation rule).
+
+Measured on the two client filings: 0 mapped lines → 11 and 12, and both
+income statements now reconcile **exactly** to the figures on the face of the
+return (Charlie Brawn: components tie to Total de ingresos/egresos anuales and
+to Base Imponible; Cecilia: income less deductions = Resultado financiero to
+the peso).
+
+**Limit worth stating: the Form 22 carries no line-by-line balance sheet.** It
+reports Total del Activo, Total del Pasivo, Capital Efectivo, Activo
+Inmovilizado and Patrimonio financiero as single boxes — there is no cash,
+receivables or inventory detail. Schedule F cannot be built from this document;
+financial statements are still required for the balance sheet.
+
+Tests: `tests/test_stacked_form.cjs` (17 assertions), wired into `test:all`
+(now 866). The fixture uses the real form's layout and the real form's
+wording with invented amounts — a client's filed figures do not belong in a
+repository. One assertion runs the SHIPPED `EN9stackRows` out of
+`dist/index.html` against the same geometry and requires it to return exactly
+what `src` returns.
