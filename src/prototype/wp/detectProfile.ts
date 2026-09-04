@@ -116,6 +116,47 @@ const OWNERSHIP_MATCHERS: Matcher[] = [
   { key: "transition", labels: ["transition tax year", "transition tax"], clean: cleanYesNo },
 ];
 
+/* A caption on a numbered form: "02 Apellido Materno", "05 Nombres", "903 RUT
+   del Representante". The box number is followed by words and nothing else
+   numeric, which is what separates it from an address like "2 Oriente 248". */
+const BOX_CAPTION = /^\d{1,3}\s+[^\d]+$/;
+
+/* A boxed form prints several numbered captions across one line, with the
+   values on the line beneath. An ordinary questionnaire row is caption plus
+   value and can hold at most one such cell, so it never trips this. */
+function isBoxedRow(row: string[]): boolean {
+  let n = 0;
+  for (const cell of row) {
+    if (cell === undefined) continue;
+    const t = String(cell).trim();
+    if (/^\d{1,3}$/.test(t) || BOX_CAPTION.test(t)) n++;
+  }
+  return n >= 2;
+}
+
+/* The value for a boxed caption, taken from the line below. The grid has no
+   coordinates, so the caption's own column is tried first and the rest of the
+   row after it: on Chile's Form 22 the entity name sits in the caption's
+   column, while the activity description sits left of it with the activity
+   CODE in the column — hence the demand for a letter, which the code fails. */
+function valueBelow(
+  next: string[] | undefined,
+  labelCol: number,
+  accept: (raw: string) => string | null,
+): string | null {
+  if (!next) return null;
+  const order = [labelCol, ...next.map((_, i) => i)];
+  for (const i of order) {
+    const cell = next[i];
+    if (cell === undefined) continue;
+    const raw = String(cell).trim();
+    if (!raw || BOX_CAPTION.test(raw)) continue;
+    const cleaned = accept(raw);
+    if (cleaned !== null) return cleaned;
+  }
+  return null;
+}
+
 /** First non-empty cell to the right of the caption. */
 function valueAfter(row: string[], labelCol: number): { value: string; col: number } | null {
   for (let i = labelCol + 1; i < row.length; i++) {
@@ -142,8 +183,11 @@ export function detectProfile(rows: string[][] | null): ProfileDetection {
   const categories = new Set<string>();
   if (!rows) return { profile: [], ownership: [], categories: [] };
 
-  for (const row of rows) {
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
     if (!row || row.length < 2) continue;
+    const boxed = isBoxedRow(row);
+    const below = rows[r + 1];
 
     for (let c = 0; c < row.length; c++) {
       const cell = row[c];
@@ -166,18 +210,34 @@ export function detectProfile(rows: string[][] | null): ProfileDetection {
           const loose = m.labels.some((l) => caption.startsWith(l) || caption.includes(l));
           if (!exact && !loose) continue;
 
+          const accept = (raw: string): string | null => {
+            const c2 = m.clean ? m.clean(raw) : raw;
+            if (c2 === null || String(c2).trim() === "") return null;
+            // A caption in the value position means we read a header, not a value.
+            if (!m.clean && /^(name|address|country|currency|date|value|amount)$/i.test(String(c2))) return null;
+            return String(c2);
+          };
+
           const v = valueAfter(row, c);
-          if (!v) return;
-          const cleaned = m.clean ? m.clean(v.value) : v.value;
-          if (cleaned === null || String(cleaned).trim() === "") return;
-          // A caption in the value position means we read a header, not a value.
-          if (!m.clean && /^(name|address|country|currency|date|value|amount)$/i.test(String(cleaned))) return;
+          /* On a boxed form the cell to the right is the NEXT BOX'S CAPTION,
+             not this box's value — the value is printed on the line below.
+             Reading across gave "01 Apellido Paterno o raz\u00f3n social" the
+             entity name of "02 Apellido Materno". */
+          const across = v && !(boxed && BOX_CAPTION.test(v.value)) ? accept(v.value) : null;
+          const cleaned = across !== null ? across
+            : boxed
+              // A name or an activity is words; the activity CODE printed in
+              // the same column is not, and must not win the field.
+              ? valueBelow(below, c, (raw) =>
+                  !m.clean && !/\p{L}/u.test(raw) ? null : accept(raw))
+              : null;
+          if (cleaned === null) return;
 
           into.set(m.key, {
             key: m.key,
-            value: String(cleaned),
+            value: cleaned,
             sourceLabel: String(cell).trim(),
-            confidence: exact ? "high" : "medium",
+            confidence: exact && across !== null ? "high" : "medium",
           });
           return;
         }
@@ -205,22 +265,34 @@ const SYMBOL_CURRENCY: Array<[RegExp, string]> = [
 
 export function sniffCurrency(rows: string[][] | null): DetectedField | null {
   if (!rows) return null;
-  const counts = new Map<string, { n: number; src: string }>();
+  /* A code standing alone in a cell — "CLP", "(GBP)" — is a declaration. The
+     same three letters inside a sentence usually are not: a Chilean return
+     names its tax registers "REX/INR/ Remanente ejercicio siguiente", and
+     counting occurrences read that as Indian rupees on a Chilean filing. Both
+     documents also carried a cell reading exactly "CLP", and it lost 1 to 2.
+     Getting this wrong picks the wrong rate table, so every translated figure
+     in the work paper is wrong. Rank a standing code above a buried one, and
+     fall back to frequency only within a rank. */
+  const standing = new Map<string, { n: number; src: string }>();
+  const buried = new Map<string, { n: number; src: string }>();
   for (const row of rows) {
     for (const cell of row) {
       if (cell === undefined) continue;
       const text = String(cell);
       if (text.length > 60) continue;
+      const bare = text.trim().replace(/^[([]+/, "").replace(/[)\]]+$/, "").trim().toUpperCase();
       for (const m of text.matchAll(/\b([A-Z]{3})\b/g)) {
         const code = m[1];
         if (!CURRENCY_CODES.includes(code)) continue;
         if (code === "USD") continue;                    // the reporting currency
-        const prev = counts.get(code);
-        counts.set(code, { n: (prev?.n || 0) + 1, src: prev?.src || text.trim() });
+        const into = bare === code ? standing : buried;
+        const prev = into.get(code);
+        into.set(code, { n: (prev?.n || 0) + 1, src: prev?.src || text.trim() });
       }
     }
   }
-  if (counts.size) {
+  for (const counts of [standing, buried]) {
+    if (!counts.size) continue;
     const best = [...counts.entries()].sort((a, b) => b[1].n - a[1].n)[0];
     return { key: "currency", value: best[0], sourceLabel: best[1].src, confidence: "medium" };
   }

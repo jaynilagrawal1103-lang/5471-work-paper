@@ -72,7 +72,7 @@ function daysBetweenPeriods(from?: string, to?: string): number | null {
 import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
 import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
-import { lookupRates, yearFromPeriod } from "./fxRates";
+import { lookupRates, yearFromPeriod, FX_META } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
 import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
 import { collectCaptionLabels, detectLanguage, displayLabel, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
@@ -1677,6 +1677,19 @@ export const actions = {
               if (sniff) { propose(profile, "currency", sniff.value, sniff.sourceLabel); break; }
             }
           }
+          /* A functional currency names its country, and the rate tables
+             already carry the mapping. Chile's Form 22 has no "country of
+             incorporation" caption at all, so the field stayed blank on a
+             filing that says REPUBLICA DE CHILE across the top — and Schedule
+             E's "country to which tax is paid" reads from it. A shared
+             currency names no single country, so those are left alone. */
+          if (profile.currency && !profile.countryInc) {
+            const meta = FX_META[profile.currency];
+            const country = meta?.country;
+            if (country && !/\b(zone|union|area)\b/i.test(country)) {
+              propose(profile, "countryInc", country, `functional currency ${profile.currency}`);
+            }
+          }
           // C-02: ONE legal-name input drives the header. The card name and
           // the B4 header follow legalName while still default-ish; renaming
           // the card by hand stops the follow (renameEntity sets both).
@@ -3073,6 +3086,12 @@ async function materializeCaseWrites(
   const taxBooked = ent.lines["IS:54"]?.amount;
   const taxCur = typeof taxBooked === "number" && isFinite(taxBooked) ? taxBooked : null;
   const taxAbs = taxCur ? Math.abs(taxCur) : 0;
+  /* "Booked at zero" and "never found" are not the same fact. Both land in the
+     branch below, but only the first is evidence of a nil-tax year. A Chilean
+     Form 22 states the charge in a box no income-statement caption maps to, so
+     the tool saw no tax figure at all — and the row it wrote asserted the
+     entity had paid none, on a filing showing 95,791,979 CLP of it. */
+  const taxFound = taxCur !== null;
   /* The AU engagement's prior-year facts (E-1 pool closed at zero under the
      high-tax reduction) are only true where that return is in evidence — never
      assert them for another client. */
@@ -3086,11 +3105,18 @@ async function materializeCaseWrites(
       w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
     }
-    w({ sheet: SHEET.schE, ref: "O16", value: 0, source: "nil-tax year — no income tax booked", reviewId: "sch-e-nil" });
+    w({
+      sheet: SHEET.schE, ref: "O16", value: 0, reviewId: "sch-e-nil",
+      source: taxFound
+        ? "nil-tax year — no income tax booked"
+        : "placeholder — no income tax expense found in the documents",
+    });
     if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
     rv({
-      id: "sch-e-nil", level: "info", category: "fx", applied: true,
-      message: `Schedule E carries an explicit zero row: the statements book no income tax for the year, so no ${where} tax was paid or accrued on current-year income — recorded deliberately rather than left blank. Confirm against the tax computation before filing.`,
+      id: "sch-e-nil", level: taxFound ? "info" : "warn", category: "fx", applied: true,
+      message: taxFound
+        ? `Schedule E carries an explicit zero row: the statements book no income tax for the year, so no ${where} tax was paid or accrued on current-year income — recorded deliberately rather than left blank. Confirm against the tax computation before filing.`
+        : `Schedule E carries a ZERO PLACEHOLDER, not a finding: no income tax expense line was mapped from the documents, so the tool cannot tell whether ${where} tax was nil or simply stated somewhere it could not read. A tax return often reports the charge in a box no income-statement caption matches. Enter the tax paid or accrued, or confirm the year was genuinely nil, before filing.`,
       target: `${SHEET.schE}!O16`,
     });
     if (auReturn) {

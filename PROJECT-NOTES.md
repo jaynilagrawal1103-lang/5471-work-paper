@@ -386,3 +386,59 @@ wording with invented amounts — a client's filed figures do not belong in a
 repository. One assertion runs the SHIPPED `EN9stackRows` out of
 `dist/index.html` against the same geometry and requires it to return exactly
 what `src` returns.
+
+### Session 2026-09-04 (2) — profile, currency, country, Schedule E
+Reviewed the client's own gold work papers for the two Chilean CFCs against
+what the tool produced. Four defects, all fixed here; two further gaps were
+found and deliberately NOT changed (see the end).
+
+1. **`sniffCurrency` picked INR on a Chilean filing.** It counted every ISO
+   code appearing as a word, and "REX/**INR**/ Remanente ejercicio siguiente"
+   occurs twice while the cell reading exactly `CLP` occurs once. The wrong
+   currency selects the wrong rate table, so every translated figure in the
+   work paper is wrong. Now a code STANDING ALONE in a cell (bare, or in
+   brackets) outranks the same letters buried in a sentence; frequency only
+   decides within a rank. Global change, strictly better ranking.
+2. **`detectProfile` read the next box's caption as this box's value** —
+   legal name came out as "02 Apellido Materno", activity as "14 Código
+   actividad económica". On a boxed form the value is printed on the line
+   BELOW. A row is treated as boxed only when ≥2 of its cells look like a
+   numbered caption (`BOX_CAPTION`), which an ordinary caption+value
+   questionnaire row can never satisfy — so nothing else changes. The value
+   below is taken from the caption's own column first, and for a text field it
+   must contain a letter: Chile prints the activity CODE in the caption's
+   column and the description to its left.
+3. **Country was blank** on a filing headed REPUBLICA DE CHILE, because the
+   form carries no "country of incorporation" caption. The rate tables already
+   map CLP → Chile, so the store now proposes `countryInc` from the functional
+   currency when the field is empty. Shared currencies (Euro Zone) are skipped.
+   Schedule E's "country to which tax is paid" reads from this field.
+4. **Schedule E asserted a nil-tax year it had never established.** `taxCur`
+   is `null` when no caption mapped to income tax expense and `0` when the
+   statements genuinely book none; both fell into one branch whose message
+   claimed "the statements book no income tax for the year". Cecilia paid
+   95,791,979 CLP. The zero row is still written (better than blank) but is
+   now labelled a placeholder and raised at `warn`, saying the tool could not
+   find a figure rather than that there was none. The `taxFound` path keeps
+   the original wording, so 2Hats (IS:54 booked at −12,500) is unaffected.
+
+Measured on the two client filings, all four now match the gold:
+legal name and activity read correctly, currency CLP on both, country Chile.
+
+**Deliberately not changed** (reviewed and rejected, see the session notes):
+- *Auto-mapping the Form 22 balance-sheet boxes.* The gold itself is
+  inconsistent — Activo Inmovilizado went to line 10a (Depletable) for one
+  entity and 9a (Buildings) for the other; Capital Efectivo was total assets
+  for one and not the other. There is no rule to encode, and 3 of 11 lines
+  cannot balance. These belong in the Exception Centre as suggestions.
+- *Switching year-end FX from Treasury to OFX.* The gold uses OFX for all
+  three rates (943.347858 / 993.209169 / 876.363062); the tool takes year-end
+  spot from Treasury (992.6 / 880.0), a 0.41% difference on the prior year
+  end. Changing the default would move the USD balance sheet of every existing
+  client. Left as a preparer override.
+
+Tests: `tests/test_profile_boxed.cjs` (19 assertions), wired into `test:all`
+(now 886). Three of them extract the SHIPPED `QF`/`pF` out of `dist/index.html`
+and require them to return exactly what `src` returns, on a boxed form and on
+an ordinary questionnaire. `tests/test_ai_map.cjs` also had to widen its QF
+extraction: the live function now depends on the module-scope EN9BOX helpers.
