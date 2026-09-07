@@ -501,3 +501,25 @@ Tests: `tests/test_swiss_statements.cjs` (11 assertions), wired into
 `test:all` (now 897). One runs the shipped year-header parser out of
 `dist/index.html`. `tests/detect_test_src.cjs` chunk 2 re-extracted, per that
 test's documented workflow.
+
+### Session 2026-09-07 (2) — the intake table reported the extension, not the outcome
+The "Reading path" column read `parsable ? "native parser" : "unsupported"`,
+and `parsable` is decided at UPLOAD time from the file extension. So every PDF
+showed a green "NATIVE PARSER" — including a scan the tool could not read one
+character of. A preparer looking at that table could not tell apart:
+
+- **UNKNOWN** — the text WAS read, the document just was not identified. OCR is
+  useless here; the fix is the Type dropdown (or a classifier rule).
+- **NOT PROCESSED** + "no text layer" — nothing was read at all. This is the
+  only case OCR fixes, and it was the one the column hid.
+
+`EN9readState(ent, file)` now reports the outcome, from state that persists:
+unsupported format · not read yet · text read · scan — needs OCR · could not
+be read. Amber (`actor-tag groq`) for the two failure states, green for a read.
+The column is renamed **Read status**. Verified in a browser against the Swiss
+client's three files: the scan shows SCAN — NEEDS OCR, the other two TEXT READ.
+
+Tests: `tests/test_read_status.cjs` (11 assertions), wired into `test:all`
+(now 916). They cover the UNKNOWN case explicitly — read but unidentified must
+still report "text read" — and that one file's warning cannot make another look
+like a scan.
