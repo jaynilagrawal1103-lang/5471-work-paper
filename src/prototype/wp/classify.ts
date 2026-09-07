@@ -87,6 +87,38 @@ const SCH_TITLES: [RegExp, PageKind][] = [
   [/information return of u\.?s\.? persons/, "us-5471-face"],
 ];
 
+/* Titles that open a financial statement, in the languages the rest of this
+   file already reads. Anchored at the start of a line. */
+const STATEMENT_TITLE = new RegExp(
+  "^(balance sheet|statement of financial position|balance general|balance de situaci\u00f3n|"
+  + "estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o|balanco|"
+  + "bilan\\b|bilanz|bilancio|balans|"
+  + "income statement|profit (and|or|&) loss|compte de profits et pertes|compte de r\u00e9sultat|"
+  + "compte de resultat|statement of comprehensive income|statement of financial performance|"
+  + "estado de resultados?|cuenta de resultados|demonstra\u00e7\u00e3o do resultado|"
+  + "demonstracao do resultado|conto economico|winst- en verliesrekening|"
+  + "gewinn- und verlustrechnung|erfolgsrechnung)\\b",
+);
+
+/** Rows that read as a caption followed by an amount — the shape of a statement. */
+function amountRowCount(doc: PdfDoc, page: number): number {
+  let n = 0;
+  for (const r of doc.rows) {
+    if (r.page !== page || r.cells.length < 2) continue;
+    const first = r.cells[0].text.trim();
+    const last = r.cells[r.cells.length - 1].text.trim();
+    if (!/\p{L}/u.test(first)) continue;
+    if (/^\(?-?[\d.,\u00a0 ']+\)?$/.test(last) && /\d/.test(last)) n++;
+  }
+  return n;
+}
+
+function looksLikeStatementPage(doc: PdfDoc, page: number): boolean {
+  const head = doc.rows.filter((r) => r.page === page).slice(0, 14);
+  const titled = head.some((r) => STATEMENT_TITLE.test(r.cells.map((c) => c.text).join(" ").trim().toLowerCase()));
+  return titled && amountRowCount(doc, page) >= 5;
+}
+
 function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: boolean }): PageInfo {
   const head = pageText(doc, page, "head");
   const foot = pageText(doc, page, "foot");
@@ -128,8 +160,18 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     // Brazilian or French statement never enters the band, so its pages
     // classify as "unknown" and never reach the mapper at all — the entity
     // then shows "0 lines" with nothing extracted to explain it.
-    || /\bnit\b|\bru[tc]\b|\brfc\b|\bcuit\b|\bcnpj\b|\bnif\b|\bcif\b|\bsiren\b|\bsiret\b|\bkvk\b|\bcoc\b|c\.?o\.?c\.?\s*:|\bust-?idnr\b/.test(head)
-    || /page \d+ of \d+|p\u00e1gina \d+ de \d+|p\u00e1gina \d+\/\d+/.test(foot);
+    || /\bnit\b|\bru[tc]\b|\brfc\b|\bcuit\b|\bcnpj\b|\bnif\b|\bcif\b|\bsiren\b|\bsiret\b|\bkvk\b|\bcoc\b|c\.?o\.?c\.?\s*:|\bust-?idnr\b|\bche-?\d/.test(head)
+    || /page \d+ of \d+|p\u00e1gina \d+ de \d+|p\u00e1gina \d+\/\d+/.test(foot)
+    // A statement can also prove itself by its own SHAPE. Everything above
+    // demands a registration number or a page footer, which small practices
+    // simply do not print: a Swiss client's accounts carry only the company
+    // name, its address and "BILAN AU 31 DECEMBRE 2024", so the title was
+    // never even read and the whole document classified as unknown — nothing
+    // from it reached the work paper. A title STARTING a line of its own, over
+    // a page of label-and-amount rows, is a statement whatever the letterhead
+    // omits. The title must start the line: "…which includes the balance sheet
+    // and income statement" is prose about one, not one.
+    || looksLikeStatementPage(doc, page);
   if (fsBand) {
     // Cover/administrative pages mention every section name — test them first.
     if (/\bcontents\b|directors'? (statement|report)|accountants'? report|compilation report|independent auditor/.test(head)) return mk("fs-cover", 3);
@@ -143,7 +185,7 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     // Equity movements need the strong anchor — a P&L-titled page carrying the
     // retained-profits roll-forward is the equity statement, not a P&L.
     if (/statement of changes in equity/.test(head) || /opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
-    if (/statement of financial performance|profit (and|or) loss|income statement|statement of comprehensive income|estado de resultados?|estado de ganancias y p\u00e9rdidas|estado de ganancias y perdidas|cuenta de resultados|demonstra\u00e7\u00e3o do resultado|demonstracao do resultado|compte de r\u00e9sultat|compte de resultat|conto economico|winst- en verliesrekening|gewinn- und verlustrechnung/.test(head)) return mk("fs-pnl", 3);
+    if (/statement of financial performance|profit (and|or) loss|income statement|statement of comprehensive income|estado de resultados?|estado de ganancias y p\u00e9rdidas|estado de ganancias y perdidas|cuenta de resultados|demonstra\u00e7\u00e3o do resultado|demonstracao do resultado|compte de profits et pertes|compte de r\u00e9sultat|compte de resultat|erfolgsrechnung|conto economico|winst- en verliesrekening|gewinn- und verlustrechnung/.test(head)) return mk("fs-pnl", 3);
     if (/accounting policies|notes to /.test(head)) return mk("fs-notes", 2);
     if (/financial statements/.test(head)) return mk("fs-cover", 2);
   }

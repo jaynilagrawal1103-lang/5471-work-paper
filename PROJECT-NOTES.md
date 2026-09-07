@@ -442,3 +442,62 @@ Tests: `tests/test_profile_boxed.cjs` (19 assertions), wired into `test:all`
 and require them to return exactly what `src` returns, on a boxed form and on
 an ordinary questionnaire. `tests/test_ai_map.cjs` also had to widen its QF
 extraction: the live function now depends on the module-scope EN9BOX helpers.
+
+### Session 2026-09-07 — Swiss client (Athletic Prime Sàrl), live browser test
+Ran the shipped `dist/index.html` in a real Chromium session against a third
+client's documents. The 2024 accounts produced **0 schedule lines**. FOUR
+independent defects, each alone enough to empty the work paper:
+
+1. **The classifier would not read a statement's title unless the page also
+   carried a company registration number or a "Page n of m" footer.** These
+   Swiss accounts print the company name, its address and "BILAN AU 31
+   DECEMBRE 2024" and nothing else, so every page classified `unknown` and fed
+   nothing. Added `looksLikeStatementPage`: a statement title STARTING a line
+   of its own, over ≥5 label-and-amount rows, is a statement whatever the
+   letterhead omits. Prose *about* a balance sheet does not match (the title
+   must start the line) and a title with no figures under it does not either.
+   Also added the French/German titles the list lacked (`compte de profits et
+   pertes`, `erfolgsrechnung`) and the Swiss `CHE-` company identifier.
+2. **`"2024 CHF"` was not recognised as a year header.** The parser stripped a
+   hard-coded list of ten currency codes (aud|usd|nzd|gbp|eur|cny|rmb|hkd|
+   sgd|jpy|inr). CHF was not among them — nor SEK, CLP, THB, ZAR or ~140
+   others. With no year on the columns every row carried two unlabelled
+   numbers and was refused as ambiguous. Now any code in the tool's own ISO
+   list is stripped (`EN9ccyTok`). Behaviour changes ONLY where the leftover
+   is exactly a currency code, because the parser already required the
+   remainder to be empty.
+3. **All three rate tables labelled the Swiss franc `CHE`** — which is the WIR
+   Euro, a different currency. Same class of defect as the Chilean CLF/CLP fix.
+   The stored values are genuine franc rates: CHF 35,378.04 / 0.838 = US$42,217,
+   the prior year's filed total assets to the dollar. Renamed to CHF.
+4. **Statement subtotals were booked as line items.** "Operating profit",
+   "Net financial income" and "Profit before tax" became three DEDUCTIONS, and
+   "Total revenue" was added to the revenue line it totals, so revenue read
+   exactly twice the figure on the page. `"total revenues"` was in the SKIP
+   list; `"total revenue"` was not. Added those plus the French equivalents.
+5. (Also) **Section banners did not know equity headings.** "EQUITY CAPITAL"
+   matched nothing, so share capital, legal reserve and retained earnings sat
+   under the page's stale "ASSETS" header and were refused as balance-sheet
+   rows. Added equity/foreign-capital/actif/passif/capitaux banners.
+
+Measured in the browser, same documents: **0 → 22 schedule lines**, and every
+one ties to the signed French original — expenses 11,211.70 = "Total des
+charges"; assets 26,027.29 = "Total de l'actif"; liabilities 1,403.03 =
+"Total des capitaux étrangers"; computed result −9,303.78 = "Bénéfice de
+l'exercice". Beginning-of-year cash, receivables and payables now tie to the
+prior-year 5471's filed US dollars exactly; the one that does not tie
+(retained earnings, US$16,621 filed vs 13,161 computed — the 2023 profit is
+inside the filed figure and outside the statement's "report à nouveau") is
+reported as a mismatch for the preparer rather than silently absorbed.
+
+**Not a code defect, but the most dangerous thing found:** the client also
+supplied an English "translation" of the accounts produced by a chatbot, and
+it DROPPED EVERY MINUS SIGN. The original books a LOSS of CHF 9,303.78; the
+translation states a PROFIT of 9,303.78. The tool survives this only because
+it recomputes the result from the components instead of trusting the stated
+total — which is exactly why subtotals must never be booked (defect 4).
+
+Tests: `tests/test_swiss_statements.cjs` (11 assertions), wired into
+`test:all` (now 897). One runs the shipped year-header parser out of
+`dist/index.html`. `tests/detect_test_src.cjs` chunk 2 re-extracted, per that
+test's documented workflow.

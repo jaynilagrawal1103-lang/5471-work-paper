@@ -256,6 +256,20 @@ export const DEFAULT_RULES: MappingRule[] = [
     "depreciacion tributaria", "depreciaci\u00f3n tributaria",
     "resultado financiero", "resultado del ejercicio", "utilidad del ejercicio",
     "perdida del ejercicio", "p\u00e9rdida del ejercicio",
+    /* Statement subtotals the template recomputes. A Swiss client's accounts
+       booked "Operating profit", "Net financial income" and "Profit before
+       tax" as three DEDUCTIONS, and "Total revenue" a second time on top of
+       the revenue line it totals — revenue came out at exactly twice the
+       figure on the page. "total revenues" was listed; "total revenue" was
+       not. */
+    "total revenue", "operating profit", "profit before tax", "net financial income",
+    "total foreign capital", "total fixed assets", "net income for the year",
+    "result for the year", "profit for the year", "loss for the year",
+    // The same subtotals as a French/Swiss statement prints them.
+    "b\u00e9n\u00e9fice d'exploitation", "benefice d'exploitation",
+    "b\u00e9n\u00e9fice de l'exercice", "benefice de l'exercice",
+    "total du passif", "total de l'actif", "total des produits", "total des charges",
+    "total des capitaux propres", "total des capitaux \u00e9trangers",
   ], t: "SKIP" },
   { kw: ["gross receipt", "turnover", "revenue", "sales", "chiffre d'affaires", "ingresos", "ingresos operacionales", "ventas netas", "receita", "营业收入"], t: "IS:7" },
   { kw: ["service income", "services income", "consulting fees", "consultancy fees", "fees earned"], t: "IS:7" },
