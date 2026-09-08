@@ -24,15 +24,23 @@ function seedBoy(priorClosingUSD, existingLines, rate) {
   // subtotals in the template (rows 15/47) and are NOT in BS_LINES, so the
   // aggregate lands on the first free detail row the subtotal spans.
   const map = [
-    ["cash", [10], false], ["ar", [11], false], ["oca", [16, 17, 18], false],
+    ["cash", [10], false], ["ar", [11], false], ["badDebts", [12], true],
+    ["inventories", [14], false], ["oca", [16, 17, 18], false, "Other current assets"],
+    ["loansToShareholders", [19], false],
     ["depreciable", [28], false], ["accumDep", [29], true],
-    ["ap", [46], false], ["ocl", [48, 49, 50], false],
-    ["commonStock", [59], false], ["re", [61], false],
+    ["land", [32], false],
+    ["otherAssets", [39, 40, 41], false, "Other assets"],
+    ["ap", [46], false], ["ocl", [48, 49, 50], false, "Other current liabilities"],
+    ["loansFromShareholders", [52], false],
+    ["otherLiabilities", [54, 55, 56], false, "Other liabilities"],
+    ["preferredStock", [58], false], ["commonStock", [59], false],
+    ["paidInSurplus", [60], false], ["re", [61], false],
+    ["treasuryStock", [62], false],
   ];
   const lines = { ...existingLines };
   const relabels = {};
   const seeded = [];
-  for (const [key, rows, negate] of map) {
+  for (const [key, rows, negate, aggregateLabel] of map) {
     const filed = priorClosingUSD[key]?.value;
     if (typeof filed !== "number") continue;
     const row = rows.find((r) => typeof lines[`BS:${r}`]?.boy !== "number");
@@ -40,10 +48,8 @@ function seedBoy(priorClosingUSD, existingLines, rate) {
     const k = `BS:${row}`;
     const local = Math.round(filed * rate * 100) / 100;
     lines[k] = { ...(lines[k] || {}), boy: negate ? -Math.abs(local) : local };
-    if (rows.length > 1 && !relabels[k]) {
-      relabels[k] = key === "oca"
-        ? "Other current assets (per prior-year Form 5471)"
-        : "Other current liabilities (per prior-year Form 5471)";
+    if (rows.length > 1 && aggregateLabel && !relabels[k]) {
+      relabels[k] = `${aggregateLabel} (per prior-year Form 5471)`;
     }
     seeded.push(k);
   }
@@ -190,6 +196,58 @@ t("column (a) balances once the aggregates are carried", () => {
   const liabEq = lines["BS:48"].boy + lines["BS:59"].boy + lines["BS:61"].boy;
   assert.ok(Math.abs(assets - liabEq) <= 2.0,
     `column (a) out by ${(assets - liabEq).toFixed(2)} (assets ${assets.toFixed(2)}, L+E ${liabEq.toFixed(2)})`);
+});
+
+/* REGRESSION — the Chilean client. Schedule F line 19 "Other liabilities" was
+   never in the map at all. Cecilia Gonzalez Acuna SpA filed US$1,367,778 there,
+   49% of its balance sheet, and column (a) came out short by exactly that
+   amount at the 880 prior year-end rate: 1,203,644,640 pesos. */
+const CL_FILED = {
+  cash:             { value: 43240 },
+  ar:               { value: 82483 },
+  oca:              { value: 33955 },
+  depreciable:      { value: 2629000 },
+  ocl:              { value: 523198 },
+  otherLiabilities: { value: 1367778 },
+  commonStock:      { value: 155048 },
+  re:               { value: 742654 },
+  totalAssets:      { value: 2788678 },
+};
+const CL_RATE = 880;
+
+t("Chile: line 19 other liabilities is carried", () => {
+  const { lines } = seedBoy(CL_FILED, {}, CL_RATE);
+  assert.ok(lines["BS:54"], "line 19 was dropped again");
+  assert.strictEqual(lines["BS:54"].boy, 1367778 * CL_RATE);
+});
+
+t("Chile: column (a) balances once line 19 carries", () => {
+  const { lines } = seedBoy(CL_FILED, {}, CL_RATE);
+  const v = (k) => (lines[k] ? lines[k].boy : 0);
+  const assets = v("BS:10") + v("BS:11") + v("BS:16") + v("BS:28");
+  const liabEq = v("BS:48") + v("BS:54") + v("BS:59") + v("BS:61");
+  assert.strictEqual(assets, liabEq,
+    `out by ${(assets - liabEq).toLocaleString()} (assets ${assets.toLocaleString()}, L+E ${liabEq.toLocaleString()})`);
+});
+
+t("Chile: total assets tie to the filed figure", () => {
+  const { lines } = seedBoy(CL_FILED, {}, CL_RATE);
+  const assets = lines["BS:10"].boy + lines["BS:11"].boy + lines["BS:16"].boy + lines["BS:28"].boy;
+  assert.strictEqual(assets, 2788678 * CL_RATE);
+});
+
+t("an aggregate on a detail row is labelled for its own line", () => {
+  const { relabels } = seedBoy(CL_FILED, {}, CL_RATE);
+  assert.match(relabels["BS:54"], /other liabilities/i);
+  assert.match(relabels["BS:16"], /other current assets/i);
+});
+
+t("contra lines carry the sign the template's totals expect", () => {
+  // D42 sums D10:D15, so bad debts must reduce assets; D63 ends "- D62", so
+  // treasury stock is entered positive and the formula subtracts it.
+  const { lines } = seedBoy({ badDebts: { value: 500 }, treasuryStock: { value: 900 } }, {}, 1);
+  assert.strictEqual(lines["BS:12"].boy, -500, "bad debts must be negative");
+  assert.strictEqual(lines["BS:62"].boy, 900, "treasury stock must be positive");
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

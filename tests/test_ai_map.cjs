@@ -42,7 +42,12 @@ const EF = (row, idx) => { for (let k = idx + 1; k < row.length; k++) { const v 
 const zh = v => /^(y|yes|true|x|✓)$/i.test(String(v).trim()) ? "Yes" : "No";
 const $J = [{ key: "formed", labels: ["date of formation", "date of incorporation"], clean: v => v }];
 const e_ = [];
-const QF = new Function("$J", "e_", "XJ", "EF", "zh", dist.slice(qi, qj) + ";return QF;")($J, e_, XJ, EF, zh);
+// QF reads boxed tax forms (a caption row over a value row) through the
+// EN9BOX helpers, which live at module scope alongside it — extract them too,
+// or the live function throws on its first row.
+const box = /\/\*EN9BOX-BEGIN\*\/[\s\S]*?\/\*EN9BOX-END\*\//.exec(dist);
+a(!!box, "EN9BOX helper block found in dist");
+const QF = new Function("$J", "e_", "XJ", "EF", "zh", box[0] + dist.slice(qi, qj) + ";return QF;")($J, e_, XJ, EF, zh);
 
 let res = QF([["Date of formation", "12/05/2014"], ["Company formation date", "12/05/2014"], ["Cash", "9,703"]]);
 a(res.profile.length === 1 && res.profile[0].key === "formed", "QF: matched caption still lands in profile (regression)");

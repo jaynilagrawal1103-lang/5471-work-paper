@@ -336,3 +336,190 @@ Regression-verified with a full wipe-and-reprocess of the 4-document case:
 Keystone/Shaka unchanged (exact statement ties), 2Hats balanced 29,641.42 both
 sides with 0 unmatched and the IS now matching the preparer's workbook net of
 the flagged interest sign and gold's whole-euro rounding.
+
+### Session 2026-09-04 — boxed tax forms (Chile SII Form 22)
+Two Chilean CFCs mapped **0 lines**. Root cause was not classification or
+translation: it was row extraction. `extractRows` requires a caption and a
+number on the same row (`if (!label) continue`), and the SII Form 22 prints a
+box CODE at the far left, the CAPTION on the line above, and the AMOUNT
+right-aligned inside the box — no row carries both.
+
+- **`stackedCaptionRows` (src) / `EN9stackRows` (dist)** rebuilds caption/amount
+  pairs from PDF geometry and appends them to the grid, so keyword mapping,
+  translation and review run unchanged. Codes and amounts are both bare digits
+  and are separated *structurally*: the page's amount columns are measured from
+  cells that are unambiguously money (a grouping separator), and only cells
+  landing on one of those right-edges — or carrying a separator themselves —
+  may be read as amounts. A code glued onto a neighbouring amount
+  ("928.368.104 1409") is split off and used as the next box's boundary; a code
+  glued in front of wrapped caption text opens its own box. A caption that
+  opens lower-case is a wrap fragment, not a heading, and is refused.
+- **`applyRowHygiene` bracket guard.** A caption with unmatched brackets is the
+  tail of a wrapped sentence. "…deberá declarar por Internet)" was nine words —
+  inside the existing prose guard — and booked the annual tax settlement as
+  telephone expense on the word "Internet". A leading enumerator ("a) Cash") is
+  discounted first.
+- **Mapping rules the reader exposed.** "Otros gastos deducibles **de los
+  ingresos**" hit only the keyword "ingresos" and was booked as revenue — an
+  expense on the wrong side of the statement. Added a Spanish deduction floor
+  ("gastos", "egresos", "de los ingresos"), cost-of-sales terms ("costo
+  directo", "existencias, insumos"), "remuneracion", "arriendo", "otros
+  ingresos" → Other income, the return's own totals → SKIP, and
+  "depreciación **tributaria**" → SKIP (the return states depreciation twice,
+  book and tax, and both matched the depreciation rule).
+
+Measured on the two client filings: 0 mapped lines → 11 and 12, and both
+income statements now reconcile **exactly** to the figures on the face of the
+return (Charlie Brawn: components tie to Total de ingresos/egresos anuales and
+to Base Imponible; Cecilia: income less deductions = Resultado financiero to
+the peso).
+
+**Limit worth stating: the Form 22 carries no line-by-line balance sheet.** It
+reports Total del Activo, Total del Pasivo, Capital Efectivo, Activo
+Inmovilizado and Patrimonio financiero as single boxes — there is no cash,
+receivables or inventory detail. Schedule F cannot be built from this document;
+financial statements are still required for the balance sheet.
+
+Tests: `tests/test_stacked_form.cjs` (17 assertions), wired into `test:all`
+(now 866). The fixture uses the real form's layout and the real form's
+wording with invented amounts — a client's filed figures do not belong in a
+repository. One assertion runs the SHIPPED `EN9stackRows` out of
+`dist/index.html` against the same geometry and requires it to return exactly
+what `src` returns.
+
+### Session 2026-09-04 (2) — profile, currency, country, Schedule E
+Reviewed the client's own gold work papers for the two Chilean CFCs against
+what the tool produced. Four defects, all fixed here; two further gaps were
+found and deliberately NOT changed (see the end).
+
+1. **`sniffCurrency` picked INR on a Chilean filing.** It counted every ISO
+   code appearing as a word, and "REX/**INR**/ Remanente ejercicio siguiente"
+   occurs twice while the cell reading exactly `CLP` occurs once. The wrong
+   currency selects the wrong rate table, so every translated figure in the
+   work paper is wrong. Now a code STANDING ALONE in a cell (bare, or in
+   brackets) outranks the same letters buried in a sentence; frequency only
+   decides within a rank. Global change, strictly better ranking.
+2. **`detectProfile` read the next box's caption as this box's value** —
+   legal name came out as "02 Apellido Materno", activity as "14 Código
+   actividad económica". On a boxed form the value is printed on the line
+   BELOW. A row is treated as boxed only when ≥2 of its cells look like a
+   numbered caption (`BOX_CAPTION`), which an ordinary caption+value
+   questionnaire row can never satisfy — so nothing else changes. The value
+   below is taken from the caption's own column first, and for a text field it
+   must contain a letter: Chile prints the activity CODE in the caption's
+   column and the description to its left.
+3. **Country was blank** on a filing headed REPUBLICA DE CHILE, because the
+   form carries no "country of incorporation" caption. The rate tables already
+   map CLP → Chile, so the store now proposes `countryInc` from the functional
+   currency when the field is empty. Shared currencies (Euro Zone) are skipped.
+   Schedule E's "country to which tax is paid" reads from this field.
+4. **Schedule E asserted a nil-tax year it had never established.** `taxCur`
+   is `null` when no caption mapped to income tax expense and `0` when the
+   statements genuinely book none; both fell into one branch whose message
+   claimed "the statements book no income tax for the year". Cecilia paid
+   95,791,979 CLP. The zero row is still written (better than blank) but is
+   now labelled a placeholder and raised at `warn`, saying the tool could not
+   find a figure rather than that there was none. The `taxFound` path keeps
+   the original wording, so 2Hats (IS:54 booked at −12,500) is unaffected.
+
+Measured on the two client filings, all four now match the gold:
+legal name and activity read correctly, currency CLP on both, country Chile.
+
+**Deliberately not changed** (reviewed and rejected, see the session notes):
+- *Auto-mapping the Form 22 balance-sheet boxes.* The gold itself is
+  inconsistent — Activo Inmovilizado went to line 10a (Depletable) for one
+  entity and 9a (Buildings) for the other; Capital Efectivo was total assets
+  for one and not the other. There is no rule to encode, and 3 of 11 lines
+  cannot balance. These belong in the Exception Centre as suggestions.
+- *Switching year-end FX from Treasury to OFX.* The gold uses OFX for all
+  three rates (943.347858 / 993.209169 / 876.363062); the tool takes year-end
+  spot from Treasury (992.6 / 880.0), a 0.41% difference on the prior year
+  end. Changing the default would move the USD balance sheet of every existing
+  client. Left as a preparer override.
+
+Tests: `tests/test_profile_boxed.cjs` (19 assertions), wired into `test:all`
+(now 886). Three of them extract the SHIPPED `QF`/`pF` out of `dist/index.html`
+and require them to return exactly what `src` returns, on a boxed form and on
+an ordinary questionnaire. `tests/test_ai_map.cjs` also had to widen its QF
+extraction: the live function now depends on the module-scope EN9BOX helpers.
+
+### Session 2026-09-07 — Swiss client (Athletic Prime Sàrl), live browser test
+Ran the shipped `dist/index.html` in a real Chromium session against a third
+client's documents. The 2024 accounts produced **0 schedule lines**. FOUR
+independent defects, each alone enough to empty the work paper:
+
+1. **The classifier would not read a statement's title unless the page also
+   carried a company registration number or a "Page n of m" footer.** These
+   Swiss accounts print the company name, its address and "BILAN AU 31
+   DECEMBRE 2024" and nothing else, so every page classified `unknown` and fed
+   nothing. Added `looksLikeStatementPage`: a statement title STARTING a line
+   of its own, over ≥5 label-and-amount rows, is a statement whatever the
+   letterhead omits. Prose *about* a balance sheet does not match (the title
+   must start the line) and a title with no figures under it does not either.
+   Also added the French/German titles the list lacked (`compte de profits et
+   pertes`, `erfolgsrechnung`) and the Swiss `CHE-` company identifier.
+2. **`"2024 CHF"` was not recognised as a year header.** The parser stripped a
+   hard-coded list of ten currency codes (aud|usd|nzd|gbp|eur|cny|rmb|hkd|
+   sgd|jpy|inr). CHF was not among them — nor SEK, CLP, THB, ZAR or ~140
+   others. With no year on the columns every row carried two unlabelled
+   numbers and was refused as ambiguous. Now any code in the tool's own ISO
+   list is stripped (`EN9ccyTok`). Behaviour changes ONLY where the leftover
+   is exactly a currency code, because the parser already required the
+   remainder to be empty.
+3. **All three rate tables labelled the Swiss franc `CHE`** — which is the WIR
+   Euro, a different currency. Same class of defect as the Chilean CLF/CLP fix.
+   The stored values are genuine franc rates: CHF 35,378.04 / 0.838 = US$42,217,
+   the prior year's filed total assets to the dollar. Renamed to CHF.
+4. **Statement subtotals were booked as line items.** "Operating profit",
+   "Net financial income" and "Profit before tax" became three DEDUCTIONS, and
+   "Total revenue" was added to the revenue line it totals, so revenue read
+   exactly twice the figure on the page. `"total revenues"` was in the SKIP
+   list; `"total revenue"` was not. Added those plus the French equivalents.
+5. (Also) **Section banners did not know equity headings.** "EQUITY CAPITAL"
+   matched nothing, so share capital, legal reserve and retained earnings sat
+   under the page's stale "ASSETS" header and were refused as balance-sheet
+   rows. Added equity/foreign-capital/actif/passif/capitaux banners.
+
+Measured in the browser, same documents: **0 → 22 schedule lines**, and every
+one ties to the signed French original — expenses 11,211.70 = "Total des
+charges"; assets 26,027.29 = "Total de l'actif"; liabilities 1,403.03 =
+"Total des capitaux étrangers"; computed result −9,303.78 = "Bénéfice de
+l'exercice". Beginning-of-year cash, receivables and payables now tie to the
+prior-year 5471's filed US dollars exactly; the one that does not tie
+(retained earnings, US$16,621 filed vs 13,161 computed — the 2023 profit is
+inside the filed figure and outside the statement's "report à nouveau") is
+reported as a mismatch for the preparer rather than silently absorbed.
+
+**Not a code defect, but the most dangerous thing found:** the client also
+supplied an English "translation" of the accounts produced by a chatbot, and
+it DROPPED EVERY MINUS SIGN. The original books a LOSS of CHF 9,303.78; the
+translation states a PROFIT of 9,303.78. The tool survives this only because
+it recomputes the result from the components instead of trusting the stated
+total — which is exactly why subtotals must never be booked (defect 4).
+
+Tests: `tests/test_swiss_statements.cjs` (11 assertions), wired into
+`test:all` (now 897). One runs the shipped year-header parser out of
+`dist/index.html`. `tests/detect_test_src.cjs` chunk 2 re-extracted, per that
+test's documented workflow.
+
+### Session 2026-09-07 (2) — the intake table reported the extension, not the outcome
+The "Reading path" column read `parsable ? "native parser" : "unsupported"`,
+and `parsable` is decided at UPLOAD time from the file extension. So every PDF
+showed a green "NATIVE PARSER" — including a scan the tool could not read one
+character of. A preparer looking at that table could not tell apart:
+
+- **UNKNOWN** — the text WAS read, the document just was not identified. OCR is
+  useless here; the fix is the Type dropdown (or a classifier rule).
+- **NOT PROCESSED** + "no text layer" — nothing was read at all. This is the
+  only case OCR fixes, and it was the one the column hid.
+
+`EN9readState(ent, file)` now reports the outcome, from state that persists:
+unsupported format · not read yet · text read · scan — needs OCR · could not
+be read. Amber (`actor-tag groq`) for the two failure states, green for a read.
+The column is renamed **Read status**. Verified in a browser against the Swiss
+client's three files: the scan shows SCAN — NEEDS OCR, the other two TEXT READ.
+
+Tests: `tests/test_read_status.cjs` (11 assertions), wired into `test:all`
+(now 916). They cover the UNKNOWN case explicitly — read but unidentified must
+still report "text read" — and that one file's warning cannot make another look
+like a scan.

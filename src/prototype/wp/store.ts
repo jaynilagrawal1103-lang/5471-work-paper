@@ -72,10 +72,10 @@ function daysBetweenPeriods(from?: string, to?: string): number | null {
 import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
 import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
-import { lookupRates, yearFromPeriod } from "./fxRates";
+import { lookupRates, yearFromPeriod, FX_META } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
 import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
-import { collectCaptionLabels, detectLanguage, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
+import { collectCaptionLabels, detectLanguage, displayLabel, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
 import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
 
 declare const JSZip: any;
@@ -136,6 +136,11 @@ export type ReviewItem = {
   target?: string;                    // "Balance Sheet!F54"
   source?: string;
   suggestedValue?: string | number;
+  /** The document caption this item quotes, kept as a field so the message can
+      be re-resolved against the entity's translations when it is read. The
+      message is built during processing but translation runs afterwards, so
+      baking the wording in would strand the original text in the item. */
+  sourceLabel?: string;
   applied?: boolean;                  // suggestion was pre-filled into a write
   dismissed?: boolean;
   dismissedNote?: string;
@@ -889,10 +894,10 @@ export const actions = {
     const contributions = { ...ent.contributions };
     const relabels = { ...ent.relabels };
     if (!manualApply(ent, lines, contributions, relabels, target, row, "manual")) {
-      toast(`"${row.label}" could not be booked to ${target} — the row's year columns don't identify a current-year value. Enter it directly on the line instead.`, "bad");
+      toast(`"${displayLabel(ent.translations, row.label)}" could not be booked to ${target} — the row's year columns don't identify a current-year value. Enter it directly on the line instead.`, "bad");
       return;
     }
-    logEvent("Unmatched label assigned", `"${row.label}" → ${target}`, ent.name);
+    logEvent("Unmatched label assigned", `"${displayLabel(ent.translations, row.label)}" → ${target}`, ent.name);
     updateEntity(entityId, {
       lines,
       relabels,
@@ -908,7 +913,7 @@ export const actions = {
     if (kw.length >= 3 && !state.rules.some((r) => r.kw.some((k) => k.toLowerCase() === kw))) {
       set({ rules: [...state.rules, { kw: [kw], t: target }] });
       logEvent("Mapping rule learned", `"${kw}" → ${target} (from a manual assignment)`, ent.name);
-      toast(`Mapped and remembered — future documents will map "${row.label}" automatically`, "ok");
+      toast(`Mapped and remembered — future documents will map "${displayLabel(ent.translations, row.label)}" automatically`, "ok");
     }
   },
 
@@ -1438,6 +1443,7 @@ export const actions = {
                 target = rp;
                 rv({
                   level: "warn", category: "related-party",
+                  sourceLabel: m.row.label,
                   message: `"${m.row.label}" was routed to ${rp === "BS:19" ? "loans to related persons (Sch F line 6)" : "loans from related persons (Sch F line 18)"} because the caption names a group entity — confirm, and consider Schedule M.`,
                   target: `${SHEET.bs}!${rp === "BS:19" ? "D/F19" : "D/F52"}`, source: m.docName,
                 });
@@ -1484,7 +1490,8 @@ export const actions = {
             if (dupe) {
               rv({
                 level: "info", category: "mapping",
-                message: `"${m.row.label}" (${r.value.toLocaleString()}) appears on two pages of ${m.docName} — counted once.`,
+                sourceLabel: m.row.label,
+                  message: `"${m.row.label}" (${r.value.toLocaleString()}) appears on two pages of ${m.docName} — counted once.`,
                 source: m.docName,
               });
               continue;
@@ -1493,7 +1500,8 @@ export const actions = {
             if (booked !== r.value) {
               rv({
                 id: `tax-sign-${resolved.target}`, level: "warn", category: "mapping", applied: true,
-                message: `"${m.row.label}" ${r.value.toLocaleString()} was booked to ${resolved.target === "IS:54" ? "income tax expense — current (row 54)" : "deferred tax (row 55)"} as a NEGATIVE amount: the template's net income (row 56) is a plain SUM of rows 52–55, so a positive tax would increase profit. If this line is genuinely a tax credit, edit the value in the Exception Center.`,
+                sourceLabel: m.row.label,
+                  message: `"${m.row.label}" ${r.value.toLocaleString()} was booked to ${resolved.target === "IS:54" ? "income tax expense — current (row 54)" : "deferred tax (row 55)"} as a NEGATIVE amount: the template's net income (row 56) is a plain SUM of rows 52–55, so a positive tax would increase profit. If this line is genuinely a tax credit, edit the value in the Exception Center.`,
                 target: `${SHEET.is}!F${resolved.target.split(":")[1]}`, source: m.docName,
               });
             }
@@ -1669,6 +1677,19 @@ export const actions = {
               if (sniff) { propose(profile, "currency", sniff.value, sniff.sourceLabel); break; }
             }
           }
+          /* A functional currency names its country, and the rate tables
+             already carry the mapping. Chile's Form 22 has no "country of
+             incorporation" caption at all, so the field stayed blank on a
+             filing that says REPUBLICA DE CHILE across the top — and Schedule
+             E's "country to which tax is paid" reads from it. A shared
+             currency names no single country, so those are left alone. */
+          if (profile.currency && !profile.countryInc) {
+            const meta = FX_META[profile.currency];
+            const country = meta?.country;
+            if (country && !/\b(zone|union|area)\b/i.test(country)) {
+              propose(profile, "countryInc", country, `functional currency ${profile.currency}`);
+            }
+          }
           // C-02: ONE legal-name input drives the header. The card name and
           // the B4 header follow legalName while still default-ish; renaming
           // the card by hand stops the follow (renameEntity sets both).
@@ -1727,23 +1748,38 @@ export const actions = {
           const rate = Number(cur0?.fx?.pyRate);
           if (cur0 && isFinite(rate) && rate > 0) {
             type BoyKey = "cash" | "ar" | "oca" | "depreciable" | "accumDep"
-              | "ap" | "ocl" | "commonStock" | "re";
+              | "ap" | "ocl" | "commonStock" | "re"
+              | "badDebts" | "inventories" | "loansToShareholders" | "land"
+              | "otherAssets" | "loansFromShareholders" | "otherLiabilities"
+              | "preferredStock" | "paidInSurplus" | "treasuryStock";
             /* Each key lists the template row(s) that can hold it. Sch F lines 5
                and 16 print as one figure but are =SUM() subtotals here (rows 15
                and 47) and are absent from BS_LINES, so a value seeded on the
                subtotal is dropped before it ever reaches the writer. Carry the
                filed aggregate onto the first free detail row the subtotal spans
                instead — the subtotal then computes it, and column (a) balances. */
-            const boyMap: Array<[BoyKey, number[], boolean]> = [
-              ["cash", [10], false], ["ar", [11], false], ["oca", [16, 17, 18], false],
+            /* Signs follow the template's own totals, not the form's brackets:
+               D42 sums D10:D15 and D28:D38, so bad debts and the accumulated
+               contra lines must be NEGATIVE; D63 ends "- D62", so treasury
+               stock enters POSITIVE and the formula does the subtracting. */
+            const boyMap: Array<[BoyKey, number[], boolean, string?]> = [
+              ["cash", [10], false], ["ar", [11], false], ["badDebts", [12], true],
+              ["inventories", [14], false], ["oca", [16, 17, 18], false, "Other current assets"],
+              ["loansToShareholders", [19], false],
               ["depreciable", [28], false], ["accumDep", [29], true],
-              ["ap", [46], false], ["ocl", [48, 49, 50], false],
-              ["commonStock", [59], false], ["re", [61], false],
+              ["land", [32], false],
+              ["otherAssets", [39, 40, 41], false, "Other assets"],
+              ["ap", [46], false], ["ocl", [48, 49, 50], false, "Other current liabilities"],
+              ["loansFromShareholders", [52], false],
+              ["otherLiabilities", [54, 55, 56], false, "Other liabilities"],
+              ["preferredStock", [58], false], ["commonStock", [59], false],
+              ["paidInSurplus", [60], false], ["re", [61], false],
+              ["treasuryStock", [62], false],
             ];
             const lines = { ...cur0.lines };
             const relabels = { ...cur0.relabels };
             const seeded: string[] = [];
-            for (const [key, rows, negate] of boyMap) {
+            for (const [key, rows, negate, aggregateLabel] of boyMap) {
               const filed = cf.priorClosingUSD[key]?.value;
               if (typeof filed !== "number") continue;
               // Never overwrite a value the documents or the preparer supplied.
@@ -1755,10 +1791,8 @@ export const actions = {
               // An aggregate parked on a detail row must not keep that row's
               // stock caption ("Prepaid expenses"), or the attached statement
               // would describe money that is not there.
-              if (rows.length > 1 && !relabels[k]) {
-                relabels[k] = key === "oca"
-                  ? "Other current assets (per prior-year Form 5471)"
-                  : "Other current liabilities (per prior-year Form 5471)";
+              if (rows.length > 1 && aggregateLabel && !relabels[k]) {
+                relabels[k] = `${aggregateLabel} (per prior-year Form 5471)`;
               }
               seeded.push(`${k}=${local.toLocaleString()}`);
             }
@@ -3052,6 +3086,12 @@ async function materializeCaseWrites(
   const taxBooked = ent.lines["IS:54"]?.amount;
   const taxCur = typeof taxBooked === "number" && isFinite(taxBooked) ? taxBooked : null;
   const taxAbs = taxCur ? Math.abs(taxCur) : 0;
+  /* "Booked at zero" and "never found" are not the same fact. Both land in the
+     branch below, but only the first is evidence of a nil-tax year. A Chilean
+     Form 22 states the charge in a box no income-statement caption maps to, so
+     the tool saw no tax figure at all — and the row it wrote asserted the
+     entity had paid none, on a filing showing 95,791,979 CLP of it. */
+  const taxFound = taxCur !== null;
   /* The AU engagement's prior-year facts (E-1 pool closed at zero under the
      high-tax reduction) are only true where that return is in evidence — never
      assert them for another client. */
@@ -3065,11 +3105,18 @@ async function materializeCaseWrites(
       w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
     }
-    w({ sheet: SHEET.schE, ref: "O16", value: 0, source: "nil-tax year — no income tax booked", reviewId: "sch-e-nil" });
+    w({
+      sheet: SHEET.schE, ref: "O16", value: 0, reviewId: "sch-e-nil",
+      source: taxFound
+        ? "nil-tax year — no income tax booked"
+        : "placeholder — no income tax expense found in the documents",
+    });
     if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
     rv({
-      id: "sch-e-nil", level: "info", category: "fx", applied: true,
-      message: `Schedule E carries an explicit zero row: the statements book no income tax for the year, so no ${where} tax was paid or accrued on current-year income — recorded deliberately rather than left blank. Confirm against the tax computation before filing.`,
+      id: "sch-e-nil", level: taxFound ? "info" : "warn", category: "fx", applied: true,
+      message: taxFound
+        ? `Schedule E carries an explicit zero row: the statements book no income tax for the year, so no ${where} tax was paid or accrued on current-year income — recorded deliberately rather than left blank. Confirm against the tax computation before filing.`
+        : `Schedule E carries a ZERO PLACEHOLDER, not a finding: no income tax expense line was mapped from the documents, so the tool cannot tell whether ${where} tax was nil or simply stated somewhere it could not read. A tax return often reports the charge in a box no income-statement caption matches. Enter the tax paid or accrued, or confirm the year was genuinely nil, before filing.`,
       target: `${SHEET.schE}!O16`,
     });
     if (auReturn) {
@@ -3166,8 +3213,13 @@ export function buildWrites(ent: Entity): Writes {
   IS_LINES.forEach((l) => {
     const d = ent.lines[`IS:${l.row}`];
     if (d && typeof d.amount === "number") is[`F${l.row}`] = d.amount;
+    /* Resolve the caption at WRITE time, not when the mapping was made:
+       translation runs as its own step after processing, so a caption fixed
+       at mapping time would ship the original wording into the workbook until
+       the entity was processed again. A relabel the preparer typed by hand is
+       not a key in the translations map, so it passes through untouched. */
     const rl = ent.relabels[`IS:${l.row}`];
-    if (l.relabel && rl) is[`C${l.row}`] = rl;
+    if (l.relabel && rl) is[`C${l.row}`] = displayLabel(ent.translations, rl);
   });
 
   const bs: Record<string, string | number> = {};
@@ -3178,7 +3230,7 @@ export function buildWrites(ent: Entity): Writes {
       if (typeof d.eoy === "number") bs[`F${l.row}`] = d.eoy;
     }
     const rl = ent.relabels[`BS:${l.row}`];
-    if (l.relabel && rl) bs[`B${l.row}`] = rl;
+    if (l.relabel && rl) bs[`B${l.row}`] = displayLabel(ent.translations, rl);
   });
 
   const writes: Writes = {};
@@ -3229,6 +3281,19 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   };
   const hasBS = BS_LINES.some((l) => ent.lines[`BS:${l.row}`]);
   const hasIS = IS_LINES.some((l) => ent.lines[`IS:${l.row}`]);
+
+  /* Every rate and balance check below is gated on there being lines to check,
+     so an entity that mapped NOTHING raised no blocker at all and would have
+     generated an empty work paper. Two Chilean CFCs did exactly that: their
+     SII Form 22 filings yielded no rows, and the only thing standing between
+     the preparer and a blank workbook was the currency-confirmation prompt. */
+  if (ent.processedAt && !hasBS && !hasIS) {
+    out.push({
+      id: "no-lines-mapped", level: "block", category: "source-gap",
+      message: `Processing mapped no schedule line from ${ent.files.length} document(s) — the work paper would generate empty. `
+        + `Check the Exception center for unread documents, set a document type on the Documents tab, or assign the captions by hand.`,
+    });
+  }
 
   // The template divides by these; a blank or zero rate yields #DIV/0! in every
   // USD column of Schedule C and Schedule F.
@@ -3301,6 +3366,7 @@ export function validateEntity(ent: Entity): ReviewItem[] {
     must vanish once the underlying condition is resolved. */
 const DERIVED_IDS = new Set([
   "fx-avg-missing", "fx-cy-missing", "fx-py-missing", "fx-fiscal-manual", "fx-currency-unconfirmed",
+  "no-lines-mapped",
   "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
 ]);
 
@@ -3318,7 +3384,14 @@ export function allReviewItems(ent: Entity, opts?: { raw?: boolean }): ReviewIte
   });
   const currentIds = new Set(derived.map((d) => d.id));
   // A dismissal of a derived item whose condition no longer holds is a ghost.
-  const merged = [...derived, ...ent.reviewItems.filter((r) => !currentIds.has(r.id) && !DERIVED_IDS.has(r.id))];
+  const merged = [...derived, ...ent.reviewItems.filter((r) => !currentIds.has(r.id) && !DERIVED_IDS.has(r.id))]
+    .map((r) => {
+      // Every review surface reads through here, so this is the one place the
+      // quoted caption has to be resolved to the translated wording.
+      if (!r.sourceLabel) return r;
+      const en = displayLabel(ent.translations, r.sourceLabel);
+      return en === r.sourceLabel ? r : { ...r, message: r.message.split(r.sourceLabel).join(en) };
+    });
   if (opts?.raw || !state.policies.length) return merged;
   return merged.map((r) => applyPolicy(r, state.policies)).filter((r): r is ReviewItem => r !== null);
 }

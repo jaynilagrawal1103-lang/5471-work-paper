@@ -5,6 +5,7 @@ import { Callout, SectionHeader, StatusPill } from "../primitives";
 import {
   BS_LINES, FX_FIELDS, IS_LINES, OWNERSHIP_FIELDS, PROFILE_FIELDS, CATEGORY_CELLS,
 } from "./engine";
+import { displayLabel } from "./captions";
 import {
   DOC_TYPES, PROCESS_STEPS, actions, cellCount, getSnapshot, subscribe,
   type Entity,
@@ -484,7 +485,9 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                           {entity.unmatched.map((u, i) => (
                             <tr key={`${u.label}-${i}`}>
                               <td>
-                                {u.label}
+                                {displayLabel(entity.translations, u.label)}
+                                {displayLabel(entity.translations, u.label) !== u.label
+                                  ? <small style={{ display: "block", opacity: 0.7 }}>{u.label}</small> : null}
                                 {u.reason ? <small style={{ display: "block", color: "var(--muted)" }}>{u.reason}</small> : null}
                               </td>
                               <td className="numeric">{u.values.join(" · ")}</td>
