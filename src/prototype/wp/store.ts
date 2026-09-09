@@ -3,7 +3,7 @@
 import {
   BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
-  detectRulers, extractPositionedRows, extractRows, matchRule, numeric, readDocument, signForLabel,
+  detectRulers, explainUnreadable, extractPositionedRows, extractRows, matchRule, numeric, readDocument, signForLabel,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
@@ -80,7 +80,7 @@ function daysBetweenPeriods(from?: string, to?: string): number | null {
   return days > 0 && days < 400 ? days : null;
 }
 import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
-import { applyWrites, resolveTemplateRows, templateBytes, type Writes } from "./xlsxPatch";
+import { addWorksheet, applyWrites, resolveTemplateRows, templateBytes, type CellValue, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod, FX_META } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
@@ -95,6 +95,9 @@ export type EntityFile = {
   /** Worksheet tab names, recorded the first time a workbook is read, so the
       intake screen can offer them without re-opening the file. */
   sheetNames?: string[];
+  /** SHA-256 of the bytes, or an "nk:" fallback key where the crypto API is
+      unavailable. Identity for the duplicate refusal. */
+  sha?: string;
 };
 export type LineValue = { amount?: number | null; boy?: number | null; eoy?: number | null };
 export type EntityStatus = "idle" | "processing" | "ready" | "error";
@@ -341,8 +344,11 @@ export const GROQ_MODELS = [
 ];
 
 export const QUOTA = { aiTokens: 500000, documents: 500, storageMB: 2048, apiRequests: 5000 };
-export const DOC_TYPES = [".xlsx", ".xls", ".csv", ".tsv", ".pdf", ".png", ".jpg", ".docx", ".txt"];
-export const NATIVE_PARSE = [".xlsx", ".xlsm", ".csv", ".tsv", ".txt", ".pdf"];
+/* What the picker offers. Images are NOT here: the tool has no reader for
+   them, and offering one is an invitation to attach a scan and be told
+   afterwards that nothing came out of it. A scanned PDF has the OCR card. */
+export const DOC_TYPES = [".xlsx", ".xlsm", ".xls", ".docx", ".csv", ".tsv", ".pdf", ".txt"];
+export const NATIVE_PARSE = [".xlsx", ".xlsm", ".xls", ".docx", ".csv", ".tsv", ".txt", ".pdf"];
 export const MAX_FILE_MB = 25;
 
 export const PROCESS_STEPS = [
@@ -680,7 +686,15 @@ export const actions = {
 
   setActiveEntity(id: string) { set({ activeEntityId: id }); },
 
-  addFiles(id: string, fileList: FileList | File[]) {
+  /* Attaching the same document twice doubles every figure it contributes,
+     and the second copy looks exactly like a legitimate second statement, so
+     nothing downstream can catch it. Identity is the file's SHA-256, compared
+     against everything already attached AND everything earlier in this batch
+     — dragging a folder in twice is the common way it happens.
+
+     The order matters: size gate, then extension, then hash. Hashing a 25 MB
+     file that is about to be refused for its size is wasted work. */
+  async addFiles(id: string, fileList: FileList | File[]) {
     const ent = state.entities.find((e) => e.id === id);
     if (!ent) return;
     const added: EntityFile[] = [];
@@ -688,7 +702,28 @@ export const actions = {
     for (const f of Array.from(fileList)) {
       if (f.size > MAX_FILE_MB * 1048576) { toast(`${f.name} exceeds ${MAX_FILE_MB} MB`, "bad"); continue; }
       const ext = "." + (f.name.split(".").pop() || "").toLowerCase();
-      added.push({ id: uid(), name: f.name, size: f.size, parsable: NATIVE_PARSE.includes(ext), blob: f });
+
+      let sha: string | null = null;
+      try {
+        if (typeof crypto !== "undefined" && crypto.subtle) {
+          const digest = await crypto.subtle.digest("SHA-256", await f.arrayBuffer());
+          sha = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+        }
+      } catch { /* no SubtleCrypto (an insecure origin) — fall back below */ }
+      /* Without the crypto API, name+size+lastModified is a weaker identity
+         but a real one. It is PREFIXED so it can never collide with a real
+         digest, and the comparison below requires both sides to have a key —
+         a file attached before hashing existed must not match on undefined. */
+      if (!sha) sha = `nk:${f.name}|${f.size}|${f.lastModified || 0}`;
+
+      const dup = [...ent.files, ...added].find((x) => x.sha && x.sha === sha);
+      if (dup) {
+        toast(`${f.name} is byte-identical to ${dup.name} — already attached, skipped (uploading the same file twice would double every figure)`, "bad");
+        logEvent("Duplicate document refused", `${f.name} matches ${dup.name}`, ent.name);
+        continue;
+      }
+
+      added.push({ id: uid(), name: f.name, size: f.size, parsable: NATIVE_PARSE.includes(ext), blob: f, sha });
       bytesAdded += f.size;
     }
     if (!added.length) return;
@@ -1420,13 +1455,15 @@ export const actions = {
           try {
             const parsed = await readDocument(f.blob, { sheets: ent.docKindOverrides?.[f.id]?.sheets });
             if (!parsed) {
-              // Honesty over hope: there is no AI-extraction path — say so.
-              const ext = "." + (f.name.split(".").pop() || "?").toLowerCase();
-              log.push(`${f.name}: unsupported format (${ext}) — nothing extracted`);
+              // Honesty over hope: there is no AI-extraction path. And the
+              // explanation is per-extension, because "unsupported format"
+              // sent preparers to convert files that were already supported.
+              const why = explainUnreadable(f.name);
+              log.push(`${f.name}: could not be read — ${why}`);
               rv({
                 id: `doc-unreadable-${f.id}`,
                 level: "warn", category: "process",
-                message: `${f.name} is a format the tool cannot read (${ext}) — NOTHING from it feeds the work paper. Re-save legacy .xls workbooks as .xlsx (File ▸ Save As) and re-upload.`,
+                message: `${f.name} could not be read, so NOTHING from it feeds the work paper. ${why}`,
                 source: f.name,
               });
               continue;
@@ -1458,7 +1495,19 @@ export const actions = {
             bundles.push({ file: f, parsed, cls });
             parsedByFile.set(f.id, parsed);
           } catch (err) {
-            log.push(`${f.name}: could not be read (${(err as Error).message})`);
+            /* A PDF with no text layer throws from the reader rather than
+               returning null, and it is the commonest failure of all — a
+               scan. It gets the same per-extension explanation, and the
+               message is preserved so a genuinely different failure (a
+               corrupt zip, say) is not misreported as a scan. */
+            const msg = (err as Error).message;
+            log.push(`${f.name}: could not be read (${msg})`);
+            rv({
+              id: `doc-unreadable-${f.id}`,
+              level: "warn", category: "process",
+              message: `${f.name} could not be read, so NOTHING from it feeds the work paper. ${/no text layer/i.test(msg) ? explainUnreadable(f.name) : msg}`,
+              source: f.name,
+            });
           }
         }
         markDuplicates(bundles.map((b) => b.cls), parsedByFile);
@@ -2638,6 +2687,27 @@ export const actions = {
 
 /** Caption key for user overrides — case/whitespace insensitive. */
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** What a preparer needs to know about one document, in five words.
+ *
+ * The order of the tests is the point. "text read" is checked BEFORE
+ * processedAt, so a document that WAS read but could not be identified reads
+ * green rather than "could not be read" — the reading worked; the
+ * classification is a separate question, and conflating them sent people
+ * hunting for a file problem that did not exist. */
+export type ReadStatus = "unsupported format" | "not read yet" | "text read" | "scan — needs OCR" | "could not be read";
+
+export function readState(ent: Entity | undefined, file: EntityFile): ReadStatus {
+  if (!file || !file.parsable) return "unsupported format";
+  if (ent?.docClasses?.[file.id]) return "text read";
+  if (!ent || !ent.processedAt) return "not read yet";
+  // A scan is distinguishable from a genuine read failure, and the difference
+  // matters: one has a remedy in the app, the other does not.
+  for (const item of ent.reviewItems || []) {
+    if (item?.source === file.name && /no text layer/i.test(String(item.message || ""))) return "scan — needs OCR";
+  }
+  return "could not be read";
+}
 
 /** Same strings in the same order. */
 const sameList = (a: string[] | undefined, b: string[]) =>
@@ -3842,6 +3912,70 @@ export function safeName(s: string): string {
   return String(s).replace(/[^A-Za-z0-9 _.-]/g, "").replace(/\s+/g, "_").slice(0, 60) || "Entity";
 }
 
+/** Rows for the Provenance sheet: every figure a machine placed, and every
+ *  exchange rate with where it came from.
+ *
+ * The reviewer needs one place that answers "what did the software decide on
+ * its own, and on what evidence" — hunting through the log for that is how
+ * an AI-placed figure reaches a filed return unchecked. Rule-mapped
+ * contributions are listed too, because "the keyword rules put it there" is
+ * itself a fact worth being able to see next to the AI ones. */
+function provenanceRows(ent: Entity): CellValue[][] {
+  const rows: CellValue[][] = [];
+  const label = (target: string) => {
+    const spec = /^IS:/.test(target)
+      ? IS_LINES.find((l) => `IS:${l.row}` === target)
+      : BS_LINES.find((l) => `BS:${l.row}` === target);
+    return spec ? (/^IS:/.test(target) ? "Sch C · " : "Sch F · ") + spec.label : target;
+  };
+
+  rows.push(["FORM 5471 WORK PAPER — PROVENANCE (machine-assisted entries)"]);
+  rows.push(["Generated", new Date().toISOString(), "App", "5471 Work Paper 2.1.0",
+             "AI model", state.groq?.key ? state.groq.model : "none (no key configured)"]);
+  rows.push(["This sheet lists every figure placed by the AI model and every exchange rate with its source. Verify AI-placed figures against the source documents before filing. This work paper is a preparer aid — it is not tax advice, and the preparer remains responsible for the filed return."]);
+  rows.push([]);
+  rows.push(["Kind", "Line / field", "Source caption", "Document", "Page", "Value", "Confidence", "Note"]);
+
+  for (const [target, list] of Object.entries(ent.contributions || {})) {
+    for (const c of list) {
+      if (!c.via) continue;
+      const flaggedLow = (ent.reviewItems || []).some((r) => r.id === `ai-low-${norm(c.label || "")}`);
+      rows.push([
+        c.via === "groq" ? "AI mapping" : c.via === "manual" ? "Manual assignment" : "Rule mapping",
+        `${label(target)} (${c.field})`,
+        c.label || "", c.docName || "", c.page != null ? c.page : "",
+        typeof c.value === "number" ? c.value : "",
+        flaggedLow ? "LOW — verify" : "model-reported ok",
+        "booked by the AI model; remap on Mapping & adjustments if wrong",
+      ]);
+    }
+  }
+
+  for (const [key, d] of Object.entries(ent.detected || {})) {
+    if (!d?.src || d.src.via !== "groq") continue;
+    rows.push(["AI profile field", key, d.sourceLabel || "", d.src.doc || "",
+               d.src.page != null ? d.src.page : "", String(d.value || ""), d.confidence || "",
+               "filled from a document caption by the AI model"]);
+  }
+
+  const rateCell: Record<string, string> = { avgRate: "C59 average", cyRate: "C60 year-end", pyRate: "C61 prior year-end" };
+  for (const key of ["avgRate", "cyRate", "pyRate"]) {
+    const meta = ent.fxMeta?.[key];
+    const value = ent.fx?.[key];
+    if (!value && !meta) continue;
+    rows.push(["Exchange rate", rateCell[key], "", "", "", value || "", meta?.tag || "",
+               `source: ${meta?.source || "not set"}` +
+               (meta?.asOf ? ` · as of ${meta.asOf}` : meta?.enteredOn ? ` · entered ${meta.enteredOn}` : "")]);
+  }
+
+  const schE = (ent.extraWrites || []).find((w) => w.sheet === SHEET.schE && w.ref === "O16");
+  if (schE) {
+    rows.push(["Schedule write", "Schedule E O16 — income tax paid or accrued", "", "", "", schE.value as CellValue, "",
+               "derived from Schedule C line 21a; drives Sch-H, Schedule I-1 and Form 8992"]);
+  }
+  return rows;
+}
+
 export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffer) {
   const zip = await JSZip.loadAsync(bytes ?? templateBytes());
   const writes = buildWrites(ent);
@@ -3872,6 +4006,15 @@ export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffe
   }
 
   const report = await applyWrites(zip, writes);
+
+  /* AFTER applyWrites, so the provenance describes what was actually written,
+     and wrapped so it can never block a download: a work paper without its
+     provenance tab is still a work paper, and refusing to generate one over a
+     documentation sheet would be the wrong trade. */
+  try {
+    await addWorksheet(zip, "Provenance", provenanceRows(ent));
+  } catch { /* the workbook is still correct without it */ }
+
   // arraybuffer + explicit Blob rather than JSZip's blob writer: it is the
   // portable path and keeps the MIME type under our control.
   const buf: ArrayBuffer = await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });

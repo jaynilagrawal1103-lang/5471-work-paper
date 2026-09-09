@@ -129,7 +129,7 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                 onDrop={(e) => {
                   e.preventDefault();
                   setDragging(false);
-                  if (e.dataTransfer?.files?.length) actions.addFiles(entity.id, e.dataTransfer.files);
+                  if (e.dataTransfer?.files?.length) void actions.addFiles(entity.id, e.dataTransfer.files);
                 }}
               >
                 <strong>Drop documents for {entity.name}</strong>
@@ -142,7 +142,7 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                   hidden
                   accept={DOC_TYPES.join(",")}
                   onChange={(e) => {
-                    if (e.target.files?.length) actions.addFiles(entity.id, e.target.files);
+                    if (e.target.files?.length) void actions.addFiles(entity.id, e.target.files);
                     e.target.value = "";
                   }}
                 />

@@ -872,8 +872,37 @@ export function rankSheets(names: string[]): { read: string[]; skip: string[] } 
   return { read: keep, skip: names.filter((n) => !keep.includes(n)) };
 }
 
+/** Why this particular file could not be read, and what to do about it.
+ *
+ * A single "unsupported format" line sent preparers to convert files that
+ * were already supported, and left them re-uploading the same broken .xls.
+ * Each answer names the actual obstacle and the actual remedy — and the .xls
+ * case is the reason this exists: the format IS read, so a failure there is
+ * about the file, not the extension. */
+export function explainUnreadable(name: string): string {
+  const ext = "." + (name.split(".").pop() || "").toLowerCase();
+  switch (ext) {
+    case ".xls":
+      return "This legacy .xls workbook could not be opened. .xls itself is supported, so the file rather than the format is the obstacle: it may be password-protected, truncated by an incomplete download, or an Excel 5.0/95 workbook older than the BIFF8 format the reader handles. Open it in Excel and re-save as .xlsx, then re-upload.";
+    case ".doc":
+      return "Legacy .doc is a binary Word 97–2003 document, not a zipped XML package. Re-save as .docx (File ▸ Save As ▸ Word Document) and re-upload.";
+    case ".ppt": case ".pptx":
+      return "Presentations are not a source of financial statement data, so no reader exists for them. If the figures you need are on a slide, copy them into a spreadsheet or enter them directly on the schedule line.";
+    case ".png": case ".jpg": case ".jpeg": case ".gif": case ".webp": case ".tiff": case ".bmp":
+      return "Images carry no text layer. Convert the scan to PDF and use the OCR card on Document intake (runs in this browser), supply the original spreadsheet, or type the figures onto the schedule line.";
+    case ".zip": case ".rar": case ".7z":
+      return "Archives are not opened. Extract the files and upload the statements individually.";
+    case ".json": case ".xml":
+      return "Structured data files have no fixed financial-statement shape the tool can rely on. Export the figures as .csv and re-upload.";
+    case ".pdf":
+      return "The PDF opened but carries no text layer, which means it is a scan or photograph of a page rather than a digital document. Use the OCR card on Document intake to build a searchable copy in this browser, or supply a text-based PDF or the source spreadsheet.";
+    default:
+      return `${ext} is not one of the formats the tool reads. Supported: .pdf (with a text layer), .xlsx, .xlsm, .xls, .docx, .csv, .tsv and .txt. Convert the file to one of these and re-upload.`;
+  }
+}
+
 export type ParsedDoc = {
-  kind: "pdf" | "xlsx" | "csv";
+  kind: "pdf" | "xlsx" | "csv" | "docx";
   /** Plain text grid — the shape every existing consumer understands. */
   grid: string[][];
   /** Positional document, PDFs only. */
@@ -1037,6 +1066,94 @@ export function stackedCaptionRows(pdf: PdfDoc): string[][] {
   return out;
 }
 
+/* SheetJS is loaded from a <script> tag by the build, not imported, because it
+   is vendored rather than an npm dependency. */
+declare const XLSX: any;
+
+/** Legacy .xls (BIFF8) through the vendored SheetJS.
+ *
+ * Guarded on XLSX being present rather than assumed: the library is a separate
+ * script tag, and a page that loaded without it must refuse the file with the
+ * ordinary "could not be read" path instead of throwing a ReferenceError that
+ * takes processing down with it. */
+function readXls(buf: ArrayBuffer): ParsedDoc | null {
+  if (typeof XLSX === "undefined") return null;
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array", cellDates: false });
+  const sheetNames: string[] = (wb.SheetNames || []).slice(0, 25);
+  if (!sheetNames.length) return null;
+  const grid: string[][] = [];
+  for (const name of sheetNames) {
+    const sheet = wb.Sheets[name];
+    if (!sheet) continue;
+    for (const row of XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, blankrows: false })) {
+      const cells = ((row as unknown[]) || []).map((v) => (v == null ? "" : String(v).trim()));
+      if (cells.some(Boolean)) grid.push(cells);
+    }
+  }
+  return grid.length ? { kind: "xlsx", grid, sheetNames } : null;
+}
+
+/** .docx tables and paragraphs.
+ *
+ * Accountants send entity questionnaires and engagement letters as Word
+ * documents, and the particulars are in a two-column table.
+ *
+ * The cell walk is DEPTH-AWARE, and what that buys is worth being precise
+ * about. Word nests tables inside cells. A flat regex for <w:tc> pairs closes
+ * the OUTER cell on the inner cell's tag, so "Address" and "inner a" merge
+ * into one cell and every column after that shifts by one — the value of each
+ * later field lands under the wrong caption, silently. Depth counting turns
+ * that into a clean loss instead: the outer cell never closes within the row
+ * fragment, so the row is dropped rather than mis-columned.
+ *
+ * KNOWN LIMITATION, shared with the shipped app and verified against it: the
+ * row and table matchers are non-greedy, so an outer row containing a nested
+ * table is truncated at the inner </w:tr> and that outer row is lost. Losing a
+ * row is visible in the grid; a value under the wrong caption is not, which is
+ * why this is the trade being made. */
+async function readDocx(buf: ArrayBuffer): Promise<ParsedDoc | null> {
+  const doc = (await JSZip.loadAsync(buf)).file("word/document.xml");
+  if (!doc) return null;
+  const xml: string = await doc.async("string");
+
+  // Word splits a single run of text across many <w:t> elements whenever
+  // formatting changes mid-word; joining them is what makes a caption whole.
+  const textOf = (fragment: string) =>
+    sanitize([...fragment.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((m) => m[1]).join("")).trim();
+
+  const cellsOf = (rowXml: string): string[] => {
+    const out: string[] = [];
+    const tag = /<(\/?)w:tc(?:\s[^>]*)?(\/?)>/g;
+    let depth = 0;
+    let start = -1;
+    let m: RegExpExecArray | null;
+    while ((m = tag.exec(rowXml))) {
+      if (m[2] === "/") continue;                 // self-closing, not a cell
+      if (m[1]) {                                 // closing tag
+        if (--depth === 0 && start >= 0) { out.push(textOf(rowXml.slice(start, m.index))); start = -1; }
+      } else if (depth++ === 0) {
+        start = m.index + m[0].length;
+      }
+    }
+    return out;
+  };
+
+  const grid: string[][] = [];
+  for (const block of xml.matchAll(/<w:tbl>[\s\S]*?<\/w:tbl>|<w:p\b[\s\S]*?<\/w:p>/g)) {
+    const chunk = block[0];
+    if (chunk.startsWith("<w:tbl>")) {
+      for (const row of chunk.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)) {
+        const cells = cellsOf(row[0]);
+        if (cells.some(Boolean)) grid.push(cells);
+      }
+    } else {
+      const text = textOf(chunk);
+      if (text) grid.push([text]);
+    }
+  }
+  return grid.length ? { kind: "docx", grid } : null;
+}
+
 export async function readDocument(
   file: File,
   /** Explicit tab list for this document, if the preparer pinned one
@@ -1061,6 +1178,8 @@ export async function readDocument(
     const grid = pdf.rows.map((r) => r.cells.map((c) => c.text));
     return { kind: "pdf", grid: [...grid, ...stackedCaptionRows(pdf)], pdf };
   }
+  if (/\.docx$/.test(name)) return readDocx(await file.arrayBuffer());
+  if (/\.xls$/.test(name)) return readXls(await file.arrayBuffer());
   if (!/\.(xlsx|xlsm)$/.test(name)) return null;
 
   const zip = await JSZip.loadAsync(await file.arrayBuffer());

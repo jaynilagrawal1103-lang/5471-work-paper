@@ -3,10 +3,10 @@
 import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader, StatusPill } from "../primitives";
 import type { ViewId } from "../Shell";
-import { BS_LINES, CATEGORY_CELLS, IS_LINES, OWNERSHIP_FIELDS } from "./engine";
+import { BS_LINES, CATEGORY_CELLS, IS_LINES, OWNERSHIP_FIELDS, explainUnreadable } from "./engine";
 import { displayLabel } from "./captions";
 import {
-  actions, allReviewItems, buildWrites, cellCount, getSnapshot, subscribe, validateEntity,
+  actions, allReviewItems, buildWrites, cellCount, getSnapshot, readState, subscribe, validateEntity,
   PROCESS_STEPS, type Entity,
 } from "./store";
 
@@ -260,6 +260,23 @@ function DocSheetSelect({ entityId, fileId }: { entityId: string; fileId: string
   );
 }
 
+function ReadStatusCell({ entityId, fileId }: { entityId: string; fileId: string }) {
+  const state = useWp();
+  const ent = state.entities.find((e) => e.id === entityId);
+  const file = ent?.files.find((f) => f.id === fileId);
+  if (!file) return null;
+  const status = readState(ent, file);
+  const tone = status === "text read" ? "system"
+    : status === "not read yet" ? ""
+    : status === "scan — needs OCR" ? "groq"
+    : "user";
+  return (
+    <span className={`actor-tag ${tone}`} title={status === "text read" ? undefined : explainUnreadable(file.name)}>
+      {status}
+    </span>
+  );
+}
+
 function DocKindSelect({ entityId, fileId }: { entityId: string; fileId: string }) {
   const state = useWp();
   const ent = state.entities.find((e) => e.id === entityId);
@@ -303,7 +320,7 @@ export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) 
           <div className="panel-heading"><div><span className="section-kicker">Inventory</span><h2>Loaded documents</h2></div></div>
           <div className="wp-table">
             <table>
-              <thead><tr><th>File</th><th>Entity</th><th>Classified as</th><th>Type</th><th>Worksheets</th><th className="numeric">Size</th><th>Reading path</th></tr></thead>
+              <thead><tr><th>File</th><th>Entity</th><th>Classified as</th><th>Type</th><th>Worksheets</th><th className="numeric">Size</th><th>Read status</th></tr></thead>
               <tbody>
                 {all.map((f) => (
                   <tr key={`${f.entityId}/${f.id}`}>
@@ -324,9 +341,10 @@ export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) 
                     <td><DocKindSelect entityId={f.entityId} fileId={f.id} /></td>
                     <td><DocSheetSelect entityId={f.entityId} fileId={f.id} /></td>
                     <td className="numeric">{bytes(f.size)}</td>
-                    <td>{f.parsable
-                      ? <span className="actor-tag system">native parser</span>
-                      : <span className="actor-tag groq">unsupported</span>}</td>
+                    {/* Not "native parser" for every PDF, including one the
+                        tool could not read a character of — that is precisely
+                        the case a preparer must be able to see. */}
+                    <td><ReadStatusCell entityId={f.entityId} fileId={f.id} /></td>
                   </tr>
                 ))}
               </tbody>

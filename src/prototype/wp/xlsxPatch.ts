@@ -186,6 +186,46 @@ export async function applyWrites(zip: any, writes: Writes): Promise<PatchReport
   return report;
 }
 
+
+/**
+ * Add a worksheet to an open template zip: the sheet part, the <sheets> entry,
+ * the relationship, and the content-type override. All four are required —
+ * Excel refuses to open a workbook that is missing any one of them.
+ *
+ * Idempotent BY SHEET NAME: generating twice from the same session must not
+ * produce two Provenance tabs, and the caller has no easy way to know whether
+ * it already ran.
+ *
+ * @param rows  each row's cells, left to right from column A.
+ */
+export async function addWorksheet(zip: any, name: string, rows: CellValue[][]): Promise<boolean> {
+  const wbXml: string = await zip.file("xl/workbook.xml").async("string");
+  if (wbXml.includes(`name="${esc(name)}"`)) return false;   // already there
+
+  const relsXml: string = await zip.file("xl/_rels/workbook.xml.rels").async("string");
+  const typesXml: string = await zip.file("[Content_Types].xml").async("string");
+
+  // A part name and relationship id that cannot collide with the template's
+  // own numbered sheets, whatever it contains.
+  const slug = "EN9" + name.replace(/[^A-Za-z0-9]/g, "");
+  const part = `xl/worksheets/sheet${slug}.xml`;
+  const relId = `rId${slug}`;
+
+  const body = rows.map((cells, i) => {
+    const r = i + 1;
+    const xml = cells.map((v, c) => buildCell(String.fromCharCode(65 + c) + r, v, null)).join("");
+    return `<row r="${r}">${xml}</row>`;
+  }).join("");
+
+  zip.file(part, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${body}</sheetData></worksheet>`);
+  zip.file("xl/workbook.xml", wbXml.replace("</sheets>", `<sheet name="${esc(name)}" sheetId="9471" r:id="${relId}"/></sheets>`));
+  zip.file("xl/_rels/workbook.xml.rels", relsXml.replace("</Relationships>",
+    `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${slug}.xml"/></Relationships>`));
+  zip.file("[Content_Types].xml", typesXml.replace("</Types>",
+    `<Override PartName="/${part}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`));
+  return true;
+}
+
 export type LabelQuery = { col: string; contains: string; excludes?: string };
 
 /** Find the row whose label-column text contains the query — used to place
