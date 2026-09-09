@@ -7,6 +7,7 @@ import {
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
+import { refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
 import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
   type DocClass, type DocKind,
@@ -229,7 +230,10 @@ export type Entity = {
   /** Captions the translators could NOT handle, with the specific reason —
       shown highlighted in the evidence table; nothing is ever guessed. */
   translationFailures: Record<string, string>;
-  unmatched: (ExtractedRow & { docId?: string; docName?: string })[];
+  /* `section` travels with the row so the AI pass (and the reviewer) can see
+     which banner it was printed under — a proposal that contradicts it is a
+     documentary contradiction, not a judgement call. */
+  unmatched: (ExtractedRow & { docId?: string; docName?: string; section?: Section | null })[];
   log: string[];
   processedAt: string | null;
 };
@@ -1226,7 +1230,7 @@ export const actions = {
     });
     const log: string[] = [];
     const bundles: { file: EntityFile; parsed: ParsedDoc; cls: DocClass }[] = [];
-    const mapRows: { row: ExtractedRow; docId: string; docName: string; feed: "is" | "bs" | "both"; kind: "pdf" | "grid" }[] = [];
+    const mapRows: MapRow[] = [];
     const profileGrids: string[][][] = [];
     const review: ReviewItem[] = [];
     let caseYears: { cy: number | null; py: number | null } = { cy: null, py: null };
@@ -1362,14 +1366,35 @@ export const actions = {
             const rulers = detectRulers(parsed.pdf);
             const isPages = pagesForFeed(cls, "generic-is");
             const bsPages = pagesForFeed(cls, "generic-bs");
+            /* Held apart until the section banners have been read: a page can
+               hold the end of the P&L and the start of the balance sheet, and
+               classification only gets one answer for the whole page. The
+               banners are the statement's own account of which is which. */
+            let pdfIs: MapRow[] = [];
+            let pdfBs: MapRow[] = [];
             for (const row of isPages.size ? extractPositionedRows(parsed.pdf, rulers, { pages: isPages }) : []) {
-              mapRows.push({ row, docId: file.id, docName: file.name, feed: "is", kind: "pdf" });
-              read++;
+              pdfIs.push({ row, docId: file.id, docName: file.name, feed: "is", kind: "pdf", x0: row.x0 });
             }
             for (const row of bsPages.size ? extractPositionedRows(parsed.pdf, rulers, { pages: bsPages }) : []) {
-              mapRows.push({ row, docId: file.id, docName: file.name, feed: "bs", kind: "pdf" });
-              read++;
+              pdfBs.push({ row, docId: file.id, docName: file.name, feed: "bs", kind: "pdf", x0: row.x0 });
             }
+            pdfIs = tagSections(pdfIs);
+            pdfBs = tagSections(pdfBs);
+            const refed = refeedBySection(pdfIs, pdfBs);
+            pdfIs = refed.is;
+            pdfBs = refed.bs;
+            if (refed.moved) {
+              log.push(`${file.name}: ${refed.moved} row(s) re-routed between the P&L and balance-sheet pipelines by their statement section banners`);
+            }
+            pdfIs = structRows(pdfIs);
+            pdfBs = structRows(pdfBs);
+            let skipped = 0;
+            for (const m of [...pdfIs, ...pdfBs]) {
+              if (m.skipReason) skipped++;
+              else read++;
+              mapRows.push(m);
+            }
+            if (skipped) log.push(`${file.name}: ${skipped} structural subtotal/total row(s) dropped before mapping`);
             const eqPages = pagesForFeed(cls, "equity");
             if (eqPages.size && !equity) equity = pullEquityFacts(parsed.pdf, eqPages, detectRulers(parsed.pdf), caseYears.cy);
             const atoPages = pagesForFeed(cls, "targeted-ato");
@@ -1509,7 +1534,7 @@ export const actions = {
         const relabels: Record<string, string> = { ...ent.relabels };
         const sourceLabels: Record<string, SourceLabel> = {};
         const contributions: Record<string, Contribution[]> = {};
-        const unmatched: (ExtractedRow & { docId?: string; docName?: string })[] = [];
+        const unmatched: Entity["unmatched"] = [];
         const pools = makePoolState();
         // Standing user remaps survive re-processing. Pre-reserve their pool
         // rows so auto-allocation cannot collide onto a user-chosen slot.
@@ -1548,6 +1573,11 @@ export const actions = {
         };
 
         for (const m of mapRows) {
+          // Structure, not data: a banner announces what follows, and a
+          // structural subtotal is already the sum of rows being booked.
+          // Both stay in mapRows so the log and the evidence view can show
+          // them; neither is ever booked.
+          if (m.skipReason || m.row.isBanner) continue;
           const matched = matchWithTranslation(m.row.label);
           let target = matched.target;
           if (target === "SKIP") continue;
@@ -1576,9 +1606,19 @@ export const actions = {
               }
             }
           }
+          /* The banner is the statement's own words about what this caption
+             is, and it outranks a keyword match: a caption printed under
+             "Current assets" cannot be an income line however the keyword
+             reads. Applied AFTER the target is chosen, because the veto needs
+             to know what was proposed — and only as a veto, never to pick. */
+          if (target && m.section && !sectionOk(m.section, target)) target = null;
+          // Only once the rules have failed: the banner's own routing. Last
+          // resort, and honest about the assets side having no catch-all.
+          if (!target && m.section) target = sectionRoute(m.section, m.row.label) || null;
+
           if (!target) {
             unmatched.push({
-              ...m.row, docId: m.docId, docName: m.docName,
+              ...m.row, docId: m.docId, docName: m.docName, section: m.section,
               reason: m.feed === "is"
                 ? "No mapping rule matches this caption on an income-statement page — assign it to a Schedule C line (or a Schedule F line if it is really a balance)."
                 : m.feed === "bs"

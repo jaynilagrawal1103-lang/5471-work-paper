@@ -447,6 +447,14 @@ export type ExtractedRow = {
   period?: string;
   /** Why the row could not be booked (surfaces in the review queue). */
   reason?: string;
+  /** Left edge of the caption in PDF points. The indent IS the statement's
+      hierarchy, and the structural-subtotal detection reads nothing else. */
+  x0?: number;
+  /** A value-less caption that announces a section ("Current assets"). Row
+      hygiene otherwise discards rows with no figure; this one is kept because
+      it tells the rows beneath it what they are, and it is never booked.
+      See sections.ts. */
+  isBanner?: boolean;
 };
 
 /* ---------- statement column roles (line numbers, period columns) ---------- */
@@ -577,7 +585,16 @@ function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
       years = years ? years.slice(1) : years;
     }
   }
-  if (!values.length) return null;
+  if (!values.length) {
+    /* A short caption with no figure that names a section is not noise: it is
+       the banner that tells every row beneath it which statement it belongs
+       to. Kept, flagged, and never booked. Length-capped because a long line
+       with no number is prose, not a heading. */
+    if (label.length <= 40 && isBannerLabel(label)) {
+      return { ...row, label, values: [], years, isBanner: true };
+    }
+    return null;
+  }
   // A sole "value" equal to the row's own line number is the number box, not money.
   if (formLine && values.length === 1 && values[0] === Number(formLine.replace(/[a-c]$/, ""))) return null;
   if (formLine && FORM_CAPTIONS.has(normCaption(label))) return null;
@@ -673,6 +690,7 @@ declare const JSZip: any;
 
 import { pdfToDoc } from "./pdfText";
 import { sanitize } from "./hygiene";
+import { isBannerLabel } from "./sectionBanners";
 import type { PdfDoc, PdfRow, PdfCell } from "./pdfText";
 
 /* ---------- positional extraction: column rulers and year snapping ---------- */
@@ -744,8 +762,20 @@ export function extractPositionedRows(
       }
     }
     if (!label) continue;
+    // The caption's own left edge: the statement's indent hierarchy, which is
+    // the only evidence structural-subtotal detection has to work from.
+    const x0 = row.cells[labelIdx] ? row.cells[labelIdx].x0 : undefined;
     const kept = nums.filter((x) => x.idx > labelIdx);
-    if (!kept.length) continue;
+    if (!kept.length) {
+      /* No figure on the line. Usually noise — but a short caption that names
+         a section is the banner the rows beneath it belong to, so it is
+         emitted rather than dropped. Never on a raw page: those are narrative
+         (equity movements), where a bare line is prose, not a heading. */
+      if (!opts?.raw && label.length <= 40 && isBannerLabel(label)) {
+        out.push({ label, values: [], years: undefined, page: row.page, x0, isBanner: true });
+      }
+      continue;
+    }
     // A row whose numbers are all bare years is a column header, not data.
     if (kept.length >= 2 && kept.every((x) => /^(19|20)\d{2}$/.test(row.cells[x.idx].text.trim()))) continue;
 
@@ -776,7 +806,7 @@ export function extractPositionedRows(
       });
     }
 
-    const candidate: ExtractedRow = { label, values: kept.map((x) => x.v), years, page: row.page };
+    const candidate: ExtractedRow = { label, values: kept.map((x) => x.v), years, page: row.page, x0 };
     if (opts?.raw) { out.push(candidate); continue; }
     const cleaned = applyRowHygiene(candidate);
     if (cleaned) out.push(cleaned);
