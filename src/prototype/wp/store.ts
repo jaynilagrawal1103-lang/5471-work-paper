@@ -461,6 +461,11 @@ let state: WpState = {
 };
 state.activeEntityId = state.entities[0].id;
 
+/* The layer reads the LIVE state through this, not a snapshot copy: it runs on
+   its own after a wp:state event and must see what the app sees at that
+   moment. Published immediately — unlike __WPACT, `state` is fully built here. */
+if (typeof window !== "undefined") window.__WPGET = () => state;
+
 /** Every state-changing action writes one immutable audit row. */
 function logEvent(action: string, detail: string, entity: string | null = null, actor: LogEvent["actor"] = "user") {
   const ev: LogEvent = {
@@ -577,6 +582,14 @@ function set(patch: Partial<WpState>) {
   state = { ...state, ...patch };
   listeners.forEach((fn) => fn());
   hooks.onMutate?.(patch);
+  /* The enhancement layer's ONLY re-render trigger. It is plain DOM code
+     outside React, so it cannot subscribe to the store — this event is how it
+     learns anything changed. (A listener that throws is already contained by
+     the event system; the try/catch is for environments with no window or no
+     CustomEvent, such as the tests and any server-side render.) */
+  try {
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("wp:state"));
+  } catch { /* no window (tests, SSR) */ }
 }
 
 function updateEntity(id: string, patch: Partial<Entity>) {
@@ -630,7 +643,51 @@ async function fanOutSiblings(parentId: string, plans: CfCandidate[]): Promise<v
   if (p2) updateEntity(parentId, { log: [...p2.log, `Fan-out: created ${fresh.map((p) => p.cfcName).join(", ")} from the additional Form 5471(s)`] });
 }
 
+/** Record (or reset) the scans awaiting OCR for one entity. `null` clears the
+    entity's queue. Never throws: a missing global must not fail processing. */
+function queueScans(entityId: string, doc: { id: string; name: string } | null) {
+  try {
+    const g = globalThis as unknown as { EN9SCANS?: Record<string, { id: string; name: string }[]> };
+    g.EN9SCANS = { ...(g.EN9SCANS || {}) };
+    if (!doc) { g.EN9SCANS[entityId] = []; return; }
+    (g.EN9SCANS[entityId] ||= []).push(doc);
+  } catch { /* the layer is optional */ }
+}
+
+/* ---------------- the bridge to the enhancement layer ----------------
+
+   dist/index.html carries an enhancement layer (layer-src/) that runs as plain
+   DOM code beside the React app: the OCR card, the mapping-table polish, the
+   verify badges. It is deliberately outside the bundle — it lazy-loads three
+   libraries from a CDN, which this self-contained single-file build otherwise
+   never does — so it needs a way in and a way to know when to redraw.
+
+   Three things, and all three must exist or the layer half-works in ways that
+   are hard to see: __WPGET for the live state, __WPACT for the actions, and
+   the wp:state event above. */
+
+declare global {
+  interface Window {
+    __WPGET?: () => WpState;
+    __WPACT?: typeof actions;
+  }
+}
+
 export const actions = {
+  /** Publish the action surface to the layer. Called on a deferred tick, not
+      at module scope: `actions` is still being defined here, and exposing a
+      half-built object gives the layer methods that are undefined. */
+  EN9_expose() {
+    if (typeof window !== "undefined") window.__WPACT = actions;
+  },
+
+  /** The layer's own way to say something to the user. Without it the
+      auto-OCR announcer's messages reached only the console — it called a
+      __toast that did not exist. */
+  __toast(text: string, kind: "ok" | "bad" | "" = "") {
+    toast(text, kind);
+  },
+
   setStakeholder(name: string) {
     const clean = name.trim() || "Unnamed stakeholder";
     const old = state.stakeholder;
@@ -1451,6 +1508,12 @@ export const actions = {
         if (!ent) return;   // removed mid-run
         const parsedByFile = new Map<string, ParsedDoc>();
         const sheetNamesSeen: Record<string, string[]> = {};
+        /* Documents that turned out to be scans. The OCR card in the layer
+           reads this and offers to run OCR on them; it is a plain global
+           because the layer is outside the bundle. Reset per entity at the
+           start of the run, or a document fixed by OCR would still be queued
+           on the next pass. */
+        queueScans(entityId, null);
         for (const f of ent.files) {
           try {
             const parsed = await readDocument(f.blob, { sheets: ent.docKindOverrides?.[f.id]?.sheets });
@@ -1458,6 +1521,10 @@ export const actions = {
               // Honesty over hope: there is no AI-extraction path. And the
               // explanation is per-extension, because "unsupported format"
               // sent preparers to convert files that were already supported.
+              // A PDF the reader opened but found no text in is a scan, and
+              // OCR is the remedy. One that is ALREADY an OCR output is not:
+              // re-running would loop on a file OCR has already failed to fix.
+              if (/\.pdf$/i.test(f.name) && !/\(OCR\)\.pdf$/i.test(f.name)) queueScans(entityId, { id: f.id, name: f.name });
               const why = explainUnreadable(f.name);
               log.push(`${f.name}: could not be read — ${why}`);
               rv({
@@ -1501,6 +1568,11 @@ export const actions = {
                message is preserved so a genuinely different failure (a
                corrupt zip, say) is not misreported as a scan. */
             const msg = (err as Error).message;
+            // The other path to the same conclusion: pdfToDoc throws rather
+            // than returning null when the page carries no text layer.
+            if (/no text layer/i.test(String(msg)) && !/\(OCR\)\.pdf$/i.test(f.name)) {
+              queueScans(entityId, { id: f.id, name: f.name });
+            }
             log.push(`${f.name}: could not be read (${msg})`);
             rv({
               id: `doc-unreadable-${f.id}`,
@@ -2682,6 +2754,11 @@ export const actions = {
     set({ busy: false });
   },
 };
+
+/* `actions` is complete by the time this runs; at module scope it would not
+   be. A macrotask rather than a microtask so React's first render is not
+   competing with it. */
+if (typeof window !== "undefined") setTimeout(() => { try { actions.EN9_expose(); } catch { /* no window */ } }, 0);
 
 /* ---------------- mapping helpers ---------------- */
 
