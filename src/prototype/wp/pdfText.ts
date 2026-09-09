@@ -15,6 +15,7 @@
    on PDFs unchanged. */
 
 import { getDocument } from "pdfjs-dist";
+import { sanitize } from "./hygiene";
 // @ts-expect-error — the worker build ships no type declarations.
 import { WorkerMessageHandler } from "pdfjs-dist/build/pdf.worker.mjs";
 
@@ -496,7 +497,7 @@ function mergeWrappedLabels(doc: PdfDoc): PdfDoc {
    ("Cash. . . . . ."), underscore rules glued onto numbers ("____2,194"),
    and Drake's statement references ("Other current assetsStatement#Z015"). */
 function cleanCellText(s: string): string {
-  return s
+  return sanitize(s)
     .replace(/(?:\s?[.·•]){3,}/g, " ")
     .replace(/_{2,}/g, " ")
     .replace(/\s*Statement\s*#\s*[A-Za-z0-9]+/gi, " ")

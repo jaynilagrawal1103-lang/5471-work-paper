@@ -6,6 +6,7 @@ import {
   detectRulers, extractPositionedRows, extractRows, matchRule, numeric, readDocument, signForLabel,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
+import { r2, r2add, sanitize } from "./hygiene";
 import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
   type DocClass, type DocKind,
@@ -266,6 +267,10 @@ export type WpState = {
   entities: Entity[];
   activeEntityId: string | null;
   rules: MappingRule[];
+  /** Catalogue generation the saved `rules` came from. A restored project
+      keeps the preparer's edited rules verbatim, so without this a returning
+      user would silently never receive a rule added since they last saved. */
+  rulesVersion?: number;
   policies: PolicyRule[];
   rateDb: RateDb;
   groq: GroqState;
@@ -345,11 +350,43 @@ export function makeEntity(name: string, stakeholder: string): Entity {
 /* ---------------- store ---------------- */
 const initialStakeholder = "New stakeholder";
 
+/* The mapping catalogue is versioned so a restored project can receive rules
+   added since it was saved. Bump this AND add the new groups to
+   RULES_ADDED_SINCE whenever DEFAULT_RULES gains a group.
+
+   Version 2 (2026-09-09) added the six groups from the round-5 review:
+   werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
+   opening/closing stock pair and stock on hand. */
+export const RULE_CATALOGUE_VERSION = 2;
+
+/** target → first keyword, for each group added at version 2. Identified by
+    keyword rather than by index so reordering the catalogue is harmless. */
+const RULES_ADDED_SINCE: Record<number, string[]> = {
+  1: ["wkr expense", "small material", "issued & paid up capital", "opening stock", "closing stock", "stock on hand"],
+};
+
+/** Groups the saved catalogue is missing purely because it predates them.
+    A group the preparer DELETED is never resurrected: only groups introduced
+    after the saved version are considered. */
+export function upgradeRules(saved: MappingRule[], savedVersion: number | undefined): MappingRule[] {
+  const from = savedVersion ?? 1;
+  if (from >= RULE_CATALOGUE_VERSION) return saved;
+  const known = new Set(saved.flatMap((r) => r.kw.map((k) => k.toLowerCase())));
+  const wanted = new Set<string>();
+  for (let v = from; v < RULE_CATALOGUE_VERSION; v++) for (const k of RULES_ADDED_SINCE[v] || []) wanted.add(k);
+  const add = DEFAULT_RULES.filter((r) => r.kw.some((k) => wanted.has(k.toLowerCase()) && !known.has(k.toLowerCase())));
+  if (!add.length) return saved;
+  // Ahead of the saved rules: a longer keyword still wins, so position only
+  // decides ties, and a rule the preparer wrote should not lose one.
+  return [...saved, ...add.map((r) => ({ t: r.t, kw: [...r.kw] }))];
+}
+
 let state: WpState = {
   stakeholder: initialStakeholder,
   entities: [makeEntity("Entity 1", initialStakeholder)],
   activeEntityId: null,
   rules: DEFAULT_RULES.map((r) => ({ t: r.t, kw: [...r.kw] })),
+  rulesVersion: RULE_CATALOGUE_VERSION,
   policies: [],
   rateDb: seedRateDb(),
   groq: { key: "", model: GROQ_MODELS[0], status: "not configured", latency: null, calls: 0, tokens: 0, lastError: "" },
@@ -431,8 +468,18 @@ const hooks: StoreHooks = {
 
 /** Replace the whole state (hydration from the backend). */
 export function loadState(next: WpState) {
-  state = next;
+  const rules = upgradeRules(next.rules || [], next.rulesVersion);
+  const added = rules.length - (next.rules?.length || 0);
+  state = { ...next, rules, rulesVersion: RULE_CATALOGUE_VERSION };
   listeners.forEach((fn) => fn());
+  // After the assignment, not before: logEvent writes through set(), and the
+  // entry would be discarded by the state replacement above.
+  if (added > 0) {
+    logEvent(
+      "Mapping rules updated",
+      `${added} rule group(s) added from catalogue v${RULE_CATALOGUE_VERSION}; your own rules and edits are untouched`,
+    );
+  }
 }
 
 function set(patch: Partial<WpState>) {
@@ -1600,6 +1647,40 @@ export const actions = {
           sourceLabels[resolved.target] = { label: m.row.label, values: m.row.values, years: m.row.years };
         }
 
+        /* Periodic inventory: the P&L reports the stock movement as two
+           captions, "Opening stock" and "Closing stock", both printed
+           positive. Schedule C line 2 wants the NET — opening adds to cost,
+           closing relieves it. Both mapped to IS:12 and both were added, so
+           the line came out as the SUM of two balances instead of their
+           difference. Correcting the line needs −2× the value (once to undo
+           the addition, once to subtract it), and the contribution is
+           negated so the provenance trail shows what was actually booked. */
+        for (const c of contributions["IS:12"] || []) {
+          if (!/^closing\s/i.test(c.label || "") || c.value <= 0) continue;
+          const cur = lines["IS:12"];
+          lines["IS:12"] = { amount: (cur && typeof cur.amount === "number" ? cur.amount : 0) - 2 * c.value };
+          c.value = -c.value;
+        }
+
+        /* A deduction line holding a negative number is usually a statement
+           that prints costs in brackets and a reader that took the sign
+           literally — but sometimes it is a genuine credit. The tool cannot
+           tell, so it books what it read and says so. */
+        const negSeen = new Set<string>();
+        for (const [target, list] of Object.entries(contributions)) {
+          if (!/^IS:(2[6-9]|3\d|4\d|50)$/.test(target)) continue;
+          for (const c of list) {
+            if (c.value >= 0 || negSeen.has(`${target}|${c.label}`)) continue;
+            negSeen.add(`${target}|${c.label}`);
+            rv({
+              id: `neg-deduction-${target}-${norm(c.label)}`,
+              level: "warn", category: "mapping",
+              message: `\u201C${c.label}\u201D booked ${c.value.toLocaleString()} (negative) on deduction line ${target} — statement sign conventions can invert here; verify the sign in Mapping & adjustments.`,
+              source: c.docName,
+            });
+          }
+        }
+
         log.push(`${Object.keys(lines).length} schedule lines populated · ${unmatched.length} unmatched`);
         updateEntity(entityId, { lines, relabels, sourceLabels, contributions, unmatched, log: [...log] });
 
@@ -2675,9 +2756,11 @@ function manualApply(
   for (const r of routed) {
     const booked = taxBookValue(target, r.field, r.value);
     const cur = lines[target] || {};
-    if (r.field === "amount") lines[target] = { amount: (typeof cur.amount === "number" ? cur.amount : 0) + booked };
-    else if (r.field === "eoy") lines[target] = { ...cur, eoy: (typeof cur.eoy === "number" ? cur.eoy : 0) + booked };
-    else lines[target] = { ...cur, boy: (typeof cur.boy === "number" ? cur.boy : 0) + booked };
+    // Round at each accumulation: a line built from twenty contributions
+    // otherwise carries twenty float errors into the cell.
+    if (r.field === "amount") lines[target] = { amount: r2add(cur.amount, booked) };
+    else if (r.field === "eoy") lines[target] = { ...cur, eoy: r2add(cur.eoy, booked) };
+    else lines[target] = { ...cur, boy: r2add(cur.boy, booked) };
     (contributions[target] ||= []).push({
       docId: row.docId || "", docName: row.docName || "manual entry", page: row.page,
       label: row.label, value: booked, field: r.field, year: r.year, via,
@@ -3345,8 +3428,11 @@ export function buildWrites(ent: Entity): Writes {
     const guard = FORMULA_REFS[w.sheet];
     if (guard && guard(w.ref)) continue;
     const sheet = (writes[w.sheet] ||= {});
-    if (sheet[w.ref] !== undefined && sheet[w.ref] !== "" && sheet[w.ref] !== w.value) continue;
-    sheet[w.ref] = w.value;
+    // The last thing before the value reaches a cell: 2 dp for numbers, ASCII
+    // for text. Everything else passes through untouched.
+    const value = typeof w.value === "number" ? r2(w.value) : typeof w.value === "string" ? sanitize(w.value) : w.value;
+    if (sheet[w.ref] !== undefined && sheet[w.ref] !== "" && sheet[w.ref] !== value) continue;
+    sheet[w.ref] = value;
   }
 
   // Leftover demo captions on unused relabel rows are cleared, never shipped.

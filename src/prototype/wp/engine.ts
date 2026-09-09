@@ -232,7 +232,11 @@ export const DEFAULT_RULES: MappingRule[] = [
      ("Cost of Sales" would otherwise hit "sales") because the longest
      matching keyword wins. The store drops SKIP rows silently. */
   { kw: [
-    "cost of sales", "total trading income", "total income", "total expenses", "total deductions",
+    "cost of sales", "total trading income", "total income", "total expenses",
+    // Xero and MYOB print "Total for Income" / "Total for Expenses" rather
+    // than "Total Income"; without these the subtotal booked as a line item
+    // and every component was counted twice.
+    "total for income", "total for expenses", "total deductions",
     "gross profit", "trading profit", "net profit", "from ordinary activities",
     "total current assets", "total assets", "total non-current assets",
     "total current liabilities", "total liabilities", "net assets", "total equity",
@@ -321,6 +325,23 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "货币资金"], t: "BS:10" },
   { kw: ["trade receivable", "accounts receivable", "debtor", "trade debtor", "cr\u00e9ances clients", "deudores", "cuentas por cobrar", "contas a receber", "应收账款"], t: "BS:11" },
   { kw: ["allowance for bad debt", "provision for doubtful"], t: "BS:12" },
+
+  /* Dutch payroll and materials captions from the analyst test cases. The
+     werkkostenregeling is a staff-cost scheme, not an "other deduction". */
+  { kw: ["wkr expense", "werkkostenregeling"], t: "IS:26" },
+  { kw: ["small material", "kleinmateriaal"], t: "IS:OD" },
+  { kw: ["issued & paid up capital", "issued and paid up capital", "paid up capital", "issued capital"], t: "BS:59" },
+
+  /* Periodic (rather than perpetual) inventory: the P&L carries the movement
+     as two separate captions, and Schedule C line 2 wants the net. Opening
+     stock adds to cost; closing stock RELIEVES it, so its contribution is
+     negated in the booking loop — see the closing-stock sign flip in store.ts.
+     "Stock on hand" is the balance-sheet caption for the same figure and must
+     not be dragged into the P&L by the "stock" fragment. */
+  { kw: ["opening stock", "opening finished goods", "opening work in progress", "opening raw materials"], t: "IS:12" },
+  { kw: ["closing stock", "closing finished goods", "closing work in progress", "closing raw materials"], t: "IS:12" },
+  { kw: ["stock on hand"], t: "BS:14" },
+
   { kw: ["inventor", "存货"], t: "BS:14" },
   { kw: ["prepaid", "prepayment", "charges constatées", "accrued management fee", "accrued income", "accrued revenue"], t: "BS:OCA" },
   { kw: ["loan to shareholder", "amounts owed by"], t: "BS:19" },
@@ -543,6 +564,8 @@ export function signForLabel(label: string): 1 | -1 {
    known form captions. Returns null when the row is not a ledger line. */
 function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
   let { label, values, years } = row;
+  // Before anything reads the caption: the lexicon is ASCII.
+  label = sanitize(String(label || ""));
   let formLine: string | undefined;
   const lm = /^(\d{1,2})([a-c])?[.)]?\s+(.+)$/.exec(label);
   if (lm && lm[3].length > 2) {
@@ -649,6 +672,7 @@ export function detectGridYearHeader(rows: string[][]): (number | null)[] | null
 declare const JSZip: any;
 
 import { pdfToDoc } from "./pdfText";
+import { sanitize } from "./hygiene";
 import type { PdfDoc, PdfRow, PdfCell } from "./pdfText";
 
 /* ---------- positional extraction: column rulers and year snapping ---------- */
