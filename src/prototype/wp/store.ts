@@ -2886,7 +2886,7 @@ function makePoolState(): PoolState {
   return s;
 }
 
-function resolvePool(
+export function resolvePool(
   pools: PoolState,
   target: string,
   label: string,
@@ -3075,7 +3075,7 @@ function negativeDeductionTotals(lines: Record<string, LineValue>): string[] {
   return out;
 }
 
-function manualApply(
+export function manualApply(
   ent: Entity,
   lines: Record<string, LineValue>,
   contributions: Record<string, Contribution[]>,

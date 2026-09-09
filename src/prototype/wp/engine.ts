@@ -570,7 +570,10 @@ export function signForLabel(label: string): 1 | -1 {
 
 /* Shared hygiene: strip the form-line token, drop line-number echoes and
    known form captions. Returns null when the row is not a ledger line. */
-function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
+/* Exported for the parity harness, which replays real document rows through
+   this pipeline and the shipped one and compares the results. Nothing else in
+   the app calls it from outside this module. */
+export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
   let { label, values, years } = row;
   // Before anything reads the caption: the lexicon is ASCII.
   label = sanitize(String(label || ""));

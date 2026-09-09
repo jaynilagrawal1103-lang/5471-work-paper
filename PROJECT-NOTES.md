@@ -15,16 +15,74 @@
 | `netlify.toml`, `vercel.json`, `_redirects` | Deploy configs |
 
 ## CRITICAL WARNING — do not lose the fixes
-All fixes from the Claude session were applied to the **built** `dist/index.html`
-(and to the injected layer), NOT to `src/`. Therefore:
+Months of fixes were applied directly to the **built** `dist/index.html` (and
+to the injected layer) rather than to `src/`. A port brought most of that back
+into source in 2026-09 (see "Source/shipped parity port" below), but `dist` is
+still the shipped artifact and is still ahead of a fresh build. Therefore:
 
-- `npm run build` / `npm run build:app` REGENERATES `dist/index.html` from `src/`
-  and will WIPE those fixes.
-- If you must rebuild from src, port the fixes into `src/` first (the commit
-  messages in the repo describe each change), or diff the current
-  `dist/index.html` against a fresh build.
+- `npm run build` / `npm run build:app` REGENERATES `dist/index.html` from
+  `src/` and will WIPE what has not been ported.
+- **Do not rebuild** until the preconditions in the parity-port section are
+  met. They are specific and none of them are done.
 - After any rebuild, run `npm run inject:layer` to restore the UI layer
   (filters, pagination, authority panel, OCR card, palette, etc.).
+
+## Source/shipped parity port (2026-09-09)
+
+`src/` had fallen ~1,600 lines behind `dist/index.html`. Eight phases brought
+it back: the round-5 review dispositions, text/number hygiene and the mapping
+catalogue, statement structure, the FX chain, AI mapping, intake and the
+provenance sheet, and the bridge to the enhancement layer. `dist` was NOT
+regenerated — a rebuild is still unsafe (below), and small surgical patches to
+`dist` remain how the shipped app is maintained.
+
+### What is now in source
+Everything the engine-logic review listed except the items named below. New
+modules: `hygiene.ts` (sanitize/r2/r2add), `sectionBanners.ts` + `sections.ts`
+(banners, structural subtotals, re-feeding, the veto and fallback routing),
+`fxDates.ts` (nearest-date, requireIso, leap-safe yearBefore), `aiMapping.ts`
+(the pure helpers, the rate-limit budget, askResume, the AI modes).
+
+### What is still dist-only, deliberately
+- **The OCR engine.** It lazy-loads three libraries from a CDN, which the
+  self-contained single-file build avoids on purpose, and the
+  `EN9OCR.io || realIO` seam is what the existing tests stub. Source provides
+  the bridge it needs (`__WPGET`, `__WPACT`, `wp:state`, `__toast`) and the
+  scan queue it reads; the engine itself stays in `layer-src/enhance.js`.
+- **Tie-out and Schedule E** (`EN9tieOut`, `EN9balance`, `EN9schETax`,
+  `EN9tieTax`, `EN9tieSubtotals`). Not in the reviewed disposition list, so out
+  of scope for this port. src raises no `tie-out` items today, though the
+  category and the policy dropdown now accept them.
+- **`EN9dedupeRows`.** Defined in dist and exposed on the bridge, but never
+  called by its pipeline — dead there, and not worth making live here.
+
+### Preconditions for a rebuild
+All four, and none are done:
+1. Fold any dist-only layer hunks back into `layer-src/` first (done once, in
+   phase 0 — re-check before rebuilding, `npm run inject:layer` must be a
+   no-op on `git diff dist/index.html`).
+2. The inject order is fixed and pinned by `tests/test_inject_order.cjs`; keep
+   it green.
+3. **Solve the comment-stripping problem.** esbuild strips comments when
+   minifying, so the `/*EN9…*/` sentinels would not survive a rebuild at all —
+   and ten test suites extract and evaluate the regions those sentinels
+   delimit. Those suites must be re-anchored on something a minifier preserves
+   before any rebuild is attempted.
+4. Re-anchor the 18 dist-reading suites: 187 pinned strings, ~87 of them tied
+   to minified identifiers that change on every build.
+
+Sizes, measured 2026-09-09: a bare src rebuild is 2.89 MB, 2.98 MB with the
+layer injected, against the shipped 3.10 MB. The ~0.12 MB gap is the dist-only
+patch weight, which is why `test_dist_integrity.cjs` asserts >3,000,000 bytes.
+
+### How parity is verified
+`tests/test_src_parity.cjs` replays a real client report (2Hats Consulting
+B.V.'s 2024 Yuki annual accounts) through BOTH pipelines — the shipped bundle
+in jsdom and the source modules — and demands identical booked lines, identical
+structural drops, identical unmatched rows and identical section vetoes. Nine
+per-function parity suites sit under it (`test_sections`, `test_fx_parity`,
+`test_ai_parity`, `test_rules_parity`, `test_sanitize`, `test_boy_grouping`,
+`test_ids`, `test_intake`, `test_bridge`). Run `npm run test:all`.
 
 ## Running
 - Static (no backend): `npx serve dist` — the app is fully functional offline.

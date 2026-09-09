@@ -88,8 +88,13 @@ const near = (x, y) => x !== null && y !== null && Math.abs(x - y) < 1.0;
   const R = H.book(items, OPTS);
 
   /* map template line label -> line key */
-  const bsKey = lbl => { const e = M.is.find(x => x.label.toLowerCase().startsWith(lbl.toLowerCase())); return e ? "BS:" + e.row : null; };
-  const isKey = lbl => { const e = M.ts.find(x => x.label.toLowerCase().startsWith(lbl.toLowerCase())); return e ? "IS:" + e.row : null; };
+  /* EXACT label first, then a prefix. Prefix-only resolved "Interest" to
+     "Interest income" (row 15) and scored the correctly booked row 29 as
+     wrong, understating the tool's accuracy at 90%. */
+  const pick = (list, lbl) => list.find(x => x.label.toLowerCase() === lbl.toLowerCase())
+                           || list.find(x => x.label.toLowerCase().startsWith(lbl.toLowerCase()));
+  const bsKey = lbl => { const e = pick(M.is, lbl); return e ? "BS:" + e.row : null; };
+  const isKey = lbl => { const e = pick(M.ts, lbl); return e ? "IS:" + e.row : null; };
 
   console.log("--- BALANCE SHEET (end of year) ---");
   let bsOk = 0, bsTot = 0;
