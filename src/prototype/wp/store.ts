@@ -8,6 +8,7 @@ import {
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
 import { refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
+import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
   type DocClass, type DocKind,
@@ -170,6 +171,21 @@ export type DividendRec = {
   rateSource: "frankfurter" | "eoy-fallback" | "none";
 };
 
+/** Where one exchange rate came from, and — for a hand-typed one — the date
+    it MEASURES as distinct from the date it was typed. Those two are not the
+    same fact, and conflating them made a rate entered in March look like a
+    March rate for a December year end. */
+export type FxMeta = {
+  source: string;
+  asOf: string;
+  /** Short provenance label: IRS, Treasury, OFX, ECB, Live, Manual. */
+  tag?: string;
+  /** When a manual rate was typed (never the date it measures). */
+  enteredOn?: string;
+  /** True when `asOf` is the period end this rate is FOR, not a guess. */
+  measured?: boolean;
+};
+
 export type DocKindOverride = {
   /** Absent when only the worksheet list is pinned — classification stays
       automatic in that case. */
@@ -204,7 +220,7 @@ export type Entity = {
   categories: Record<string, boolean>;
   fx: Record<string, string>;
   /** Where each rate came from and its as-of date — shown beside the inputs. */
-  fxMeta: Record<string, { source: string; asOf: string }>;
+  fxMeta: Record<string, FxMeta>;
   fxAuto: boolean;
   /** C-01: an auto-DETECTED functional currency must be confirmed by the
       preparer before the workbook can generate; manual entry confirms. */
@@ -423,6 +439,40 @@ function logEvent(action: string, detail: string, entity: string | null = null, 
 
 /** Record a provider call. Counters reset when the calendar day changes,
     mirroring how these free allowances are published. */
+/** Pending autoFillRates timers, one per entity. */
+const fxDebounce: Record<string, ReturnType<typeof setTimeout>> = {};
+
+/** The period end a manually entered rate measures — never today's date, and
+    never a guess: an unparseable period end yields null, and the rate is then
+    stamped as unmeasured rather than as measuring something it does not. */
+function fxMeasureDate(ent: Entity, key: string): string | null {
+  const raw = key === "cyRate" ? ent.profile.cyEnd : key === "pyRate" ? ent.profile.pyEnd : null;
+  try {
+    return requireIso(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Stamp (or clear) the provenance of a hand-typed rate. */
+function fxManualMeta(
+  meta: Record<string, FxMeta>,
+  key: string,
+  value: string,
+  measuredOn: string | null,
+): Record<string, FxMeta> {
+  const next = { ...(meta || {}) };
+  if (!String(value ?? "").trim()) { delete next[key]; return next; }
+  next[key] = {
+    source: "Manual entry",
+    asOf: measuredOn || "",
+    enteredOn: new Date().toISOString().slice(0, 10),
+    measured: !!measuredOn,
+    tag: "Manual",
+  };
+  return next;
+}
+
 function recordProvider(id: string, units: number, ok: boolean, error = "", latency: number | null = null) {
   const today = new Date().toISOString().slice(0, 10);
   let usage = state.providerUsage;
@@ -709,12 +759,25 @@ export const actions = {
         if (Object.keys(patch).length) updateEntity(entityId, patch);
       }
     }
-    // Currency or period end changed -> refresh the published rates, unless the
-    // preparer has overridden them by hand.
+    /* Currency or period end changed -> refresh the published rates, unless
+       the preparer has overridden them by hand. Debounced: these are typed
+       character by character, and firing on every keystroke sent one network
+       lookup per letter of "AUD" and raced their results into the field. */
     if (bucket === "profile" && (key === "currency" || key === "cyEnd" || key === "pyEnd")) {
-      actions.autoFillRates(entityId, false);
+      clearTimeout(fxDebounce[entityId]);
+      fxDebounce[entityId] = setTimeout(() => actions.autoFillRates(entityId, false), 700);
     }
-    if (bucket === "fx") updateEntity(entityId, { fxAuto: false });
+    /* A hand-typed rate is stamped with the date it MEASURES — the period end
+       it belongs to — with the date it was typed recorded separately. Those
+       are different facts: a rate entered in March for a December year end is
+       a December rate, and labelling it "March" made correct work look wrong
+       in review. */
+    if (bucket === "fx") {
+      updateEntity(entityId, {
+        fxAuto: false,
+        fxMeta: fxManualMeta(ent.fxMeta, key, value, fxMeasureDate(ent, key)),
+      });
+    }
   },
 
   /* ---------------- dividends (Dividends rows 3–6) ---------------- */
@@ -814,99 +877,155 @@ export const actions = {
     actions.autoFillRates(entityId, false);
   },
 
-  /** Populate C59/C60/C61 from the IRS and Treasury tables. */
+  /** Populate C59/C60/C61 from the published tables, then from live data.
+   *
+   * `force` is the difference between the preparer pressing Refresh and the
+   * app filling blanks on its own. A non-forced run must never overwrite a
+   * rate the preparer typed: a hand-entered rate is a decision, and silently
+   * replacing it with a table figure loses it with nothing on screen to say
+   * so. Manual-tagged rates therefore survive every unforced pass, and the
+   * fiscal strip below.
+   */
   autoFillRates(entityId: string, force = true) {
     const ent = state.entities.find((e) => e.id === entityId);
     if (!ent) return;
     const code = (ent.profile.currency || "").toUpperCase().trim();
     if (!code) { if (force) toast("Set the functional currency first", "bad"); return; }
-    // FISCAL-YEAR GUARD: the IRS yearly-average and Treasury 12/31 tables are
-    // calendar-year figures. A period ending in any month but December must
-    // never receive them — the rates stay blank for manual entry, and the
-    // derived fx-fiscal-manual review item says exactly what to enter.
-    if (isFiscalPeriod(ent.profile.cyEnd)) {
-      logEvent("Exchange rates skipped", `fiscal year ending ${ent.profile.cyEnd} — published calendar-year tables not applicable`, ent.name, "system");
-      if (force) toast(`Fiscal year ending ${ent.profile.cyEnd} — published calendar-year tables don't apply; enter the rates manually`, "bad");
-      return;
+
+    /* FISCAL YEARS. The IRS yearly-average and Treasury 12/31 tables are
+       calendar-year figures; a period ending in any month but December must
+       never receive them. Rather than stopping there and leaving the preparer
+       to type three rates, the run continues to OFX, which publishes daily
+       data and can therefore average the ACTUAL period and price its actual
+       ends. What is refused is the calendar table, not the automation. */
+    const fiscal = isFiscalPeriod(ent.profile.cyEnd);
+    if (fiscal) {
+      logEvent(
+        "Calendar-year tables skipped",
+        `fiscal year ending ${ent.profile.cyEnd} — IRS/Treasury calendar tables not applicable; using OFX daily data over the actual period`,
+        ent.name, "system",
+      );
     }
-    // Priority 1: the currency-rate database (uploaded Rates.xlsx, else the
-    // built-in IRS + Treasury tables it was seeded from).
+
     const db = state.rateDb;
-    const hit = lookupRates(code, ent.profile.cyEnd || "", ent.profile.pyEnd || "", {
-      irsAvg: db.irsAvg, spot: db.spot, source: db.source,
-    });
-    const fx = { ...ent.fx };
-    const fxMeta = { ...ent.fxMeta };
-    const put = (k: string, v: number | null, meta: { source: string; asOf: string }) => {
+    const hit = {
+      ...lookupRates(code, ent.profile.cyEnd || "", ent.profile.pyEnd || "", {
+        irsAvg: db.irsAvg, spot: db.spot, source: db.source,
+      }),
+      ...(fiscal ? { avgRate: null, cyRate: null, pyRate: null } : null),
+    };
+
+    /* A previously auto-filled calendar rate on a year that has since been
+       identified as fiscal is wrong and must go — but only the auto-filled
+       ones. Anything the preparer typed is kept. */
+    const stripAuto = <T extends Record<string, unknown>>(obj: T): T =>
+      Object.fromEntries(
+        Object.entries(obj || {}).filter(([k]) =>
+          !["avgRate", "cyRate", "pyRate"].includes(k) || fxTag(ent.fxMeta?.[k]) === "Manual"),
+      ) as T;
+    const fx = fiscal && ent.fxAuto ? stripAuto({ ...ent.fx }) : { ...ent.fx };
+    const fxMeta = fiscal && ent.fxAuto ? stripAuto({ ...ent.fxMeta }) : { ...ent.fxMeta };
+
+    const put = (k: string, v: number | null, meta: FxMeta) => {
       if (v === null) return;
+      if (!force && fxTag(fxMeta[k]) === "Manual") return;   // never clobber a typed rate
       if (force || fx[k] === undefined || fx[k] === "" || ent.fxAuto) {
         fx[k] = String(v);
         fxMeta[k] = meta;
       }
     };
     // The as-of dates derive from the entity's own period ends when set — the
-    // calendar path only reaches here, but the provenance must not claim a
-    // 12/31 date the profile does not carry.
+    // provenance must not claim a 12/31 date the profile does not carry.
     const cyAsOf = ent.profile.cyEnd?.trim() || `12/31/${hit.cyYear}`;
     const pyAsOf = ent.profile.pyEnd?.trim() || `12/31/${hit.pyYear}`;
-    put("avgRate", hit.avgRate, { source: `${db.source} · IRS yearly average`, asOf: `calendar ${hit.cyYear}` });
-    put("cyRate", hit.cyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: cyAsOf });
-    put("pyRate", hit.pyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: pyAsOf });
+    put("avgRate", hit.avgRate, { source: `${db.source} · IRS yearly average`, asOf: `calendar ${hit.cyYear}`, tag: "IRS" });
+    put("cyRate", hit.cyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: cyAsOf, tag: "Treasury" });
+    put("pyRate", hit.pyRate, { source: `${db.source} · Treasury 12/31 spot`, asOf: pyAsOf, tag: "Treasury" });
     updateEntity(entityId, { fx, fxAuto: true, fxMeta });
     if (hit.avgRate || hit.cyRate || hit.pyRate) {
       logEvent("Exchange rates applied", `${code} · avg ${hit.avgRate ?? "—"} (${hit.cyYear}) · CY spot ${hit.cyRate ?? "—"} · PY spot ${hit.pyRate ?? "—"} · ${db.source}`, ent.name, "system");
       if (force) toast(`${code} rates applied from ${db.source}`, "ok");
     }
-    // Priority 2/3: a spot rate the database lacks is fetched from the live
-    // providers — Frankfurter can serve the exact historical date; a dateless
-    // provider is only trusted for CURRENT period ends. Averages have no live
-    // source and stay blank rather than guessed.
+
+    /* Spot rates the tables lack, from the live providers, on the exact date.
+       Only the provider that CANNOT answer a historical date is dropped from
+       the order — the rest each have their own way of serving one, and which
+       the preparer has enabled is their choice, not this function's. */
     const missing: Array<{ k: "cyRate" | "pyRate"; end: string }> = [];
     if (!fx.cyRate && ent.profile.cyEnd) missing.push({ k: "cyRate", end: ent.profile.cyEnd });
     if (!fx.pyRate && ent.profile.pyEnd) missing.push({ k: "pyRate", end: ent.profile.pyEnd });
     if (missing.length) {
       void (async () => {
         for (const m of missing) {
-          const iso = toIsoDate(m.end, Number(yearFromPeriod(m.end)) || 0) || undefined;
-          const recent = iso ? Date.now() - new Date(iso).getTime() < 7 * 86400000 : false;
+          let iso: string | null;
           try {
-            const { result } = await fetchLiveRate(code, iso && !recent ? ["frankfurter"] : state.fxOrder, iso);
+            iso = requireIso(m.end, m.k === "pyRate" ? "prior-year end date" : "current-year end date");
+          } catch (err) {
+            // Refuse rather than look up a dateless "latest" rate and stamp
+            // today's figure as the year-end rate.
+            logEvent("Exchange rate lookup refused", (err as Error).message, ent.name, "system");
+            continue;
+          }
+          if (!iso) continue;
+          const recent = Date.now() - new Date(iso).getTime() < 7 * 86400000;
+          try {
+            const order = !recent ? state.fxOrder.filter((p) => p !== "erapi") : state.fxOrder;
+            const { result } = await fetchLiveRate(code, order, iso);
             if (result.ok && result.value.rate > 0) {
               const fresh = state.entities.find((e) => e.id === entityId);
-              if (!fresh || fresh.fx[m.k]) continue;
+              if (!fresh || fresh.fx[m.k] || fxTag(fresh.fxMeta?.[m.k]) === "Manual") continue;
               updateEntity(entityId, {
                 fx: { ...fresh.fx, [m.k]: String(result.value.rate) },
-                fxMeta: { ...fresh.fxMeta, [m.k]: { source: `${result.value.provider} (live fallback)`, asOf: result.value.asOf || iso || "latest" } },
+                fxMeta: { ...fresh.fxMeta, [m.k]: {
+                  source: `${result.value.provider} (live fallback)`,
+                  asOf: asOfLabel(result.value.asOf, iso),
+                  tag: providerTag(result.value.provider),
+                } },
               });
-              logEvent("Live rate fallback applied", `${code} ${m.k} = ${result.value.rate} · ${result.value.provider} · ${result.value.asOf || iso || "latest"}`, ent.name, "system");
+              logEvent("Live rate fallback applied", `${code} ${m.k} = ${result.value.rate} · ${result.value.provider} · ${asOfLabel(result.value.asOf, iso)}`, ent.name, "system");
             }
-          } catch { /* stays blank — the missing-rate blocker says exactly what to enter */ }
+          } catch { /* stays blank — the missing-rate blocker says what to enter */ }
         }
       })();
     }
-    // Average-rate chain (RAT-001, user-decided): IRS table → OFX daily
-    // average over the entity's period → blank + reasoned review item for
-    // manual entry. An OFX figure is ALWAYS labelled as such.
+
+    /* Average-rate chain (RAT-001, the preparer's decision): IRS table → OFX
+       daily average over the entity's own period → blank, with the reason
+       recorded so the preparer knows WHY they are typing it in. An OFX figure
+       is always labelled as one. */
     if (!fx.avgRate && ent.profile.cyEnd) {
-      const cyYearNum = Number(yearFromPeriod(ent.profile.cyEnd));
-      const endIso = toIsoDate(ent.profile.cyEnd, cyYearNum || 0);
-      // The period is the year ENDING on cyEnd: one day past the same date a
-      // year earlier ("2024-12-31" → "2024-01-01".."2024-12-31").
-      const startIso = endIso
-        ? new Date(Date.parse(`${Number(endIso.slice(0, 4)) - 1}${endIso.slice(4)}`) + 86400000).toISOString().slice(0, 10)
-        : null;
+      const endIso = toIsoLoose(ent.profile.cyEnd);
+      const startIso = endIso ? yearBefore(endIso) : null;   // leap-day safe
       if (endIso && startIso) {
         void (async () => {
+          if (!state.fxOrder.includes("ofx")) {
+            // Not a failure — a setting. Say which, or the preparer hunts for
+            // a network problem that is not there.
+            const cur = state.entities.find((e) => e.id === entityId);
+            if (cur && !cur.fx.avgRate) {
+              updateEntity(entityId, { fxMeta: { ...cur.fxMeta, avgRateNote: { source: `no IRS ${code} average; OFX provider is unchecked in Settings`, asOf: "" } } });
+            }
+            return;
+          }
+          const t0 = Date.now();
           const r = await fxOfxAverage(code, startIso, endIso).catch(
             (err): { ok: false; error: string } => ({ ok: false, error: (err as Error).message }),
           );
+          recordProvider("ofx", 1, !!r.ok, r.ok ? "" : r.error || "", Date.now() - t0);
           const fresh = state.entities.find((e) => e.id === entityId);
           if (!fresh || fresh.fx.avgRate) return;   // filled meanwhile — keep it
           if (r.ok) {
             const v = r.value;
+            const { avgRateNote: _cleared, ...restMeta } = fresh.fxMeta || {};
             updateEntity(entityId, {
               fx: { ...fresh.fx, avgRate: String(v.rate) },
-              fxMeta: { ...fresh.fxMeta, avgRate: { source: `OFX daily average (fallback — ${db.source} has no ${code} average)`, asOf: `${v.from}..${v.to} (${v.points} daily points)` } },
+              fxMeta: { ...restMeta, avgRate: {
+                source: fiscal
+                  ? "OFX daily average over the fiscal period (IRS calendar tables not applicable)"
+                  : `OFX daily average (fallback — ${db.source} has no ${code} average)`,
+                asOf: `${v.from}..${v.to} (${v.points} daily points)`,
+                tag: "OFX",
+              } },
             });
             logEvent("OFX average-rate fallback applied", `${code} average ${v.rate} over ${v.from}..${v.to} (${v.points} points) — IRS table has no figure`, ent.name, "system");
             const again = state.entities.find((e) => e.id === entityId);
@@ -914,15 +1033,20 @@ export const actions = {
               updateEntity(entityId, {
                 reviewItems: [...again.reviewItems, {
                   id: "avg-ofx-fallback", level: "warn", category: "fx", applied: true,
-                  message: `C59 average rate ${v.rate} was computed from OFX daily mid-market rates over ${v.from}..${v.to} (${v.points} points) because the IRS table has no ${code} average. OFX is an indicative source — confirm or replace it before filing.`,
+                  message: fiscal
+                    ? `C59 average rate ${v.rate} was computed from OFX daily mid-market rates over the fiscal period ${v.from}..${v.to} (${v.points} points) — the IRS calendar-year table does not apply to this year end. Confirm or replace it before filing.`
+                    : `C59 average rate ${v.rate} was computed from OFX daily mid-market rates over ${v.from}..${v.to} (${v.points} points) because the IRS table has no ${code} average. OFX is an indicative source — confirm or replace it before filing.`,
                   target: `${SHEET.basic}!C59`, source: "OFX", suggestedValue: v.rate,
                 } as ReviewItem],
               });
             }
           } else {
-            // Blank stays blank; the derived fx-avg-missing block explains the
-            // chain's outcome so the preparer knows WHY manual entry is needed.
-            updateEntity(entityId, { fxMeta: { ...fresh.fxMeta, avgRateNote: { source: `no IRS ${code} average; OFX fallback failed: ${r.error}`, asOf: "" } } });
+            updateEntity(entityId, { fxMeta: { ...fresh.fxMeta, avgRateNote: {
+              source: fiscal
+                ? `fiscal period ${startIso}..${endIso}: OFX daily-average fallback failed: ${r.error}`
+                : `no IRS ${code} average; OFX fallback failed: ${r.error}`,
+              asOf: "",
+            } } });
             logEvent("Average-rate fallback unavailable", `${code}: no IRS figure; OFX: ${r.error} — manual entry required`, ent.name, "system");
           }
         })();
@@ -3552,10 +3676,22 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   }
   // Fiscal year: the published tables are calendar-year — the guard leaves
   // the rates blank on purpose, and this item says what to enter by hand.
-  if (isFiscalPeriod(ent.profile.cyEnd) && (!rate("avgRate") || !rate("cyRate") || !rate("pyRate"))) {
+  /* A fiscal year always deserves a word about its rates, but not the same
+     word. Three outcomes, three messages: something is still missing; OFX
+     filled it from daily data over the real period; or the rates in use came
+     from the preparer or a live quote and only need confirming. Telling
+     someone to "enter the rates manually" when they already have is how a
+     warning gets ignored. */
+  if (isFiscalPeriod(ent.profile.cyEnd)) {
+    const incomplete = !rate("avgRate") || !rate("cyRate") || !rate("pyRate");
+    const fromOfx = ["avgRate", "cyRate", "pyRate"].some((k) => fxTag(ent.fxMeta?.[k]) === "OFX");
     out.push({
       id: "fx-fiscal-manual", level: "warn", category: "fx",
-      message: `Fiscal year ending ${ent.profile.cyEnd}: the IRS yearly-average and Treasury 12/31 tables are calendar-year figures and were NOT applied. Enter the period's average rate (C59) and the ${ent.profile.cyEnd} / ${ent.profile.pyEnd || "prior period-end"} spot rates (C60/C61) manually.`,
+      message: incomplete
+        ? `Fiscal year ending ${ent.profile.cyEnd}: the IRS yearly-average and Treasury 12/31 tables are calendar-year figures and were NOT applied, and OFX daily data could not fill every rate — enter the missing rate(s) manually.`
+        : fromOfx
+          ? `Fiscal year ending ${ent.profile.cyEnd}: rates were derived from OFX daily data over the actual fiscal period (IRS/Treasury calendar tables do not apply). Review the OFX-sourced figures before filing.`
+          : `Fiscal year ending ${ent.profile.cyEnd}: calendar-year IRS/Treasury tables do not apply; the rates in use were entered manually or from live quotes — confirm they reflect the ${ent.profile.cyEnd} period.`,
       target: `${SHEET.basic}!C59`,
     });
   }

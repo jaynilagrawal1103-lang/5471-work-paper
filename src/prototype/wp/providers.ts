@@ -6,6 +6,8 @@
    rather than throwing, and callers fall through to the next one. The offline
    IRS/Treasury tables remain the default source for the work paper itself. */
 
+import { nearestPoint, windowStart, type RatePoint } from "./fxDates";
+
 export type ProviderKind = "translate" | "fx";
 
 export type ProviderSpec = {
@@ -160,20 +162,69 @@ export async function translateLingva(text: string, from = "auto"): Promise<Prov
 /** All providers return a divide rate: units of `code` per 1 USD. */
 export type LiveRate = { rate: number; asOf: string; provider: string };
 
+/* ---------- the OFX daily series ----------
+
+   One request per currency per session, shared by the latest-spot, the
+   nearest-date and the period-average lookups. Without the cache, filling a
+   single entity's three rates fetched the same multi-megabyte series three
+   times. The PROMISE is cached, not the result, so three lookups racing at
+   startup make one request between them; a rejection evicts the entry so the
+   next attempt is a real retry rather than a replay of the failure. */
+const ofxSeries = new Map<string, Promise<RatePoint[]>>();
+
+const OFX_URL = (code: string) =>
+  `https://api.ofx.com/PublicSite.ApiService/SpotRateHistory/allTime/USD/${encodeURIComponent(code)}?DecimalPlaces=6&ReportingInterval=daily&format=json`;
+
+/** The whole published daily series for one currency, once per session. */
+export async function ofxAllTime(code: string): Promise<RatePoint[]> {
+  const key = String(code || "").toUpperCase().trim();
+  const cached = ofxSeries.get(key);
+  if (cached) return cached;
+  const p = (async () => {
+    const data = await getJson(OFX_URL(key));
+    if (data?.ErrorCode || data?.Message) throw new Error(String(data.Message || data.ErrorCode));
+    const points = data?.HistoricalPoints;
+    if (!Array.isArray(points) || !points.length) throw new Error("no rate points returned");
+    const usable = points
+      .map((p2: any) => ({ t: Number(p2?.PointInTime), r: Number(p2?.InterbankRate ?? p2?.Rate) }))
+      .filter((p2: RatePoint) => isFinite(p2.t) && isFinite(p2.r) && p2.r > 0);
+    if (!usable.length) throw new Error("no usable rate points");
+    return usable;
+  })().catch((err) => { ofxSeries.delete(key); throw err; });
+  ofxSeries.set(key, p);
+  return p;
+}
+
+/** The OFX rate for a specific date: the last one published on or before it,
+    within ten days. Never a later rate — see nearestPoint. */
+export async function fxOfxOnDate(code: string, iso: string): Promise<ProviderResult<LiveRate>> {
+  try {
+    if (!iso) throw new Error("no date requested");
+    const series = await ofxAllTime(code);
+    const hit = nearestPoint(series, iso, 10);
+    if (!hit) {
+      throw new Error(
+        `no OFX daily rate published on or before ${iso} (searched back to ${windowStart(iso, 10) || "the start of the series"}); ` +
+        "a rate published after the measurement date cannot be used",
+      );
+    }
+    return { ok: true, value: { rate: hit.rate, asOf: hit.date, provider: "ofx" }, provider: "ofx", units: 1 };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message, provider: "ofx", units: 1 };
+  }
+}
+
 /** OFX public spot-rate history, USD -> code. */
 export async function fxOfx(code: string): Promise<ProviderResult<LiveRate>> {
   try {
-    const url = `https://api.ofx.com/PublicSite.ApiService/SpotRateHistory/allTime/USD/${encodeURIComponent(code)}?DecimalPlaces=6&ReportingInterval=daily&format=json`;
-    const data = await getJson(url);
-    const points = data?.HistoricalPoints;
-    if (!Array.isArray(points) || !points.length) throw new Error("no rate points returned");
-    const last = points[points.length - 1];
-    const rate = Number(last?.InterbankRate ?? last?.Rate);
-    if (!isFinite(rate) || rate <= 0) throw new Error("unusable rate value");
-    const asOf = last?.PointInTime
-      ? new Date(Number(last.PointInTime)).toISOString().slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
-    return { ok: true, value: { rate, asOf, provider: "ofx" }, provider: "ofx", units: 1 };
+    const series = await ofxAllTime(code);
+    const last = series[series.length - 1];
+    if (!last || !isFinite(last.r) || last.r <= 0) throw new Error("unusable rate value");
+    return {
+      ok: true,
+      value: { rate: last.r, asOf: new Date(last.t).toISOString().slice(0, 10), provider: "ofx" },
+      provider: "ofx", units: 1,
+    };
   } catch (err) {
     return { ok: false, error: (err as Error).message, provider: "ofx", units: 1 };
   }
@@ -190,19 +241,13 @@ export async function fxOfxAverage(
   endIso: string,
 ): Promise<ProviderResult<{ rate: number; points: number; from: string; to: string }>> {
   try {
-    const url = `https://api.ofx.com/PublicSite.ApiService/SpotRateHistory/allTime/USD/${encodeURIComponent(code)}?DecimalPlaces=6&ReportingInterval=daily&format=json`;
-    const data = await getJson(url);
-    if (data?.ErrorCode || data?.Message) throw new Error(String(data.Message || data.ErrorCode));
-    const points = data?.HistoricalPoints;
-    if (!Array.isArray(points) || !points.length) throw new Error("no rate points returned");
+    const points = await ofxAllTime(code);
     const start = Date.parse(startIso);
     const end = Date.parse(endIso) + 86399999;
     if (!isFinite(start) || !isFinite(end) || end <= start) throw new Error("bad period");
-    const inRange = points
-      .map((p: any) => ({ t: Number(p?.PointInTime), r: Number(p?.InterbankRate ?? p?.Rate) }))
-      .filter((p: { t: number; r: number }) => isFinite(p.t) && isFinite(p.r) && p.r > 0 && p.t >= start && p.t <= end);
+    const inRange = points.filter((p) => p.t >= start && p.t <= end);
     if (inRange.length < 60) throw new Error(`only ${inRange.length} daily points in ${startIso}..${endIso}`);
-    const rate = inRange.reduce((s: number, p: { r: number }) => s + p.r, 0) / inRange.length;
+    const rate = inRange.reduce((s: number, p) => s + p.r, 0) / inRange.length;
     return {
       ok: true,
       value: { rate: Math.round(rate * 1e6) / 1e6, points: inRange.length, from: startIso, to: endIso },
@@ -249,7 +294,9 @@ export async function fetchLiveRate(
   const attempts: Array<{ provider: string; error: string }> = [];
   for (const id of order) {
     let r: ProviderResult<LiveRate>;
-    if (id === "ofx") r = await fxOfx(code);
+    // With a date in hand OFX can answer it exactly; without one it is the
+    // latest published point, same as before.
+    if (id === "ofx") r = date ? await fxOfxOnDate(code, date) : await fxOfx(code);
     else if (id === "frankfurter") r = await fxFrankfurter(code, date);
     else if (id === "erapi") r = await fxErApi(code);
     else continue;
