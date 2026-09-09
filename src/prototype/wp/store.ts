@@ -10,6 +10,13 @@ import { r2, r2add, sanitize } from "./hygiene";
 import { refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
+  AI_BATCH, TPM_BUDGET, aiMode, askResume, classifyFailure, estTokens, maxTokensFor,
+  norm1, ok as aiOk, parseMap, retryAfterMs, sleep, tpmCorrectLast, tpmNote, tpmWaitMs,
+  type AiError, type AiMode, type Proposal,
+} from "./aiMapping";
+import { sessionSnapshot } from "../session";
+import { apiBase } from "../api";
+import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
   type DocClass, type DocKind,
 } from "./classify";
@@ -79,7 +86,7 @@ import { lookupRates, yearFromPeriod, FX_META } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
 import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
 import { collectCaptionLabels, detectLanguage, displayLabel, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
-import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfile";
+import { cleanFor, detectProfile, looksLikeDate, sniffCurrency, type DetectedField, type ProfileCandidate } from "./detectProfile";
 
 declare const JSZip: any;
 
@@ -249,7 +256,17 @@ export type Entity = {
   /* `section` travels with the row so the AI pass (and the reviewer) can see
      which banner it was printed under — a proposal that contradicts it is a
      documentary contradiction, not a judgement call. */
-  unmatched: (ExtractedRow & { docId?: string; docName?: string; section?: Section | null })[];
+  unmatched: (ExtractedRow & {
+    docId?: string; docName?: string; section?: Section | null;
+    /** What the model proposed for this caption and why it was refused (or
+        the reason before a proposal replaced it). Kept so the review row can
+        show the reasoning rather than just "unmapped". */
+    aiProposal?: { to: string; confidence: string; reason: string; refused?: boolean };
+    originalReason?: string;
+  })[];
+  /** Caption/value pairs from the profile pages that no matcher claimed —
+      the input to the AI profile pass. */
+  unmatchedProfile: ProfileCandidate[];
   log: string[];
   processedAt: string | null;
 };
@@ -262,6 +279,16 @@ export type GroqState = {
   calls: number;
   tokens: number;
   lastError: string;
+  /** Whether the automatic mapping pass runs as processing step 6. Undefined
+      means "not decided", which reads as on — the pass is the default. */
+  autoMap?: boolean;
+  /** A transient condition worth showing WHILE it lasts (rate-limit pause,
+      one failed attempt in a retry) without turning the panel red. Distinct
+      from lastError, which is a state, not an event. */
+  notice?: string;
+  noticeAt?: number | null;
+  /** True once the preparer has seen and acknowledged the panel. */
+  checked?: boolean;
 };
 
 export type LogEvent = {
@@ -324,6 +351,9 @@ export const PROCESS_STEPS = [
   "Extract and normalise line items",
   "Map to work paper schedule lines",
   "Apply FX policy and validations",
+  // Last, deliberately: the model only ever sees what the rules could not
+  // place, so every deterministic answer is already fixed before it runs.
+  "Map the remainder with AI",
 ];
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
@@ -362,6 +392,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     translations: {},
     translationFailures: {},
     unmatched: [],
+    unmatchedProfile: [],
     log: [],
     processedAt: null,
   };
@@ -1346,16 +1377,18 @@ export const actions = {
       contributions: start.contributions, unmatched: start.unmatched,
       reviewItems: start.reviewItems, extraWrites: start.extraWrites,
       dividends: start.dividends, docClasses: start.docClasses,
+      unmatchedProfile: start.unmatchedProfile || [],
     };
     updateEntity(entityId, {
       status: "processing", progress: 0, log: [],
       lines: {}, relabels: {}, sourceLabels: {}, contributions: {}, unmatched: [],
+      unmatchedProfile: [],
       reviewItems: [], extraWrites: [], dividends: [], docClasses: {},
     });
     const log: string[] = [];
     const bundles: { file: EntityFile; parsed: ParsedDoc; cls: DocClass }[] = [];
     const mapRows: MapRow[] = [];
-    const profileGrids: string[][][] = [];
+    const profileGrids: { rows: string[][]; doc: string }[] = [];
     const review: ReviewItem[] = [];
     let caseYears: { cy: number | null; py: number | null } = { cy: null, py: null };
     let equity: EquityFacts | null = null;
@@ -1540,7 +1573,7 @@ export const actions = {
             }
             const profilePages = pagesForFeed(cls, "profile");
             if (profilePages.size) {
-              profileGrids.push(parsed.pdf.rows.filter((r) => profilePages.has(r.page)).map((r) => r.cells.map((c) => c.text)));
+              profileGrids.push({ rows: parsed.pdf.rows.filter((r) => profilePages.has(r.page)).map((r) => r.cells.map((c) => c.text)), doc: file.name });
             }
           } else if (cls.kind === "related-party-ledger") {
             ledger = summarizeLedger(parsed.grid, file.name) || ledger;
@@ -1549,7 +1582,7 @@ export const actions = {
               mapRows.push({ row, docId: file.id, docName: file.name, feed: "both", kind: "grid" });
               read++;
             }
-            profileGrids.push(parsed.grid);
+            profileGrids.push({ rows: parsed.grid, doc: file.name });
           }
           if (read) log.push(`${file.name}: ${read} candidate line items read`);
         }
@@ -1987,8 +2020,10 @@ export const actions = {
             }
           }
 
-          for (const rows of profileGrids) {
-            const found = detectProfile(rows);
+          const profileCandidates: ProfileCandidate[] = [];
+          for (const { rows, doc } of profileGrids) {
+            const found = detectProfile(rows, { doc });
+            for (const cand of found.unmatched) profileCandidates.push(cand);
             for (const d of found.profile) propose(profile, d.key, d.value, d.sourceLabel);
             for (const d of found.ownership) propose(ownership, d.key, d.value, d.sourceLabel);
             for (const cat of found.categories) if (!categories[cat]) {
@@ -1999,7 +2034,7 @@ export const actions = {
           }
 
           if (!profile.currency) {
-            for (const rows of profileGrids) {
+            for (const { rows } of profileGrids) {
               const sniff = sniffCurrency(rows);
               if (sniff) { propose(profile, "currency", sniff.value, sniff.sourceLabel); break; }
             }
@@ -2025,7 +2060,20 @@ export const actions = {
           }
           const nameSync = profile.legalName && /^Entity \d+$/.test(fresh.name) ? { name: profile.legalName } : {};
 
-          updateEntity(entityId, { profile, ownership, categories, detected, ...nameSync });
+          /* Candidates for the AI profile pass: deduped, capped at 60 for
+             the whole entity, and dropped when a mapping rule already claims
+             the caption — that one is a line item, not a particular. */
+          const seenCand = new Set<string>();
+          const unmatchedProfile: ProfileCandidate[] = [];
+          for (const cand of profileCandidates) {
+            if (unmatchedProfile.length >= 60) break;
+            if (seenCand.has(cand.norm)) continue;
+            seenCand.add(cand.norm);
+            if (matchRule(cand.caption, state.rules) !== null) continue;
+            unmatchedProfile.push(cand);
+          }
+
+          updateEntity(entityId, { profile, ownership, categories, detected, unmatchedProfile, ...nameSync });
           if (filled) {
             log.push(`${filled} entity detail(s) detected from the documents`);
             logEvent("Entity details detected", `${filled} field(s) auto-filled`, fresh.name, "system");
@@ -2186,6 +2234,18 @@ export const actions = {
         }
         updateEntity(entityId, { extraWrites: writes.list, dividends: writes.dividends, reviewItems: merged, log: [...log] });
       }
+
+      /* Step 6 — the model places what the rules could not. Last, so every
+         deterministic answer is already fixed before it runs, and failure-safe
+         because a work paper without the AI pass is still a work paper. */
+      if (step === 5) {
+        try {
+          await aiRun(entityId, log);
+        } catch (err) {
+          log.push(`AI mapping did not run — ${(err as Error).message}`);
+        }
+        updateEntity(entityId, { log: [...log] });
+      }
     }
 
     updateEntity(entityId, {
@@ -2233,57 +2293,23 @@ export const actions = {
     }
   },
 
+  /** Manual "map the remaining captions with AI". Same pass processing runs
+      as step 6, forced so it ignores the auto-map preference. */
   async resolveWithGroq(entityId: string) {
     const ent = state.entities.find((e) => e.id === entityId);
-    if (!ent || !ent.unmatched.length) { toast("Nothing unmatched to resolve"); return; }
-    if (!state.groq.key) { toast("Add a Groq API key in Settings first", "bad"); return; }
-
-    const targets = [
-      ...IS_LINES.map((l) => `IS:${l.row} = ${l.label}`),
-      ...BS_LINES.map((l) => `BS:${l.row} = ${l.label}`),
-    ].join("\n");
-    const labels = ent.unmatched.map((u, i) => `${i}. ${u.label}`).join("\n");
-
+    if (!ent) { toast("Nothing unmatched to resolve"); return; }
+    if (ent.status === "processing") { toast("Processing is running — AI mapping runs automatically"); return; }
+    if (!ent.unmatched.length && !(ent.unmatchedProfile || []).length) { toast("Nothing unmatched to resolve"); return; }
+    if (!aiReady()) { toast("No AI key available — this deployment has no server key, so add your own in Settings", "bad"); return; }
+    if (state.busy) return;
     set({ busy: true });
     try {
-      const raw = await groqCall([
-        { role: "system", content: "You map trial-balance labels onto US Form 5471 work paper lines. Reply with JSON only." },
-        {
-          role: "user",
-          content: `Available targets:\n${targets}\n\nLabels to map:\n${labels}\n\nReturn JSON only: {"map":{"<index>":"<target id or null>"}}. Use null when no target fits.`,
-        },
-      ], true);
-      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
-      const fresh = state.entities.find((e) => e.id === entityId);
-      if (!fresh) { set({ busy: false }); return; }
-      const lines = { ...fresh.lines };
-      const sourceLabels = { ...fresh.sourceLabels };
-      const contributions = { ...fresh.contributions };
-      const relabels = { ...fresh.relabels };
-      const mapOverrides = { ...fresh.mapOverrides };
-      const still: (ExtractedRow & { docId?: string; docName?: string })[] = [];
-      let n = 0;
-      fresh.unmatched.forEach((u, i) => {
-        const t = parsed && parsed.map ? parsed.map[String(i)] : null;
-        if (!t || typeof t !== "string" || !manualApply(fresh, lines, contributions, relabels, t, u, "groq")) {
-          still.push(u);
-          return;
-        }
-        sourceLabels[t] = { label: u.label, values: u.values, years: u.years };
-        mapOverrides[norm(u.label)] = { to: t };
-        n++;
-      });
-      logEvent("Groq mapping applied", `${n} label(s) resolved with ${state.groq.model}`, fresh.name, "groq");
-      updateEntity(entityId, {
-        lines,
-        relabels,
-        sourceLabels,
-        contributions,
-        mapOverrides,
-        unmatched: still,
-        log: [...fresh.log, `Groq resolved ${n} unmatched labels (${state.groq.model})`],
-      });
-      toast(`Groq mapped ${n} of ${n + still.length} labels`, "ok");
+      const r = await aiRun(entityId, undefined, true);
+      if (r.considered) {
+        toast(`Groq mapped ${r.applied} of ${r.considered} caption(s)${r.low ? ` · ${r.low} need review` : ""}`, r.applied ? "ok" : "");
+      } else {
+        toast("Nothing eligible for AI mapping");
+      }
     } catch (err) {
       toast("Groq mapping failed: " + (err as Error).message, "bad");
     }
@@ -2826,7 +2852,7 @@ function rebuildShareholderWrites(ent: Entity): CellWrite[] {
     excludedSheets are untouched. Returns null when nothing changed. */
 function pruneRemovedDocData(ent: Entity): Partial<Entity> | null {
   const names = ent.files.map((f) => f.name);
-  const cites = (label?: string, src?: { doc?: string }): boolean => {
+  const cites = (label?: string, src?: { doc?: string | null }): boolean => {
     if (src?.doc) return names.includes(src.doc);
     if (!label) return true;
     // Only doc-shaped provenance is prunable; "statement year" and friends
@@ -3861,37 +3887,478 @@ function downloadBlob(blob: Blob, filename: string) {
   }
 }
 
-async function groqCall(messages: Array<{ role: string; content: string }>, jsonMode = false): Promise<string> {
+/* ---------------- AI mapping (processing step 6) ---------------- */
+
+/* The model is the LAST resort and is never trusted. It only ever sees
+   captions the keyword rules could not place, and every answer it gives goes
+   through the same gate a manual assignment does — plus two vetoes the rules
+   cannot express:
+
+     - a caption naming a bank account is a BALANCE, whatever the model
+       thinks; "Cash management account 1234" is not income;
+     - a caption printed under a section banner cannot be booked to the other
+       side of the statement. That is the document contradicting the model,
+       and the document wins.
+
+   A low-confidence answer is still booked — the figure belongs somewhere, and
+   an unplaced figure is worse than a flagged one — but it is flagged too, and
+   the flag names the model as its author. */
+
+/** Human-readable name for a template line, for messages the preparer reads. */
+const targetLabel = (target: string) => {
+  const spec = /^IS:/.test(target)
+    ? IS_LINES.find((l) => `IS:${l.row}` === target)
+    : BS_LINES.find((l) => `BS:${l.row}` === target);
+  return spec ? (/^IS:/.test(target) ? "Sch C · " : "Sch F · ") + spec.label : target;
+};
+
+/* A caption naming a bank account is a balance-sheet item however plausible an
+   income line looks. IBANs, account numbers and the account-type words are all
+   evidence of the same thing. */
+const BANK_ACCOUNT = /\biban\b|account\s*(?:#|no\.?\s|number)|\(#\d+\)|\b[a-z]{2}\d{2}[a-z]{4}\d{6,}\b|\b(?:cheque|savings|transaction|cash management)\s+account\b/i;
+
+export type AiRunResult = { applied: number; considered: number; low: number; left: number };
+
+/**
+ * Map the leftovers with the model. Runs as step 6 of processing, and again
+ * on demand from the mapping screen.
+ *
+ * @param log  when given, messages are appended to the caller's log instead of
+ *             the entity's — processing owns its log until the step ends.
+ * @param forced  a manual run; ignores the auto-map preference.
+ */
+async function aiRun(entityId: string, log?: string[], forced?: boolean): Promise<AiRunResult> {
+  const messages = log || [];
+  const ent = state.entities.find((e) => e.id === entityId);
+  const nothing: AiRunResult = { applied: 0, considered: 0, low: 0, left: 0 };
+  if (!ent) return nothing;
+  if (!forced && state.groq.autoMap === false) return nothing;
+
+  const profileCands = ent.unmatchedProfile || [];
+  /* Only captions the RULES could not place, and only where the preparer has
+     not already decided. An override is a human decision; re-proposing over it
+     would undo their work on every re-process. */
+  const rows = ent.unmatched
+    .map((row) => ({ row }))
+    .filter((x) => /No mapping rule matches/.test(x.row.reason || "") && !(ent.mapOverrides && ent.mapOverrides[norm(x.row.label)]));
+  if (!rows.length && !profileCands.length) return nothing;
+
+  if (!aiReady()) {
+    messages.push("AI mapping skipped — no AI key available: this deployment has no server key and none is configured in Settings ▸ AI platform");
+    if (!log) updateEntity(entityId, { log: [...ent.log, ...messages] });
+    return { ...nothing, left: rows.length + profileCands.length };
+  }
+
+  let applied = 0, considered = 0, low = 0, left = 0;
+  let failure: string | null = null;
+
+  /* ---- the line-item pass ---- */
+  if (rows.length) {
+    const catalogue = [
+      ...IS_LINES.map((l) => `IS:${l.row} = ${l.label}${l.row === 12 ? " (cost of goods sold ONLY — operating overheads belong on IS:34-50 other deductions)" : ""}`),
+      ...BS_LINES.map((l) => `BS:${l.row} = ${l.label}`),
+    ].join("\n");
+    const answers = new Map<string, Proposal>();
+
+    const ask = async (batchRows: typeof rows, rich: boolean) => {
+      const send = async (batch: typeof rows) => {
+        considered += batch.length;
+        /* Two passes over the same captions, cheap then thorough. The first
+           sends captions alone; the second adds the amounts, the year tags,
+           the source document and the section banner, and tells the model
+           that an "other" line is an acceptable answer. Sending everything to
+           everything costs four times the tokens for the ~15% that need it. */
+        const body = rich
+          ? batch.map((x, i) =>
+              `${i}. ${x.row.label} | amounts: ${(x.row.values || []).join(", ")} | year tags: ${(x.row.years || []).map((y) => y ?? "none").join(", ")} | from: ${x.row.docName || "document"}${x.row.page ? " p." + x.row.page : ""}${x.row.section ? ` | printed under the “${x.row.section}” banner (only map to that side)` : ""} | the keyword rules could not place it`).join("\n")
+          : batch.map((x, i) => `${i}. ${x.row.label}${x.row.section ? ` [section: ${x.row.section}]` : ""}`).join("\n");
+        const preamble = rich
+          ? "These captions were not resolved on the first attempt. Use the amounts, year tags and source document as extra evidence, and pick the closest reasonable line — an \"Other income\" or \"Other deduction\" line is a valid answer for an item that fits nowhere else. Only use null when the caption is a subtotal, a total, or not a financial line at all.\n\n"
+          : "";
+        return parseMap(await groqCall([
+          { role: "system", content: "You map trial-balance labels onto US Form 5471 work paper lines. Reply with JSON only." },
+          { role: "user", content: `${preamble}Worked examples (same schema): "Creditors" -> {"t":"BS:46","c":"high","r":"trade payables"} · "Salaries and social security" -> {"t":"IS:26","c":"high","r":"personnel cost"} · "Depreciation of tangible fixed assets" -> {"t":"IS:30","c":"high","r":"depreciation"} · "Total operating costs" -> {"t":null,"c":"high","r":"subtotal"} · "Result before taxation" -> {"t":null,"c":"high","r":"subtotal"}\n\nAvailable targets:\n${catalogue}\n\nLabels to map:\n${body}\n\nReturn JSON only: {"map":{"<index>":{"t":"<target id or null>","c":"high|medium|low","r":"<short reason, max 12 words>"}}}. Use null for t when no target fits. c is your confidence that the mapping is correct.` },
+        ], true, { maxTokens: maxTokensFor(batch.length), timeoutMs: 2 * GROQ_TIMEOUT_MS }));
+      };
+      const stopped = await askResume(
+        batchRows, send,
+        (batch, map) => batch.forEach((x, i) => {
+          const p = norm1((map as Record<string, unknown>)[String(i)]);
+          if (p && p.t) answers.set(norm(x.row.label), p);
+        }),
+        (m) => messages.push(m),
+      );
+      if (stopped) failure = stopped.message || String(stopped);
+    };
+
+    await ask(rows, false);
+    // Pass two for anything unresolved OR merely low-confidence. A blank in
+    // pass two never erases a pass-one answer: `answers` is only ever written
+    // when the model returns a target.
+    const retry = rows.filter((x) => {
+      const p = answers.get(norm(x.row.label));
+      return !p || !p.t || !aiOk(p);
+    });
+    if (retry.length && !failure) await ask(retry, true);
+
+    const fresh = state.entities.find((e) => e.id === entityId);
+    if (fresh && answers.size) {
+      const lines = { ...fresh.lines };
+      const sourceLabels = { ...fresh.sourceLabels };
+      const contributions = { ...fresh.contributions };
+      const relabels = { ...fresh.relabels };
+      const mapOverrides = { ...fresh.mapOverrides };
+      const stillUnmatched: Entity["unmatched"] = [];
+      const flags: ReviewItem[] = [];
+      const booked = new Set<string>();
+
+      for (const row of fresh.unmatched) {
+        const key = norm(row.label);
+        const p = /No mapping rule matches/.test(row.reason || "") ? answers.get(key) : undefined;
+        if (!p || !p.t) { stillUnmatched.push(row); continue; }
+
+        const refuse = (why: string) => {
+          const original = row.originalReason || row.reason;
+          stillUnmatched.push({
+            ...row,
+            originalReason: original,
+            aiProposal: { to: p.t!, confidence: p.c, reason: p.r, refused: true },
+            reason: `${original} · ${why}`,
+          });
+        };
+
+        if (/^IS:/.test(p.t) && BANK_ACCOUNT.test(row.label || "")) {
+          refuse(`AI proposed ${targetLabel(p.t)}, but the caption names a bank account — a balance, not income or expense; refused.`);
+          continue;
+        }
+        if (row.section && !sectionOk(row.section, p.t)) {
+          refuse(`AI proposed ${targetLabel(p.t)} but the caption was printed under the "${row.section}" banner — refused as a documentary contradiction.`);
+          continue;
+        }
+        if (!manualApply(fresh, lines, contributions, relabels, p.t, row, "groq")) {
+          // manualApply is the same gate a human assignment passes, so an
+          // invalid or unbookable target fails here rather than in the sheet.
+          /* A VALID target that manualApply still refused means the row
+             itself cannot be booked — several figures and no year identity —
+             rather than the model naming a line that does not exist. Two
+             different problems, two different messages. */
+          refuse(VALID_TARGETS.has(p.t)
+            ? `AI proposed ${targetLabel(p.t)} but the row has no single unambiguous current-year figure to book — enter it on the line directly.`
+            : `AI proposed an invalid line id (${p.t}) — ignored.`);
+          continue;
+        }
+
+        sourceLabels[p.t] = { label: row.label, values: row.values, years: row.years };
+        mapOverrides[key] = { to: p.t };
+        booked.add(key);
+        applied++;
+        if (!aiOk(p)) {
+          low++;
+          flags.push({
+            id: `ai-low-${key}`, level: "warn", category: "mapping", applied: true,
+            message: `“${row.label}” was mapped to ${targetLabel(p.t)} by the model with LOW confidence${p.r ? " — " + p.r : ""}. The figure is booked; verify the line before filing or remap it on Mapping & adjustments.`,
+            source: row.docName,
+          });
+        }
+      }
+
+      left = rows.filter((x) => !booked.has(norm(x.row.label))).length;
+      const flagIds = new Set(flags.map((f) => f.id));
+      updateEntity(entityId, {
+        lines, relabels, sourceLabels, contributions, mapOverrides,
+        unmatched: stillUnmatched,
+        reviewItems: [...fresh.reviewItems.filter((r) => !flagIds.has(r.id)), ...flags],
+      });
+      messages.push(`AI mapping: ${applied} caption(s) mapped${low ? ` (${low} low-confidence — flagged for review)` : ""}${left ? ` · ${left} could not be placed` : ""}`);
+      if (applied) logEvent("AI mapping applied", `${applied} caption(s) mapped, ${low} flagged low-confidence (${state.groq.model})`, fresh.name, "groq");
+    } else if (fresh && rows.length) {
+      left = rows.length;
+      if (!failure) messages.push(`AI mapping: the model reviewed ${rows.length} caption(s) but could not place any of them — they remain in the Review tab`);
+    }
+  }
+
+  /* ---- the profile pass ---- */
+  /* The model names a FIELD; the value is always the document's own. It never
+     invents one, and two type guards refuse rather than write: a date field
+     that did not parse as a date, and a currency that is not a 3-letter code.
+     Only blank fields are filled — a value already present was either read
+     with a matcher or typed by the preparer, and both outrank a proposal. */
+  if (profileCands.length && !failure) {
+    const fields = [...PROFILE_FIELDS, ...OWNERSHIP_FIELDS];
+    const catalogue = fields.map((f) => `${f.key} = ${f.label}`).join("\n");
+    const answers = new Map<string, Proposal>();
+
+    const send = async (batch: ProfileCandidate[]) => {
+      considered += batch.length;
+      return parseMap(await groqCall([
+        { role: "system", content: "You map document captions onto the entity-profile fields of a US Form 5471 work paper. Reply with JSON only." },
+        { role: "user", content: `Available fields:\n${catalogue}\n\nCaptions from the client documents (caption => adjacent value):\n${batch.map((c, i) => `${i}. ${c.caption} => ${String(c.value).slice(0, 60)}`).join("\n")}\n\nReturn JSON only: {"map":{"<index>":{"k":"<field key or null>","c":"high|medium|low","r":"<short reason, max 12 words>"}}}. Use null for k when no field matches. Never guess a value - you only name the field the caption denotes.` },
+      ], true, { maxTokens: maxTokensFor(batch.length), timeoutMs: 2 * GROQ_TIMEOUT_MS }));
+    };
+    const stopped = await askResume(
+      profileCands, send,
+      (batch, map) => batch.forEach((c, i) => {
+        const p = norm1((map as Record<string, unknown>)[String(i)]);
+        if (p) answers.set(c.norm, p);
+      }),
+      (m) => messages.push(m.replace("AI mapping", "AI profile")),
+    );
+    if (stopped) failure = stopped.message || String(stopped);
+
+    const fresh = state.entities.find((e) => e.id === entityId);
+    if (fresh && answers.size) {
+      const profile = { ...fresh.profile };
+      const ownership = { ...fresh.ownership };
+      const detected = { ...fresh.detected };
+      const stillUnmatched: ProfileCandidate[] = [];
+      const flags: ReviewItem[] = [];
+      let filled = 0;
+      let currencyChanged = false;
+
+      for (const cand of fresh.unmatchedProfile || []) {
+        const p = answers.get(cand.norm);
+        if (!p || !p.t) { stillUnmatched.push(cand); continue; }
+        const spec = fields.find((f) => f.key === p.t);
+        if (!spec) { stillUnmatched.push(cand); continue; }
+
+        const target = PROFILE_FIELDS.some((f) => f.key === p.t) ? profile : ownership;
+        const clean = cleanFor(p.t);
+        const value = clean ? clean(cand.value) : cand.value;
+        if (value === null || String(value).trim() === "") { stillUnmatched.push(cand); continue; }
+
+        if (/^(cyEnd|pyEnd|formed)$/.test(p.t) && !looksLikeDate(value)) {
+          stillUnmatched.push(cand);
+          flags.push({
+            id: `ai-profile-bad-${norm(cand.caption)}`, level: "warn", category: "profile", applied: false,
+            message: `“${cand.caption}” was read as ${spec.label} = “${String(value).slice(0, 48)}” by the model, which does not parse as a date — NOT applied. Enter it in Basic Information if known.`,
+            source: cand.src?.doc || undefined,
+          });
+          continue;
+        }
+        if (p.t === "currency" && !/^[A-Za-z]{3}$/.test(String(value).trim())) {
+          stillUnmatched.push(cand);
+          flags.push({
+            id: `ai-profile-bad-${norm(cand.caption)}`, level: "warn", category: "profile", applied: false,
+            message: `“${cand.caption}” was read as Functional currency = “${String(value).slice(0, 48)}”, which is not a 3-letter code — NOT applied.`,
+            source: cand.src?.doc || undefined,
+          });
+          continue;
+        }
+        if (target[p.t]) continue;    // already known; a proposal never overwrites
+
+        target[p.t] = String(value);
+        detected[p.t] = {
+          key: p.t, value: String(value), sourceLabel: cand.caption,
+          confidence: p.c === "high" ? "high" : "medium",
+          src: { ...cand.src, label: cand.caption, via: "groq" },
+        };
+        if (p.t === "currency") currencyChanged = true;
+        filled++;
+        applied++;
+        if (!aiOk(p)) {
+          low++;
+          flags.push({
+            id: `ai-profile-${norm(cand.caption)}`, level: "warn", category: "profile", applied: true,
+            message: `“${cand.caption}” was read as ${spec.label} = ${String(value)} by the model with LOW confidence${p.r ? " — " + p.r : ""}. It is filled in; verify it in Basic Information before filing.`,
+            source: cand.src?.doc || undefined,
+          });
+        }
+      }
+
+      const flagIds = new Set(flags.map((f) => f.id));
+      updateEntity(entityId, {
+        profile, ownership, detected, unmatchedProfile: stillUnmatched,
+        reviewItems: [...fresh.reviewItems.filter((r) => !flagIds.has(r.id)), ...flags],
+      });
+      if (filled) {
+        messages.push(`AI mapped ${filled} entity detail(s) from document captions`);
+        logEvent("AI profile mapping applied", `${filled} entity detail(s) filled (${state.groq.model})`, fresh.name, "groq");
+      }
+      // A currency the model supplied changes which rates apply.
+      if (currencyChanged) actions.autoFillRates(entityId, false);
+    }
+  }
+
+  if (failure) {
+    const cur = state.entities.find((e) => e.id === entityId);
+    if (cur) {
+      updateEntity(entityId, {
+        reviewItems: [...cur.reviewItems.filter((r) => r.id !== "ai-error"), {
+          id: "ai-error", level: "warn", category: "mapping", applied: false,
+          message: `AI mapping could not complete — ${String(failure).slice(0, 300)}. The remaining captions are in the Review tab; fix the issue and run "Map remaining captions with AI".`,
+        }],
+      });
+    }
+    toast("AI mapping problem — " + String(failure).slice(0, 140), "bad");
+  }
+
+  if (!log) {
+    const cur = state.entities.find((e) => e.id === entityId);
+    if (cur && messages.length) updateEntity(entityId, { log: [...cur.log, ...messages] });
+  }
+  return { applied, considered, low, left };
+}
+
+/* ---------------- talking to the model ---------------- */
+
+/** Where the key comes from, from what the backend has told us. */
+export function aiState(): AiMode {
+  try {
+    const s = sessionSnapshot();
+    return aiMode(!!s.remote, s.connected === null ? undefined : s.connected, s.aiProxy === true);
+  } catch {
+    return "personal";
+  }
+}
+
+const useProxy = () => aiState() === "proxy";
+
+/** True when a request can actually be made — the proxy will supply the key,
+    or the preparer has entered one. Checked before a run rather than after,
+    so the log says "skipped, no key" instead of failing 25 times. */
+export const aiReady = () => useProxy() || !!state.groq.key;
+
+const groqEndpoint = () => (useProxy() ? `${apiBase()}/api/ai/chat` : "https://api.groq.com/openai/v1/chat/completions");
+
+function groqHeaders(): Record<string, string> {
+  if (!useProxy()) return { "Content-Type": "application/json", Authorization: "Bearer " + state.groq.key };
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  // Never the API key itself: in proxy mode the browser has no key, and the
+  // backend authenticates the BROWSER instead.
+  try {
+    const token = sessionSnapshot().aiToken;
+    if (token) headers["X-AI-Proxy-Token"] = token;
+  } catch { /* no session yet */ }
+  return headers;
+}
+
+/** A transient condition worth showing while it lasts, without turning the
+    panel red — a rate-limit pause is not an error. */
+function groqNote(text: string, patch?: Partial<GroqState>) {
+  set({ groq: { ...state.groq, notice: text || "", noticeAt: text ? Date.now() : null, ...(patch || {}) } });
+}
+
+const GROQ_TIMEOUT_MS = 12000;
+
+/**
+ * One request to the model, with the whole failure surface handled.
+ *
+ * Every throw carries `kind`, `status` and `retryMs` so askResume can decide
+ * what to do without re-parsing the message. A transient failure deliberately
+ * leaves `status` and `lastError` as they were: a retry that then succeeds
+ * should not have left the panel red in the meantime.
+ */
+async function groqCall(
+  messages: Array<{ role: string; content: string }>,
+  jsonMode = false,
+  opts?: { maxTokens?: number; timeoutMs?: number },
+): Promise<string> {
+  const priorStatus = state.groq.status === "testing" ? "online" : state.groq.status;
+  const maxTokens = opts?.maxTokens || 1500;
+
+  // Wait for room in the per-minute budget rather than being refused. The
+  // estimate is recorded BEFORE the request, so parallel calls see it.
+  const estimate = estTokens(messages, maxTokens);
+  const wait = tpmWaitMs(estimate);
+  if (wait > 0) {
+    groqNote(`Pausing ${Math.ceil(wait / 1000)}s so the request fits the model’s ${TPM_BUDGET.toLocaleString("en-US")} tokens-per-minute limit…`);
+    await sleep(wait);
+  }
+  tpmNote(estimate);
+
   const t0 = Date.now();
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: "Bearer " + state.groq.key },
-    body: JSON.stringify({
-      model: state.groq.model,
-      messages,
-      temperature: 0,
-      max_tokens: 1500,
-      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-    }),
-  });
+  const controller = opts?.timeoutMs && typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), opts!.timeoutMs) : null;
+  let res: Response;
+  try {
+    // A model retired by the provider is silently replaced with a current one
+    // rather than failing every request until someone reads the error.
+    const model = GROQ_MODELS.includes(state.groq.model)
+      ? state.groq.model
+      : (set({ groq: { ...state.groq, model: GROQ_MODELS[0] } }), GROQ_MODELS[0]);
+    res = await fetch(groqEndpoint(), {
+      method: "POST",
+      headers: groqHeaders(),
+      ...(useProxy() ? { credentials: "include" as const } : {}),
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature: 0,
+        max_tokens: maxTokens,
+        // The gpt-oss models spend output tokens on reasoning by default,
+        // which is charged against the same budget and adds nothing here.
+        ...(/gpt-oss/.test(state.groq.model) || !GROQ_MODELS.includes(state.groq.model) ? { reasoning_effort: "low" } : {}),
+        ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+      }),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+  } catch (netErr) {
+    const err: AiError = new Error(
+      (netErr as Error)?.name === "AbortError"
+        ? "the request timed out before Groq replied"
+        : `could not reach Groq (${(netErr as Error)?.message || "network error"})`,
+    );
+    err.kind = "transient";
+    err.status = 0;
+    err.retryMs = 3000;
+    set({ groq: { ...state.groq, status: priorStatus, latency: Date.now() - t0, calls: state.groq.calls + 1, notice: err.message, noticeAt: Date.now() } });
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
   const latency = Date.now() - t0;
   set({ usage: { ...state.usage, api: state.usage.api + 1 } });
 
   if (!res.ok) {
     const body = await res.text();
-    const msg = `${res.status} ${body.slice(0, 160)}`;
-    set({ groq: { ...state.groq, status: "error", latency, calls: state.groq.calls + 1, lastError: msg } });
-    throw new Error(msg);
+    let parsed: any = null;
+    try { parsed = JSON.parse(body); } catch { /* not JSON */ }
+    const code = parsed?.error?.code || "";
+    const detail = parsed?.error?.message || body.slice(0, 400);
+    const kind = code === "model_decommissioned" ? "fatal" : classifyFailure(res.status, code || detail);
+    const message =
+      code === "model_decommissioned"
+        ? `the AI model "${state.groq.model}" was retired by Groq — pick a current model in Settings ▸ AI platform`
+      : kind === "credential"
+        ? (useProxy()
+            ? "the backend rejected this browser — the AI proxy token or origin was refused; set the token under Settings ▸ Tool configuration"
+            : "Groq rejected the API key — check it in Settings ▸ AI platform (keys start with gsk_ and come from console.groq.com/keys)")
+      : res.status === 503 && useProxy()
+        ? "the server has no AI key configured (set GROQ_API_KEY on the backend)"
+      : res.status === 413
+        ? `the batch was larger than the model’s per-minute token limit (${detail.slice(0, 160)})`
+      : res.status === 429
+        ? `Groq rate limit reached (${detail.slice(0, 160)})`
+        : `${res.status} ${detail.slice(0, 400)}`;
+
+    const err: AiError = new Error(message);
+    err.kind = kind;
+    err.status = res.status;
+    err.retryMs = retryAfterMs(res.status, detail, res.headers?.get?.("retry-after"));
+    // A refusal for size or rate means the estimate was too low: charge the
+    // whole budget so the next request definitely waits.
+    if (res.status === 413 || res.status === 429) tpmNote(TPM_BUDGET);
+    set({ groq: {
+      ...state.groq,
+      status: kind === "transient" ? priorStatus : "error",
+      latency, calls: state.groq.calls + 1,
+      lastError: kind === "transient" ? state.groq.lastError : message,
+      notice: kind === "transient" ? message : "",
+      noticeAt: kind === "transient" ? Date.now() : null,
+    } });
+    throw err;
   }
+
   const data = await res.json();
+  const used = data.usage?.total_tokens || 0;
+  tpmCorrectLast(used);   // the estimate was a guess; this is the fact
   set({
     groq: {
       ...state.groq,
-      status: "online",
-      latency,
-      calls: state.groq.calls + 1,
-      tokens: state.groq.tokens + (data.usage ? data.usage.total_tokens || 0 : 0),
-      lastError: "",
+      status: "online", latency, calls: state.groq.calls + 1,
+      tokens: state.groq.tokens + used,
+      lastError: "", notice: "", noticeAt: null,
     },
   });
   return data.choices[0].message.content as string;

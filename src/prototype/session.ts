@@ -13,6 +13,14 @@ export type SessionState = {
   lastSavedAt: string | null;
   /** entity client id -> server workpaper id */
   workpaperIds: Record<string, string>;
+  /** The backend reports whether it has an AI key of its own. Undefined until
+      the probe answers; false means "asked, and it has none" — a different
+      situation from "not asked yet", and the preparer needs different advice
+      in each. */
+  aiProxy?: boolean;
+  /** Token the backend requires from this browser to use its key. */
+  aiToken?: string | null;
+  aiTokenRequired?: boolean;
 };
 
 let state: SessionState = {
@@ -22,6 +30,9 @@ let state: SessionState = {
   saveState: "idle",
   lastSavedAt: null,
   workpaperIds: {},
+  aiProxy: undefined,
+  aiToken: null,
+  aiTokenRequired: false,
 };
 
 const listeners = new Set<() => void>();

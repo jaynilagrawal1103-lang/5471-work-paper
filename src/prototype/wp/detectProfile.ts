@@ -11,8 +11,9 @@ export type DetectedField = {
   sourceLabel: string;
   confidence: "high" | "medium";
   /** Stable provenance for the staleness prune — the source document's name
-      when known (sourceLabel is human-prose and may not start with it). */
-  src?: { doc?: string };
+      when known (sourceLabel is human-prose and may not start with it), plus
+      how the value was arrived at when that was not a keyword match. */
+  src?: { doc?: string | null; page?: number | null; heading?: string | null; label?: string; via?: string };
 };
 
 type Matcher = {
@@ -105,6 +106,23 @@ const MATCHERS: Matcher[] = [
   { key: "pyEnd", labels: ["prior year end", "previous year end", "comparative period", "prior period"], clean: cleanDate },
 ];
 
+/** The cleaner a matcher would have applied to this field's value. Exported
+    so the AI profile pass — which names a FIELD and reuses the document's own
+    value — puts that value through exactly the same normalisation a keyword
+    match would have. */
+export function cleanFor(key: string): ((raw: string) => string | null) | undefined {
+  return [...MATCHERS, ...OWNERSHIP_MATCHERS].find((m) => m.key === key)?.clean;
+}
+
+/** Does a string parse as a plausible calendar date? Used to REFUSE an AI
+    proposal for a date field rather than write a sentence into a date cell. */
+export function looksLikeDate(value: unknown): boolean {
+  const s = String(value || "").trim();
+  if (!s || s.length > 24) return false;
+  const d = new Date(s);
+  return !isNaN(+d) && d.getFullYear() > 1900 && d.getFullYear() < 2100;
+}
+
 const OWNERSHIP_MATCHERS: Matcher[] = [
   { key: "ownStart", labels: ["ownership % at start of year", "ownership at start", "opening ownership", "beginning ownership", "% owned at start"], clean: cleanPercent },
   { key: "ownEnd", labels: ["ownership % at end of year", "ownership at end", "closing ownership", "ending ownership", "% owned at end", "ownership %", "shareholding %", "percentage owned", "% owned"], clean: cleanPercent },
@@ -166,10 +184,22 @@ function valueAfter(row: string[], labelCol: number): { value: string; col: numb
   return null;
 }
 
+/** A caption/value pair no matcher claimed — a candidate for the AI profile
+    pass, which names the FIELD a caption denotes and never invents a value. */
+export type ProfileCandidate = {
+  caption: string;
+  /** Normalised caption, used as the dedupe key and the response key. */
+  norm: string;
+  value: string;
+  src: { doc?: string | null; page?: number | null; heading?: string | null };
+};
+
 export type ProfileDetection = {
   profile: DetectedField[];
   ownership: DetectedField[];
   categories: string[];
+  /** Unclaimed label/value pairs, capped per grid. See the capture rule. */
+  unmatched: ProfileCandidate[];
 };
 
 /**
@@ -177,11 +207,12 @@ export type ProfileDetection = {
  * Only label/value pairs are considered — a caption on the left, its value to
  * the right — which is how questionnaires and entity-data sheets are laid out.
  */
-export function detectProfile(rows: string[][] | null): ProfileDetection {
+export function detectProfile(rows: string[][] | null, meta?: { doc?: string }): ProfileDetection {
   const profile = new Map<string, DetectedField>();
   const ownership = new Map<string, DetectedField>();
   const categories = new Set<string>();
-  if (!rows) return { profile: [], ownership: [], categories: [] };
+  const unmatched: ProfileCandidate[] = [];
+  if (!rows) return { profile: [], ownership: [], categories: [], unmatched: [] };
 
   for (let r = 0; r < rows.length; r++) {
     const row = rows[r];
@@ -203,7 +234,8 @@ export function detectProfile(rows: string[][] | null): ProfileDetection {
         continue;
       }
 
-      const tryList = (list: Matcher[], into: Map<string, DetectedField>) => {
+      /** True when some matcher in `list` claimed this cell. */
+      const tryList = (list: Matcher[], into: Map<string, DetectedField>): boolean => {
         for (const m of list) {
           if (into.has(m.key)) continue;                 // first hit wins
           const exact = m.labels.some((l) => caption === l);
@@ -231,7 +263,7 @@ export function detectProfile(rows: string[][] | null): ProfileDetection {
               ? valueBelow(below, c, (raw) =>
                   !m.clean && !/\p{L}/u.test(raw) ? null : accept(raw))
               : null;
-          if (cleaned === null) return;
+          if (cleaned === null) return true;   // the matcher claimed it and rejected the value
 
           into.set(m.key, {
             key: m.key,
@@ -239,12 +271,36 @@ export function detectProfile(rows: string[][] | null): ProfileDetection {
             sourceLabel: String(cell).trim(),
             confidence: exact && across !== null ? "high" : "medium",
           });
-          return;
+          return true;
         }
+        return false;
       };
 
-      tryList(MATCHERS, profile);
-      tryList(OWNERSHIP_MATCHERS, ownership);
+      const claimedProfile = tryList(MATCHERS, profile);
+      const claimedOwnership = tryList(OWNERSHIP_MATCHERS, ownership);
+
+      /* Nothing matched. The pair may still be an entity particular under a
+         caption no matcher knows ("Registered office" in Dutch, say), so it is
+         KEPT as a candidate for the AI pass — which names the field, never the
+         value.
+
+         The filters are what stop this from being a firehose. The value must
+         look like a value rather than a stray number: it contains a letter, a
+         date separator, or a percent sign. The caption must be six characters
+         or more and contain a letter, so column codes and row numbers do not
+         qualify. And no more than 40 from one grid — past that it is a data
+         table, not a questionnaire. */
+      if (!claimedProfile && !claimedOwnership && unmatched.length < 40) {
+        const v = valueAfter(row, c);
+        const value = v ? String(v.value).trim() : "";
+        if (
+          value && value.length <= 80 &&
+          caption.length >= 6 && /\p{L}/u.test(caption) && !/^\d+$/.test(caption) &&
+          (/\p{L}/u.test(value) || /[/-]\d/.test(value) || value.includes("%"))
+        ) {
+          unmatched.push({ caption: String(cell).trim(), norm: caption, value, src: { doc: meta?.doc ?? null } });
+        }
+      }
     }
   }
 
@@ -252,6 +308,7 @@ export function detectProfile(rows: string[][] | null): ProfileDetection {
     profile: [...profile.values()],
     ownership: [...ownership.values()],
     categories: [...categories],
+    unmatched,
   };
 }
 
