@@ -80,7 +80,12 @@ import { detectProfile, sniffCurrency, type DetectedField } from "./detectProfil
 
 declare const JSZip: any;
 
-export type EntityFile = { id: string; name: string; size: number; parsable: boolean; blob: File };
+export type EntityFile = {
+  id: string; name: string; size: number; parsable: boolean; blob: File;
+  /** Worksheet tab names, recorded the first time a workbook is read, so the
+      intake screen can offer them without re-opening the file. */
+  sheetNames?: string[];
+};
 export type LineValue = { amount?: number | null; boy?: number | null; eoy?: number | null };
 export type EntityStatus = "idle" | "processing" | "ready" | "error";
 
@@ -131,7 +136,11 @@ export type CellWrite = {
 export type ReviewItem = {
   id: string;
   level: "block" | "warn" | "info";
-  category: "fx" | "mapping" | "carry-forward" | "related-party" | "source-gap" | "profile" | "consistency" | "process";
+  /* Keep in step with the policy-editor dropdown in SettingsView: a category
+     the union knows but the editor does not list is a category no policy can
+     ever target. "tie-out" and "entity-scope" were raised for months without
+     being selectable. */
+  category: "fx" | "mapping" | "carry-forward" | "related-party" | "source-gap" | "profile" | "consistency" | "process" | "tie-out" | "entity-scope";
   message: string;
   target?: string;                    // "Balance Sheet!F54"
   source?: string;
@@ -159,7 +168,16 @@ export type DividendRec = {
   rateSource: "frankfurter" | "eoy-fallback" | "none";
 };
 
-export type DocKindOverride = { kind: DocKind; pageHint?: "fs-pnl" | "fs-balance-sheet" };
+export type DocKindOverride = {
+  /** Absent when only the worksheet list is pinned — classification stays
+      automatic in that case. */
+  kind?: DocKind;
+  pageHint?: "fs-pnl" | "fs-balance-sheet";
+  /** Worksheets to read from this workbook, by tab name. Set by the preparer
+      when the automatic ranking picked the wrong tabs; absent means rank
+      automatically. File-keyed, so removeFile prunes it for free. */
+  sheets?: string[];
+};
 
 /** A direct shareholder row (Shareholding Details rows 19–26). Seeded from
     the prior 5471's Schedule B Part II; editable in the Shareholders tab. */
@@ -542,7 +560,7 @@ export const actions = {
       bytesAdded += f.size;
     }
     if (!added.length) return;
-    added.forEach((f) => logEvent("Document added", `${f.name} · ${f.size} bytes · ${f.parsable ? "native parse" : "AI extraction"}`, ent.name));
+    added.forEach((f) => logEvent("Document added", `${f.name} · ${f.size} bytes · ${f.parsable ? "native parse" : "unsupported format"}`, ent.name));
     updateEntity(id, { files: [...ent.files, ...added], status: "idle" });
     set({ usage: { ...state.usage, storage: state.usage.storage + bytesAdded } });
     toast(`${added.length} document${added.length === 1 ? "" : "s"} added to ${ent.name}`, "ok");
@@ -555,11 +573,42 @@ export const actions = {
     if (!ent) return;
     const f = ent.files.find((x) => x.id === fileId);
     const overrides = { ...(ent.docKindOverrides || {}) };
-    if (!kind) delete overrides[fileId];
-    else overrides[fileId] = { kind, ...(pageHint ? { pageHint } : {}) };
+    const prior = overrides[fileId];
+    if (!kind) {
+      // Clearing the type must not silently discard a pinned worksheet list.
+      if (prior?.sheets?.length) overrides[fileId] = { sheets: prior.sheets };
+      else delete overrides[fileId];
+    } else {
+      overrides[fileId] = { ...(prior?.sheets?.length ? { sheets: prior.sheets } : {}), kind, ...(pageHint ? { pageHint } : {}) };
+    }
     updateEntity(entityId, { docKindOverrides: overrides });
     logEvent("Document type set", `${f?.name ?? fileId} → ${kind || "automatic"}${pageHint ? ` (${pageHint})` : ""}`, ent.name);
     toast(kind ? "Document type saved — re-process to apply" : "Document type back to automatic", "ok");
+  },
+
+  /** Which worksheets to read from one workbook. Empty list = automatic. */
+  setDocSheets(entityId: string, fileId: string, sheets: string[]) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const f = ent.files.find((x) => x.id === fileId);
+    const overrides = { ...(ent.docKindOverrides || {}) };
+    const existing = overrides[fileId];
+    if (!sheets.length) {
+      if (!existing) return;
+      const { sheets: _drop, ...rest } = existing;
+      // The sheet list may be the only reason the override exists.
+      if (rest.kind) overrides[fileId] = rest;
+      else delete overrides[fileId];
+    } else {
+      overrides[fileId] = { ...(existing || {}), sheets };
+    }
+    updateEntity(entityId, { docKindOverrides: overrides });
+    logEvent(
+      "Worksheets set",
+      `${f?.name ?? fileId} → ${sheets.length ? sheets.join(", ") : "automatic (statement tabs)"}`,
+      ent.name,
+    );
+    toast(sheets.length ? "Worksheets saved — re-process to apply" : "Worksheet choice back to automatic", "ok");
   },
 
   removeFile(entityId: string, fileId: string) {
@@ -1158,14 +1207,16 @@ export const actions = {
         const ent = state.entities.find((e) => e.id === entityId);
         if (!ent) return;   // removed mid-run
         const parsedByFile = new Map<string, ParsedDoc>();
+        const sheetNamesSeen: Record<string, string[]> = {};
         for (const f of ent.files) {
           try {
-            const parsed = await readDocument(f.blob);
+            const parsed = await readDocument(f.blob, { sheets: ent.docKindOverrides?.[f.id]?.sheets });
             if (!parsed) {
               // Honesty over hope: there is no AI-extraction path — say so.
               const ext = "." + (f.name.split(".").pop() || "?").toLowerCase();
               log.push(`${f.name}: unsupported format (${ext}) — nothing extracted`);
               rv({
+                id: `doc-unreadable-${f.id}`,
                 level: "warn", category: "process",
                 message: `${f.name} is a format the tool cannot read (${ext}) — NOTHING from it feeds the work paper. Re-save legacy .xls workbooks as .xlsx (File ▸ Save As) and re-upload.`,
                 source: f.name,
@@ -1176,7 +1227,7 @@ export const actions = {
             // Manual type override wins over the rules — the preparer said
             // what this document is; unclassified PDF pages follow the hint.
             const ov = ent.docKindOverrides?.[f.id];
-            if (ov) {
+            if (ov?.kind) {
               cls.kind = ov.kind;
               cls.confidence = 1;
               cls.method = "user";
@@ -1184,6 +1235,17 @@ export const actions = {
                 cls.pages = cls.pages.map((p) => (p.kind === "unknown" ? { ...p, kind: ov.pageHint!, score: 1 } : p));
               }
               log.push(`${f.name}: document type set manually → ${ov.kind}${ov.pageHint ? ` (${ov.pageHint})` : ""}`);
+            }
+            if (parsed.sheetNames?.length && !sameList(f.sheetNames, parsed.sheetNames)) {
+              sheetNamesSeen[f.id] = parsed.sheetNames;
+            }
+            if (parsed.sheetsSkipped?.length) {
+              log.push(`${f.name}: read ${parsed.sheetsUsed!.join(", ")}; skipped ${parsed.sheetsSkipped.join(", ")}`);
+              rv({
+                id: `sheets-skipped-${f.id}`, level: "info", category: "process",
+                message: `${f.name} has ${(parsed.sheetsUsed!.length + parsed.sheetsSkipped.length)} worksheets; ${parsed.sheetsUsed!.join(", ")} ${parsed.sheetsUsed!.length === 1 ? "was" : "were"} read and ${parsed.sheetsSkipped.join(", ")} ${parsed.sheetsSkipped.length === 1 ? "was" : "were"} skipped as non-statement tabs. If a skipped tab holds figures, name the tabs to read in Document intake and re-process.`,
+                source: f.name,
+              });
             }
             bundles.push({ file: f, parsed, cls });
             parsedByFile.set(f.id, parsed);
@@ -1202,9 +1264,17 @@ export const actions = {
         }
         for (const b of bundles) {
           log.push(`${b.file.name}: classified as ${b.cls.kind}${b.cls.statementYear ? ` (${b.cls.statementYear})` : ""}${b.cls.duplicateOf ? " — duplicate, excluded" : ""}`);
-          for (const n of b.cls.notes) rv({ level: n.level, category: "process", message: n.message, source: b.file.name });
+          for (const n of b.cls.notes) {
+            // Keyed on the note text, not its position: a note added to the
+            // classifier later must not renumber the ones already signed off.
+            rv({
+              id: `doc-note-${b.file.id}-${norm(n.message).slice(0, 40)}`,
+              level: n.level, category: "process", message: n.message, source: b.file.name,
+            });
+          }
           if (b.cls.kind === "unknown" && !b.cls.duplicateOf) {
             rv({
+              id: `doc-unclassified-${b.file.id}`,
               level: "warn", category: "process",
               message: `${b.file.name} could not be classified and fed NOTHING into the work paper. Set its document type manually in Document intake (Type column) and re-process — or map its lines by hand.`,
               source: b.file.name,
@@ -1212,6 +1282,7 @@ export const actions = {
           }
           if (b.cls.kind === "prior-year-us-return" && caseYears.cy && b.cls.statementYear === caseYears.cy) {
             rv({
+              id: `doc-current-year-return-${b.file.id}`,
               level: "warn", category: "consistency",
               message: `${b.file.name} is a US return for the CURRENT year (${caseYears.cy}) — expected a prior-year reference copy. Its carry-forward figures were NOT used.`,
               source: b.file.name,
@@ -1228,6 +1299,9 @@ export const actions = {
         updateEntity(entityId, {
           log: [...log],
           docClasses: Object.fromEntries(bundles.map((b) => [b.file.id, b.cls])),
+          ...(Object.keys(sheetNamesSeen).length
+            ? { files: ent.files.map((f) => (sheetNamesSeen[f.id] ? { ...f, sheetNames: sheetNamesSeen[f.id] } : f)) }
+            : {}),
         });
       }
 
@@ -1295,6 +1369,7 @@ export const actions = {
           if (mapRows.some((m) => m.docId === b.file.id)) continue;
           const kinds = [...new Set(b.cls.pages.map((p) => p.kind))].join(", ");
           rv({
+            id: `doc-zero-rows-${b.file.id}`,
             level: "warn", category: "process",
             message: `${b.file.name} was recognized as ${b.cls.kind} but produced ZERO mapped line items (pages: ${kinds}). Check the Type column in Document intake, or map its lines manually.`,
             source: b.file.name,
@@ -1316,6 +1391,7 @@ export const actions = {
             if (cand.pageCount > kept.pageCount) deduped[dupAt] = cand;
             if (cand.fileId !== kept.fileId) {
               rv({
+                id: `cf-dup-${cand.fileId}`,
                 level: "info", category: "carry-forward",
                 message: `"${cand.cfcName || kept.cfcName}" appears in two prior-year documents (${kept.source}, ${cand.source}) — the wider copy was used.`,
                 source: cand.source,
@@ -1338,6 +1414,7 @@ export const actions = {
             if (!selected) {
               for (const cand of deduped) {
                 rv({
+                  id: `cf-wrong-entity-${cand.fileId}`,
                   level: "warn", category: "carry-forward",
                   message: `${cand.source} names "${cand.cfcName}" as the foreign corporation, but this work paper's entity is "${knownName}" — its carry-forward figures were NOT used.`,
                   source: cand.source,
@@ -1366,6 +1443,7 @@ export const actions = {
           for (const c of deduped) {
             if (c !== selected && !c.cfcName) {
               rv({
+                id: `cf-unnamed-block-${c.fileId}`,
                 level: "warn", category: "carry-forward",
                 message: `An additional Form 5471 was found in ${c.source} but its foreign corporation could not be identified — create that entity manually and re-process.`,
                 source: c.source,
@@ -1442,6 +1520,7 @@ export const actions = {
               if (rp) {
                 target = rp;
                 rv({
+                  id: `rp-routed-${norm(m.row.label)}`,
                   level: "warn", category: "related-party",
                   sourceLabel: m.row.label,
                   message: `"${m.row.label}" was routed to ${rp === "BS:19" ? "loans to related persons (Sch F line 6)" : "loans from related persons (Sch F line 18)"} because the caption names a group entity — confirm, and consider Schedule M.`,
@@ -1476,7 +1555,9 @@ export const actions = {
           const resolved = isOverride ? { target, relabel: undefined, overflowNote: undefined } : resolvePool(pools, target, m.row.label);
           if (isOverride && specFor(target)?.relabel && !relabels[target]) relabels[target] = m.row.label;
           if (resolved.relabel) relabels[resolved.target] = resolved.relabel;
-          if (resolved.overflowNote) rv({ level: "info", category: "mapping", message: resolved.overflowNote, source: m.docName });
+          if (resolved.overflowNote) {
+            rv({ id: `pool-overflow-${resolved.target}`, level: "info", category: "mapping", message: resolved.overflowNote, source: m.docName });
+          }
 
           for (const r of routed) {
             // Summary and detailed statements in one document repeat the same
@@ -1489,6 +1570,7 @@ export const actions = {
             );
             if (dupe) {
               rv({
+                id: `dupe-page-${resolved.target}-${norm(m.row.label)}`,
                 level: "info", category: "mapping",
                 sourceLabel: m.row.label,
                   message: `"${m.row.label}" (${r.value.toLocaleString()}) appears on two pages of ${m.docName} — counted once.`,
@@ -2231,15 +2313,24 @@ export const actions = {
   },
 
   async generateWorkpapers() {
-    const targets = state.entities.filter((e) => cellCount(e) > 0);
+    let targets = state.entities.filter((e) => cellCount(e) > 0);
     if (!targets.length) { toast("Nothing to write yet — process an entity or fill its profile", "bad"); return; }
     const blocked = targets.filter((e) => blockingIssues(e).length);
-    if (blocked.length) {
+    // One blocked entity used to abort the whole batch. Only refuse outright
+    // when NOTHING can be written; otherwise name the entities being left out
+    // and generate the rest, so a single unresolved exception on one CFC does
+    // not hold up every other work paper in the case.
+    if (blocked.length === targets.length) {
       const first = blockingIssues(blocked[0])[0];
       logEvent("Generation blocked", `${blocked[0].name}: ${first.message}`, blocked[0].name, "system");
       toast(`${blocked[0].name}: ${first.message}`, "bad");
       return;
     }
+    if (blocked.length) {
+      toast(`Skipping ${blocked.map((e) => e.name).join(", ")} — blocking issues open. Generating the rest.`, "bad");
+      for (const e of blocked) logEvent("Generation skipped", `${e.name}: ${blockingIssues(e)[0].message}`, e.name, "system");
+    }
+    targets = targets.filter((e) => !blockingIssues(e).length);
     for (const t of targets) logPolicyOverriddenBlocks(t);
     set({ busy: true });
     try {
@@ -2276,6 +2367,10 @@ export const actions = {
 
 /** Caption key for user overrides — case/whitespace insensitive. */
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** Same strings in the same order. */
+const sameList = (a: string[] | undefined, b: string[]) =>
+  !!a && a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** The entity's current year: profile cyEnd first, classified years second. */
 export function entityCaseCy(ent: Entity): number | null {
@@ -2976,6 +3071,7 @@ async function materializeCaseWrites(
   /* ---- related-party ledger → Schedule M services ---- */
   if (ledger && avgRate && ledger.invoiceCount + ledger.creditNoteCount === 0) {
     rv({
+      id: "ledger-unparsed",
       level: "warn", category: "related-party",
       message: `A related-party ledger was read but no functional-currency invoice amounts could be parsed${ledger.ledgerTotalUSD ? ` (its own USD total shows ${ledger.ledgerTotalUSD.toLocaleString()})` : ""} — Schedule M was NOT pre-filled; check the ledger's column layout.`,
     });
@@ -2993,6 +3089,9 @@ async function materializeCaseWrites(
     });
     for (const c of ledger.cashPaidUSD) {
       rv({
+        // Keyed on the payment itself, not its index: inserting a ledger row
+        // must not move every sign-off onto the wrong payment.
+        id: `ledger-cash-paid-${c.date}-${c.amount}`,
         level: "warn", category: "related-party",
         message: `"Cash Paid" US$${c.amount.toLocaleString()} on ${c.date} by ${ledger.counterparty || "the related party"} does not appear in the entity's income — reimbursement of costs, or unrecorded income? It has deliberately NOT been mapped anywhere.`,
         source: "Expenses by Contact ledger",
@@ -3029,6 +3128,7 @@ async function materializeCaseWrites(
     }
   } else if (ledger && !avgRate) {
     rv({
+      id: "ledger-no-avg-rate",
       level: "warn", category: "related-party",
       message: "A related-party ledger was read but no average exchange rate is set — Schedule M could not be pre-filled.",
     });
@@ -3366,7 +3466,7 @@ export function validateEntity(ent: Entity): ReviewItem[] {
     must vanish once the underlying condition is resolved. */
 const DERIVED_IDS = new Set([
   "fx-avg-missing", "fx-cy-missing", "fx-py-missing", "fx-fiscal-manual", "fx-currency-unconfirmed",
-  "no-lines-mapped",
+  "no-lines-mapped", "mapping-language",
   "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
 ]);
 

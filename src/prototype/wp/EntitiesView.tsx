@@ -155,7 +155,7 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                       <span className="doc-mark">{(f.name.split(".").pop() || "?").toUpperCase().slice(0, 4)}</span>
                       <div>
                         <strong>{f.name}</strong>
-                        <small>{bytes(f.size)} · {f.parsable ? "native parse" : "AI extraction"}</small>
+                        <small>{bytes(f.size)} · {f.parsable ? "native parse" : "unsupported format"}</small>
                       </div>
                       <button type="button" className="button" onClick={() => actions.removeFile(entity.id, f.id)}>Remove</button>
                     </div>

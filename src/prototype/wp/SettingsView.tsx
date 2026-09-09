@@ -3,6 +3,7 @@
 import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader, StatusPill } from "../primitives";
 import { DOC_TYPES, GROQ_MODELS, MAX_FILE_MB, NATIVE_PARSE, PROCESS_STEPS, QUOTA, actions, getSnapshot, subscribe } from "./store";
+import type { ReviewItem } from "./store";
 import { apiBase, isRemote, setApiBaseOverride } from "../api";
 import { generateRatesWorkbook, parseRatesWorkbook, rateDbYears, readWorkbookSheets } from "./rateDb";
 import { resetProject } from "./localStore";
@@ -141,7 +142,7 @@ export function SettingsView() {
           <section className="panel">
             <div className="panel-heading"><div><span className="section-kicker">Documents</span><h2>Processing engine</h2></div></div>
             <Row label="Native parse" value={NATIVE_PARSE.join(" · ")} />
-            <Row label="AI extraction path" value="Scanned PDFs, images, DOCX" />
+            <Row label="Scanned documents" value="In-browser OCR card (Tesseract) builds a searchable PDF — opt-in, on Document intake" />
             <Row label="Label matching" value={`${state.rules.length} keyword rules, multilingual`} />
             <Row label="Tie-break" value="Longest matching keyword wins" />
             <Row label="Fallback" value="Manual assignment or Groq proposal" />
@@ -267,9 +268,12 @@ export function SettingsView() {
                           <select
                             className="stake-input"
                             value={pattern}
-                            onChange={(e) => actions.updatePolicyRule(p.id, { match: { category: e.target.value as never } })}
+                            // The cast stopped protecting anything once the union
+                            // grew past one member; the option list below is the
+                            // real guarantee, so it must mirror ReviewItem["category"].
+                            onChange={(e) => actions.updatePolicyRule(p.id, { match: { category: e.target.value as ReviewItem["category"] } })}
                           >
-                            {["fx", "mapping", "carry-forward", "related-party", "source-gap", "profile", "consistency", "process"].map((c) => (
+                            {["fx", "mapping", "carry-forward", "related-party", "source-gap", "profile", "consistency", "process", "tie-out", "entity-scope"].map((c) => (
                               <option key={c} value={c}>{c}</option>
                             ))}
                           </select>

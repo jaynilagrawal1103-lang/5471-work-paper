@@ -70,5 +70,17 @@ a(dist.includes('r[h]&&r[h].tag==="Manual"'), "auto-fill never overwrites a Manu
 a(dist.includes("aiProfileFields:") && dist.includes("fxSources:") && dist.includes('appVersion:"2.1.0"'),
   "audit export carries AI profile fields, FX sources and the app version");
 
+/* Batch generation: one blocked entity must not hold up the rest of the case.
+   The shipped app has done this for months; src refused the whole batch. Both
+   trees are pinned here so they cannot drift apart again. */
+const src = fs.readFileSync(path.join(__dirname, "..", "src", "prototype", "wp", "store.ts"), "utf8");
+a(dist.includes("blocking issues open. Generating the rest.") &&
+  src.includes("blocking issues open. Generating the rest."),
+  "a partially blocked batch names the skipped entities and generates the rest");
+a(dist.includes('We("Generation skipped"') && src.includes('logEvent("Generation skipped"'),
+  "each skipped entity is logged by name, not silently dropped");
+a(dist.includes("e.length===t.length") && src.includes("blocked.length === targets.length"),
+  "generation is refused outright only when NOTHING can be written");
+
 if (fails) { console.error(`${fails} FAILURE(S)`); process.exit(1); }
 console.log("ALL GENERATION-SAFETY TESTS PASSED");

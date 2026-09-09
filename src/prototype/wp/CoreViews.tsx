@@ -232,11 +232,39 @@ const DOC_KIND_CHOICES: { label: string; kind: string; pageHint?: "fs-pnl" | "fs
   { label: "Exclude (terms / other)", kind: "terms-and-conditions" },
 ];
 
+/* Which worksheets to read. Only offered once a workbook has actually been
+   read, because only then are its tab names known — and only for workbooks,
+   since a PDF has no tabs. Nothing selected means automatic ranking. */
+function DocSheetSelect({ entityId, fileId }: { entityId: string; fileId: string }) {
+  const state = useWp();
+  const ent = state.entities.find((e) => e.id === entityId);
+  const file = ent?.files.find((f) => f.id === fileId);
+  const names = file?.sheetNames || [];
+  if (names.length < 2) return null;
+  const pinned = ent?.docKindOverrides?.[fileId]?.sheets || [];
+  return (
+    <select
+      multiple
+      size={Math.min(names.length, 4)}
+      value={pinned}
+      onChange={(e) => {
+        const chosen = [...e.target.selectedOptions].map((o) => o.value);
+        actions.setDocSheets(entityId, fileId, chosen);
+      }}
+      title={pinned.length
+        ? "Worksheets read from this workbook — clear the selection to go back to automatic"
+        : "Automatic: statement tabs are read, administrative tabs are skipped. Select tabs to pin an explicit list."}
+    >
+      {names.map((n) => <option key={n} value={n}>{n}</option>)}
+    </select>
+  );
+}
+
 function DocKindSelect({ entityId, fileId }: { entityId: string; fileId: string }) {
   const state = useWp();
   const ent = state.entities.find((e) => e.id === entityId);
   const ov = ent?.docKindOverrides?.[fileId];
-  const current = ov ? `${ov.kind}|${ov.pageHint || ""}` : "|";
+  const current = ov?.kind ? `${ov.kind}|${ov.pageHint || ""}` : "|";
   return (
     <select
       value={current}
@@ -275,7 +303,7 @@ export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) 
           <div className="panel-heading"><div><span className="section-kicker">Inventory</span><h2>Loaded documents</h2></div></div>
           <div className="wp-table">
             <table>
-              <thead><tr><th>File</th><th>Entity</th><th>Classified as</th><th>Type</th><th className="numeric">Size</th><th>Reading path</th></tr></thead>
+              <thead><tr><th>File</th><th>Entity</th><th>Classified as</th><th>Type</th><th>Worksheets</th><th className="numeric">Size</th><th>Reading path</th></tr></thead>
               <tbody>
                 {all.map((f) => (
                   <tr key={`${f.entityId}/${f.id}`}>
@@ -294,6 +322,7 @@ export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) 
                         : <span className="actor-tag">not processed</span>}
                     </td>
                     <td><DocKindSelect entityId={f.entityId} fileId={f.id} /></td>
+                    <td><DocSheetSelect entityId={f.entityId} fileId={f.id} /></td>
                     <td className="numeric">{bytes(f.size)}</td>
                     <td>{f.parsable
                       ? <span className="actor-tag system">native parser</span>

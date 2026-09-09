@@ -764,6 +764,60 @@ const unesc = (s: string) =>
   s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
 
+/* ---------- worksheet selection ----------
+
+   A client workbook is rarely one statement. It is a cover sheet, an index, a
+   lead schedule, the trial balance, the P&L, the balance sheet, a notes tab and
+   three tabs of queries. Reading every tab into one flat grid means the notes
+   and the query log compete with the statements for the same captions, and a
+   caption that appears on both wins by position rather than by meaning.
+
+   So rank the tabs by name. Statement tabs are read; administrative tabs are
+   skipped and NAMED in the log, because a wrongly skipped tab must be visible
+   and correctable (DocKindOverride.sheets pins an explicit list per document).
+   When nothing scores as a statement, everything non-administrative is read —
+   the ranking narrows the input, it never empties it. */
+
+/** Tab names that read as a financial statement. Mirrors STATEMENT_TITLE in
+    classify.ts, plus the trial-balance and ledger wordings that only ever
+    appear as tab names. */
+const SHEET_STATEMENT = new RegExp(
+  "(balance sheet|statement of financial position|balance general|balance de situaci\u00f3n|"
+  + "estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o|balanco|"
+  + "bilan\\b|bilanz|bilancio|balans|"
+  + "income statement|profit (and|or|&) loss|p ?& ?l\\b|p and l\\b|compte de profits et pertes|"
+  + "compte de r\u00e9sultat|compte de resultat|statement of comprehensive income|"
+  + "statement of financial performance|estado de resultados?|cuenta de resultados|"
+  + "demonstra\u00e7\u00e3o do resultado|demonstracao do resultado|conto economico|"
+  + "winst- en verliesrekening|gewinn- und verlustrechnung|erfolgsrechnung|"
+  + "trial balance|balanza de comprobaci\u00f3n|balanza de comprobacion|proefbalans|"
+  + "general ledger|grootboek)",
+);
+
+/** Tab names that are administration around the statements, never the figures. */
+const SHEET_ADMIN = new RegExp(
+  "^(cover|contents|table of contents|index|notes?|note \\d|instructions?|"
+  + "lead|lead schedule|queries|query log|q&a|review|checklist|control|"
+  + "assumptions|workings|scratch|sheet\\d*)$|"
+  + "\\b(cover sheet|notes to the (financial )?(statements|accounts)|"
+  + "query log|lead schedule)\\b",
+);
+
+/** Which worksheets to read, and which to leave out, given their names.
+    Pure and exported so the decision can be tested and shown to the user. */
+export function rankSheets(names: string[]): { read: string[]; skip: string[] } {
+  const norm = (n: string) => n.toLowerCase().replace(/\s+/g, " ").trim();
+  const statements = names.filter((n) => SHEET_STATEMENT.test(norm(n)));
+  if (statements.length) {
+    return { read: statements, skip: names.filter((n) => !statements.includes(n)) };
+  }
+  const keep = names.filter((n) => !SHEET_ADMIN.test(norm(n)));
+  // Every tab looked administrative — that is a naming convention this lexicon
+  // does not know, not an empty workbook. Read it all rather than lose it.
+  if (!keep.length) return { read: [...names], skip: [] };
+  return { read: keep, skip: names.filter((n) => !keep.includes(n)) };
+}
+
 export type ParsedDoc = {
   kind: "pdf" | "xlsx" | "csv";
   /** Plain text grid — the shape every existing consumer understands. */
@@ -772,6 +826,10 @@ export type ParsedDoc = {
   pdf?: PdfDoc;
   /** Workbook sheet names, xlsx only (used by document classification). */
   sheetNames?: string[];
+  /** Tabs whose rows are in `grid`, and the tabs deliberately left out. Both
+      xlsx only; empty `sheetsSkipped` means everything was read. */
+  sheetsUsed?: string[];
+  sheetsSkipped?: string[];
 };
 
 /** Back-compat: the plain grid, regardless of source. */
@@ -925,7 +983,12 @@ export function stackedCaptionRows(pdf: PdfDoc): string[][] {
   return out;
 }
 
-export async function readDocument(file: File): Promise<ParsedDoc | null> {
+export async function readDocument(
+  file: File,
+  /** Explicit tab list for this document, if the preparer pinned one
+      (DocKindOverride.sheets). Overrides the automatic ranking. */
+  opts?: { sheets?: string[] },
+): Promise<ParsedDoc | null> {
   const name = file.name.toLowerCase();
   if (/\.(csv|tsv|txt)$/.test(name)) {
     const text = await file.text();
@@ -959,11 +1022,55 @@ export async function readDocument(file: File): Promise<ParsedDoc | null> {
       unesc([...m[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((t) => t[1]).join("")),
     );
   }
-  const paths = Object.keys(zip.files)
+  const allPaths = Object.keys(zip.files)
     .filter((p) => /^xl\/worksheets\/sheet\d+\.xml$/.test(p))
     .sort((a, b) => parseInt(a.match(/\d+/)![0], 10) - parseInt(b.match(/\d+/)![0], 10))
     .slice(0, 25);
-  if (!paths.length) return null;
+  if (!allPaths.length) return null;
+
+  /* Tab name → part path, through the relationship table. The Nth <sheet> in
+     workbook.xml is NOT reliably sheetN.xml — that alignment is a convention,
+     and acting on it would silently read the wrong tab. If the rels cannot be
+     resolved for every named sheet, no selection is made at all: the whole
+     workbook is read exactly as before. Narrowing on a guess is worse than
+     reading too much. */
+  const rels = zip.file("xl/_rels/workbook.xml.rels");
+  const relMap = new Map<string, string>();
+  if (rels) {
+    for (const m of (await rels.async("string")).matchAll(/<Relationship\b[^>]*>/g)) {
+      const id = /\bId="([^"]+)"/.exec(m[0])?.[1];
+      const tgt = /\bTarget="([^"]+)"/.exec(m[0])?.[1];
+      if (!id || !tgt) continue;
+      const path = tgt.replace(/^\/?(xl\/)?/, "xl/");
+      relMap.set(id, path);
+    }
+  }
+  const wbXml = wbFile ? await wbFile.async("string") : "";
+  const sheetPaths: { name: string; path: string }[] = [];
+  for (const m of wbXml.matchAll(/<sheet\b[^>]*>/g)) {
+    const name = /\sname="([^"]+)"/.exec(m[0])?.[1];
+    const rid = /\br:id="([^"]+)"/.exec(m[0])?.[1];
+    const path = rid ? relMap.get(rid) : undefined;
+    if (name && path && zip.file(path)) sheetPaths.push({ name: unesc(name), path });
+  }
+  const resolvable = sheetNames.length > 0 && sheetPaths.length === sheetNames.length;
+
+  let paths = allPaths;
+  let sheetsUsed: string[] | undefined;
+  let sheetsSkipped: string[] | undefined;
+  if (resolvable) {
+    const wanted = opts?.sheets?.length
+      ? { read: sheetPaths.filter((sp) => opts.sheets!.includes(sp.name)).map((sp) => sp.name),
+          skip: sheetPaths.filter((sp) => !opts.sheets!.includes(sp.name)).map((sp) => sp.name) }
+      : rankSheets(sheetPaths.map((sp) => sp.name));
+    // A pinned list that matches nothing is a stale pin, not an instruction to
+    // read an empty workbook.
+    if (wanted.read.length) {
+      sheetsUsed = wanted.read;
+      sheetsSkipped = wanted.skip;
+      paths = sheetPaths.filter((sp) => wanted.read.includes(sp.name)).map((sp) => sp.path).slice(0, 25);
+    }
+  }
 
   let sx = "";
   for (const p of paths) sx += await zip.file(p)!.async("string");
@@ -989,5 +1096,5 @@ export async function readDocument(file: File): Promise<ParsedDoc | null> {
     }
     if (cells.length) rows.push([...cells].map((c) => (c === undefined ? "" : c)));
   }
-  return { kind: "xlsx", grid: rows, sheetNames };
+  return { kind: "xlsx", grid: rows, sheetNames, sheetsUsed, sheetsSkipped };
 }
