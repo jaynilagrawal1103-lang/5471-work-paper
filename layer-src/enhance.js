@@ -808,6 +808,8 @@ function enhanceTopbarHint(){
 
 /* ---------- OCR for scanned PDFs (Tesseract.js, free & open source) ---------- */
 var EN9OCR={busy:false, result:null, io:null, stats:{runs:0,pages:0,words:0,fails:0}};
+/*EN9OCREXP*/try{window.EN9OCR=EN9OCR;window.en9OcrRun=function(){return en9OcrRun.apply(null,arguments)};}catch(EN9e){}
+
 function en9IsSandbox(){ try{ return /claudeusercontent\.com|claude\.ai/.test(location.hostname); }catch(e){ return false; } }
 function en9OcrFriendly(e){ var m=String(e&&e.message||e||"");
   if(/Failed to construct 'Worker'|blob-request|cannot be accessed from origin|Worker is not defined/i.test(m))
@@ -855,6 +857,78 @@ EN9OCR.realIO={
         }); }); }, Promise.resolve()).then(function(){ return doc.save(); });
     }); }
 };
+
+/*EN9AUTOOCR-BEGIN*/
+/* A scan that the tool cannot read used to end the story: the file was
+   reported unreadable and the preparer had to know that an OCR card existed,
+   find it, pick the file again and choose a language. The engine was always
+   there — only the decision to start it was manual. This starts it.
+
+   It runs once per file, only for a PDF that opened with no text at all, only
+   while the app is idle, and it announces itself. The language is taken from
+   what the OTHER documents already established about the entity (a prior-year
+   US return names the country long before the scan is read), because Tesseract
+   asked to read every language at once is both slow and less accurate. */
+var EN9autoOcrTried = {};
+function EN9ocrLangsFor(ent) {
+  var c = ((ent && ent.profile && ent.profile.countryInc) || "").toLowerCase();
+  var m = ((ent && ent.profile && ent.profile.currency) || "").toUpperCase();
+  if (/switz|suisse|schweiz/.test(c) || m === "CHF") return "eng+fra+deu+ita";
+  if (/france|belg|luxem|monaco/.test(c) || m === "XOF") return "eng+fra";
+  if (/german|austria|deutsch/.test(c)) return "eng+deu";
+  if (/netherland|holland/.test(c)) return "eng+nld";
+  if (/ital/.test(c)) return "eng+ita";
+  if (/brazil|brasil|portug/.test(c) || m === "BRL") return "eng+por";
+  if (/spain|espa|chile|mexic|colomb|argentin|peru|uruguay|ecuador|bolivia|venezuel|paraguay|costa rica|panama|guatemala/.test(c)
+      || ["CLP","COP","MXN","ARS","PEN","UYU","BOB","PYG","CRC","GTQ","DOP"].indexOf(m) >= 0) return "eng+spa";
+  return "eng";
+}
+function EN9autoOcrTick() {
+  try {
+    if (EN9OCR.busy) return;
+    if (!window.__WPGET || !window.__WPACT) return;
+    var st = window.__WPGET();
+    if (!st || st.busy) return;
+    var queues = globalThis.EN9SCANS || {};
+    for (var eid in queues) {
+      var list = queues[eid] || [];
+      for (var i = 0; i < list.length; i++) {
+        var f = list[i];
+        if (!f || EN9autoOcrTried[f.id]) continue;
+        var ent = (st.entities || []).find(function (x) { return x.id === eid; });
+        // Wait for the run to finish writing the profile: the language is
+        // chosen from the country the OTHER documents established, and reading
+        // it a moment too early gets "eng" for a French-language scan.
+        if (!ent || !ent.processedAt) continue;
+        var att = (ent.files || []).find(function (x) { return x.id === f.id; });
+        if (!att || !att.blob) { EN9autoOcrTried[f.id] = 1; continue; }
+        EN9autoOcrTried[f.id] = 1;
+        var langs = EN9ocrLangsFor(ent);
+        var say = function (m) {
+          try { window.__WPACT.__toast ? window.__WPACT.__toast(m) : 0; } catch (e) {}
+          try { console.info("[auto-OCR] " + m); } catch (e) {}
+          var el = document.getElementById("en9-ocr-status");
+          if (el) el.textContent = m;
+        };
+        say("“" + f.name + "” is a scan with no text. Reading it with OCR (" + langs + ") — this runs in your browser and can take a minute a page.");
+        (function (entityId, name) {
+          en9OcrRun(att.blob, entityId, langs, say, function (res) {
+            if (!res || !res.file) { say("OCR could not read “" + name + "”. Add a text-based PDF or the source spreadsheet instead."); return; }
+            try {
+              window.__WPACT.addFiles(entityId, [res.file]);
+              EN9OCR.result = null;
+              say("Added “" + res.file.name + "”. Re-processing — every figure it produced is OCR-derived and must be checked against the scan.");
+              setTimeout(function () { try { window.__WPACT.processEntity(entityId); } catch (e) {} }, 400);
+            } catch (e) { say("OCR finished but the result could not be attached — use the OCR card on Document intake."); }
+          });
+        })(eid, f.name);
+        return;                                  // one file at a time
+      }
+    }
+  } catch (e) { /* never let the watcher break the app */ }
+}
+if (typeof window !== "undefined") setInterval(EN9autoOcrTick, 1500);
+/*EN9AUTOOCR-END*/
 function en9OcrRun(file,entityId,langs,st,done){
   if(EN9OCR.busy){ if(st) st("An OCR run is already in progress \u2014 wait for it to finish."); return; }
   EN9OCR.busy=true; EN9OCR.result=null;

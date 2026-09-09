@@ -9,15 +9,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = path.join(root, "dist");
 
 /* GUARD: the committed dist/index.html carries months of fixes applied directly
-   to the built file (see PROJECT-NOTES.md) plus the SheetJS script this build
-   does not emit. Rebuilding from src/ would silently destroy all of it. */
+   to the built file (see PROJECT-NOTES.md) — ~1,600 lines of EN9 patches that
+   src/ does not yet reproduce. Rebuilding from src/ would silently destroy them.
+   (This build DOES emit the vendored SheetJS, and has since 1df6707; the EN9
+   patches are the only thing at risk, and they are enough.) */
 const existing = path.join(out, "index.html");
 if (fs.existsSync(existing) && process.env.FORCE_REBUILD !== "1") {
   const cur = fs.readFileSync(existing, "utf8");
   if (cur.includes("EN9") || /xlsx\.js \(C\) 2013-present\s+SheetJS/.test(cur)) {
     throw new Error(
-      "dist/index.html contains dist-only fixes (EN9*) and/or the SheetJS library " +
-      "that this build does NOT reproduce — a rebuild would destroy them. " +
+      "dist/index.html contains dist-only fixes (EN9*) that this build does NOT " +
+      "reproduce — a rebuild would destroy them. " +
       "See PROJECT-NOTES.md. If you have truly ported everything back into src/, " +
       "re-run with FORCE_REBUILD=1.",
     );

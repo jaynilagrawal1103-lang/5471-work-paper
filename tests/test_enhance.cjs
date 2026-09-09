@@ -559,4 +559,7 @@ const run = () => new Promise(r => setTimeout(r, 250));
   assert(d.querySelectorAll('.en9-ocr-flag').length===2, 'OCR flags idempotent across re-renders: '+d.querySelectorAll('.en9-ocr-flag').length);
 
   console.log(process.exitCode? 'TESTS FAILED':'ALL 29 TEST GROUPS PASSED');
+  // The shipped layer installs the auto-OCR setInterval at top level, so the
+  // event loop never drains on its own once enhance.js has been evaluated.
+  process.exit(process.exitCode ? 1 : 0);
 })();
