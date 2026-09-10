@@ -236,7 +236,8 @@ async function docx(bodyXml) {
   });
 
   t("it lists AI-placed figures, AI profile fields and every rate's source", () => {
-    assert.ok(store.includes('c.via === "groq" ? "AI mapping"'));
+    assert.ok(store.includes('PROVENANCE_KIND[c.via] || "Rule mapping"'), "each contribution is labelled by how its line was chosen");
+    assert.ok(store.includes('groq: "AI mapping"'));
     assert.ok(store.includes('rows.push(["AI profile field", key'));
     assert.ok(store.includes('rows.push(["Exchange rate", rateCell[key]'));
     assert.ok(store.includes("it is not tax advice, and the preparer remains responsible"));

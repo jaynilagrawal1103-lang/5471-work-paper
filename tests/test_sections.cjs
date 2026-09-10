@@ -327,7 +327,7 @@ t("step 3 skips structure, applies the veto AFTER a target is chosen, then the f
   const loop = store.slice(store.indexOf("for (const m of mapRows) {"));
   assert.ok(loop.includes("if (m.skipReason || m.row.isBanner) continue;"), "structure is booked");
   const veto = loop.indexOf("if (target && m.section && !sectionOk(m.section, target)) target = null;");
-  const fallback = loop.indexOf("if (!target && m.section) target = sectionRoute(m.section, m.row.label)");
+  const fallback = loop.search(/if \(!target && m\.section\) \{\s*target = sectionRoute\(m\.section, m\.row\.label\)/);
   assert.ok(veto > 0 && fallback > veto, "the fallback must run after the veto, not before");
 });
 

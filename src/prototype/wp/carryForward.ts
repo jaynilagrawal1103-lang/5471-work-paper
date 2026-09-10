@@ -86,6 +86,12 @@ export type CarryForward = {
       prior filing's functional-currency figures, and the preparer should be
       told by how much rather than left to discover it. */
   priorRate?: SourcedValue;
+  /** Captions from the return's attached statements ("STATEMENT 10 — OTHER
+      CURRENT ASSETS: SUB-CONTRACTOR"), keyed like priorClosingUSD, each tied
+      to its Schedule F line by the statement's own total. */
+  statementCaptions?: Partial<Record<"oca" | "otherAssets" | "ocl" | "otherLiabilities", { label: string; page: number; statement: string }>>;
+  /** Schedule R as filed with the explicit "NONE" row — no distributions. */
+  schRNone?: { page: number; date?: string };
 };
 
 const pagesOfKind = (cls: DocClass, ...kinds: PageKind[]): Set<number> =>
@@ -465,6 +471,65 @@ export function extractCarryForward(
   out.priorClosingUSD.preferredStock = f(/^preferred stock/i);
   out.priorClosingUSD.paidInSurplus = f(/^paid-in or capital surplus/i);
   out.priorClosingUSD.treasuryStock = f(/^less cost of treasury stock/i);
+
+  /* The attached statements. Schedule F prints "Other current assets (attach
+     statement)" with only the total; the caption itself sits on a STATEMENT
+     page at the back of the return:
+         FORM 5471   OTHER CURRENT ASSETS   STATEMENT 10
+         SUB-CONTRACTOR                       -43,426.
+         TOTAL TO 5471, PAGE 4, SCH F, LINE 5 -43,426.
+     The hand-prepared work paper carried that caption onto the line; the tool
+     had stopped at the schedule. Statement pages are outside any CFC's page
+     range, so the whole document is scanned and a statement is accepted only
+     when its total equals the line it claims to support. */
+  const STATEMENT_LINES: [keyof NonNullable<CarryForward["statementCaptions"]>, RegExp][] = [
+    ["oca", /^other current assets$/i], ["otherAssets", /^other assets$/i],
+    ["ocl", /^other current liabilities$/i], ["otherLiabilities", /^other liabilities$/i],
+  ];
+  const everyRow = parsed.pdf.rows.map((r) => ({ page: r.page, cells: r.cells.map((c) => c.text.trim()).filter(Boolean) }));
+  const HEADER_WORD = /^(description|beg\.?|end|of|annual|accounting|period|functional|currency|exchange|rate|u\.s\.|dollars|amount)$/i;
+  for (const [key, titleRe] of STATEMENT_LINES) {
+    const filed = out.priorClosingUSD[key]?.value;
+    if (typeof filed !== "number") continue;
+    for (let i = 0; i < everyRow.length; i++) {
+      const head = /^form 5471\s+(.+?)\s+statement\s*(\d+)$/i.exec(everyRow[i].cells.join(" ").replace(/\s+/g, " "));
+      if (!head || !titleRe.test(head[1].trim())) continue;
+      let caption: { label: string; page: number; statement: string } | null = null;
+      let total: number | null = null;
+      for (let j = i + 1; j < Math.min(i + 40, everyRow.length); j++) {
+        const cells = everyRow[j].cells;
+        const joined = cells.join(" ");
+        if (/^total to 5471/i.test(joined)) {
+          const nums = cells.map((c) => numericCell(c)).filter((n): n is number => n !== null);
+          total = nums.length ? nums[nums.length - 1] : null;
+          break;
+        }
+        if (caption) continue;
+        const hasValue = cells.some((c) => numericCell(c) !== null);
+        const li = cells.findIndex((c) => /[A-Za-z]{3}/.test(c) && numericCell(c) === null && !c.split(/\s+/).every((w) => HEADER_WORD.test(w)));
+        if (hasValue && li >= 0) caption = { label: cells[li], page: everyRow[j].page, statement: `Statement ${head[2]}` };
+      }
+      if (caption && total !== null && Math.abs(total - filed) < 1) {
+        (out.statementCaptions ||= {})[key] = caption;
+        break;
+      }
+    }
+  }
+
+  /* Schedule R. A return with no distributions files the row "1 NONE
+     12/31/2023 0. 0." — read so the work paper can carry the same row
+     forward when this year has none either. Any amount other than zero on
+     the row means a distribution was reported, whatever the description. */
+  const schR = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schR"), pageFilter));
+  for (const r of schR) {
+    const cells = r.cells.map((c) => c.trim()).filter(Boolean);
+    if (!cells.some((c) => /^(1\s+)?none$/i.test(c))) continue;
+    const amounts = cells.filter((c) => !/^\d$/.test(c)).map((c) => numericCell(c)).filter((n): n is number => n !== null);
+    if (amounts.some((n) => n !== 0)) continue;
+    const date = /\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/.exec(cells.join(" "));
+    out.schRNone = { page: r.page, ...(date ? { date: date[1] } : {}) };
+    break;
+  }
 
   // Prior-year foreign tax accrued (Schedule E) — E-1 redetermination review.
   // The payor row reads: line | income | ccy | tax(functional) | rate | tax(USD).

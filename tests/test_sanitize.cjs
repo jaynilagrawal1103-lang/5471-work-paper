@@ -139,7 +139,7 @@ t("manualApply accumulates through r2add on all three fields", () => {
 
 t("buildWrites rounds numbers and sanitizes strings on the way to the cell", () => {
   assert.ok(store.includes(
-    'typeof w.value === "number" ? r2(w.value) : typeof w.value === "string" ? sanitize(w.value) : w.value'),
+    'typeof w.value === "number" ? (w.dp ? roundDp(w.value, w.dp) : r2(w.value)) : typeof w.value === "string" ? sanitize(w.value) : w.value'),
     "buildWrites does not clean the value");
 });
 

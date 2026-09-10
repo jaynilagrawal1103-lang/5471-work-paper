@@ -114,7 +114,8 @@ export type Contribution = {
   value: number;
   field: "amount" | "boy" | "eoy";
   year?: number | null;
-  via: "rule" | "groq" | "manual";
+  /** "section": no keyword matched — the statement's own section heading placed it. */
+  via: "rule" | "section" | "groq" | "manual";
   /** The document's original row values/years (pre-sign, pre-routing) —
       what unassign needs to reconstruct the unmatched row faithfully. */
   srcValues?: number[];
@@ -145,6 +146,9 @@ export type CellWrite = {
   /** Re-resolve the ROW by matching this text in the label column at
       generation time — template-revision-proof (Schedule M). */
   labelKey?: { col: string; contains: string; excludes?: string };
+  /** Decimal places kept when the value reaches the cell. Amounts round to
+      2; an exchange rate written at 2 dp is a different rate (0.833 → 0.83). */
+  dp?: number;
 };
 
 export type ReviewItem = {
@@ -1898,11 +1902,14 @@ export const actions = {
             if (!equity) continue;
             target = equity;
           }
+          /* How the line was chosen — the Provenance sheet must say so honestly. */
+          let via: Contribution["via"] = "rule";
           const ov = overrides[norm(m.row.label)];
           if (ov !== undefined) {
             // The user's standing decision wins over rules and feed scoping.
             if (ov.to === null) { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName, reason: "You unassigned this caption — pick a template line to book it." }); continue; }
             target = ov.to;
+            via = "manual";
           } else {
             // Feed scoping: a P&L page may only hit IS lines, a balance-sheet
             // page only BS lines. A related-party balance is recognized by the
@@ -1931,12 +1938,16 @@ export const actions = {
           if (target && m.section && !sectionOk(m.section, target)) target = null;
           // Only once the rules have failed: the banner's own routing. Last
           // resort, and honest about the assets side having no catch-all.
-          if (!target && m.section) target = sectionRoute(m.section, m.row.label) || null;
+          if (!target && m.section) {
+            target = sectionRoute(m.section, m.row.label) || null;
+            if (target) via = "section";
+          }
           // A section heading that IS the section's only line (QuickBooks
           // summary layout) goes to that section's "other" line, and says so.
           if (!target && m.collapsed) {
             target = collapsedRoute(m.row.label, m.collapsed);
             if (target) {
+              via = "section";
               rv({
                 id: `collapsed-section-${norm(m.row.label)}`, level: "info", category: "mapping", applied: true,
                 sourceLabel: m.row.label,
@@ -2010,7 +2021,7 @@ export const actions = {
             else lines[resolved.target] = { ...cur, boy: (typeof cur.boy === "number" ? cur.boy : 0) + booked };
             (contributions[resolved.target] ||= []).push({
               docId: m.docId, docName: m.docName, page: m.row.page,
-              label: m.row.label, value: booked, field: r.field, year: r.year, via: "rule",
+              label: m.row.label, value: booked, field: r.field, year: r.year, via,
               srcValues: m.row.values, srcYears: m.row.years, period: m.row.period,
             });
           }
@@ -2218,10 +2229,19 @@ export const actions = {
              except the entity's name, where the return's UPPERCASE print is
              replaced by the questionnaire's own casing when the two are
              clearly the same company. */
+          const isUpper = (v: string) => v === v.toUpperCase() && /[A-Z]/.test(v);
+          /* The statements' own header is the name as the company writes it;
+             the IRS-printed return shouts it in capitals. Same name, better
+             case — the questionnaire, read next, may improve on it again. */
+          const stmtName = bundles.find((x) => x.cls.kind === "cfc-financial-statements" && x.cls.entityName)?.cls.entityName || "";
+          if (stmtName && !isUpper(stmtName) && profile.legalName && isUpper(profile.legalName) && entitySimilarity(profile.legalName, stmtName) >= 0.8) {
+            profile.legalName = stmtName;
+            detected.legalName = { key: "legalName", value: stmtName, sourceLabel: "financial statements · header", confidence: "high" };
+            log.push(`entity name re-cased from the statements' header: ${stmtName}`);
+          }
           if (questionnaire) {
             const qs = `${questionnaire.fileName} · client questionnaire`;
             if (questionnaire.corporationName) {
-              const isUpper = (v: string) => v === v.toUpperCase() && /[A-Z]/.test(v);
               if (profile.legalName && isUpper(profile.legalName) && entitySimilarity(profile.legalName, questionnaire.corporationName) >= 0.6) {
                 profile.legalName = questionnaire.corporationName;
                 detected.legalName = { key: "legalName", value: questionnaire.corporationName, sourceLabel: qs, confidence: "high" };
@@ -2391,8 +2411,10 @@ export const actions = {
               // An aggregate parked on a detail row must not keep that row's
               // stock caption ("Prepaid expenses"), or the attached statement
               // would describe money that is not there.
-              if (rows.length > 1 && aggregateLabel && !relabels[k]) {
-                relabels[k] = `${aggregateLabel} (per prior-year Form 5471)`;
+              const stmt = cf.statementCaptions?.[key as keyof NonNullable<CarryForward["statementCaptions"]>];
+              if (rows.length > 1 && !relabels[k]) {
+                if (stmt) relabels[k] = `${titleCaseCaption(stmt.label)} (per prior-year Form 5471, ${stmt.statement})`;
+                else if (aggregateLabel) relabels[k] = `${aggregateLabel} (per prior-year Form 5471)`;
               }
               seeded.push(`${k}=${local.toLocaleString()}`);
             }
@@ -3719,8 +3741,27 @@ async function materializeCaseWrites(
     }
   }
 
-  /* ---- dividend: one record drives four schedules ---- */
+  /* ---- Schedule R with nothing to report ----
+     The prior return filed the explicit row "NONE / 12/31/2023 / 0 / 0". When
+     this year's statements show no distribution either, the work paper
+     carries the same row, dated this year end, rather than an empty schedule
+     that reads as "not considered". */
   const divAmount = equity?.dividendsCY ?? ato.frankedDividendsPaid ?? null;
+  if (!divAmount && cf?.schRNone && !ent.dividends.length) {
+    const cyEnd = ent.profile.cyEnd?.trim() || (caseYears.cy ? `12/31/${String(caseYears.cy).slice(2)}` : "");
+    const src = `${cfSource} · Schedule R p.${cf.schRNone.page}`;
+    w({ sheet: SHEET.schR, ref: "B10", value: "NONE", source: src, reviewId: "sch-r-none" });
+    if (cyEnd) w({ sheet: SHEET.schR, ref: "E10", value: cyEnd, source: src });
+    w({ sheet: SHEET.schR, ref: "G10", value: 0, source: src });
+    w({ sheet: SHEET.schR, ref: "I10", value: 0, source: src });
+    rv({
+      id: "sch-r-none", level: "info", category: "carry-forward", applied: true,
+      message: `Schedule R carries the explicit NONE row (${cyEnd || "this year end"} / 0 / 0), as the prior return filed it${cf.schRNone.date ? ` (${cf.schRNone.date})` : ""}: no distribution was found in the statements. If a dividend was paid this year, add it on the Dividends tab and this row is replaced.`,
+      target: `${SHEET.schR}!B10`, source: src,
+    });
+  }
+
+  /* ---- dividend: one record drives four schedules ---- */
   if (divAmount && caseYears.cy) {
     // An undated dividend defaults to the entity's own period end — only a
     // profile with no period at all falls back to the calendar year end.
@@ -3746,7 +3787,7 @@ async function materializeCaseWrites(
 
     w({ sheet: SHEET.dividends, ref: "B3", value: date, source: "equity movement / AU return" });
     w({ sheet: SHEET.dividends, ref: "C3", value: divAmount, source: "equity movement / AU return" });
-    if (usdPerUnit !== null) w({ sheet: SHEET.dividends, ref: "D3", value: usdPerUnit, reviewId: "dividend-rate", source: rateSource === "frankfurter" ? `ECB reference rate ${iso}` : "1 ÷ year-end spot (fallback)" });
+    if (usdPerUnit !== null) w({ sheet: SHEET.dividends, ref: "D3", value: usdPerUnit, dp: 4, reviewId: "dividend-rate", source: rateSource === "frankfurter" ? `ECB reference rate ${iso}` : "1 ÷ year-end spot (fallback)" });
     rv({
       id: "dividend-rate", level: rateSource === "frankfurter" ? "info" : "warn", category: "fx", applied: true,
       message: rateSource === "frankfurter"
@@ -3976,7 +4017,7 @@ async function materializeCaseWrites(
         ? "nil-tax year — no income tax booked"
         : "placeholder — no income tax expense found in the documents",
     });
-    if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
+    if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, dp: 6, source: "average rate" });
     rv({
       id: "sch-e-nil", level: taxFound ? "info" : "warn", category: "fx", applied: true,
       message: taxFound
@@ -4010,7 +4051,7 @@ async function materializeCaseWrites(
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
     }
     w({ sheet: SHEET.schE, ref: "O16", value: taxAbs, source: "P&L income tax expense", reviewId: "sch-e-current-tax" });
-    if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, source: "average rate" });
+    if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, dp: 6, source: "average rate" });
     rv({
       id: "sch-e-current-tax", level: "warn", category: "consistency", applied: true,
       message: `Schedule E row 16 carries the ${taxAbs.toLocaleString()} income tax expense from the P&L. Confirm whether it was PAID or ACCRUED in the year (Schedule E wants taxes paid or accrued — an accrual-only figure may need the accrued column treatment). The USD amount and the Schedule I-1 tested-taxes flow compute in the template's own formulas.`,
@@ -4057,11 +4098,50 @@ function toIsoDate(mdy: string, year: number): string | null {
   return `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
 }
 
+/** Round to `dp` places, half away from zero — r2 generalised. */
+function roundDp(value: number, dp: number): number {
+  const f = Math.pow(10, dp);
+  const r = Math.round((Math.abs(value) + Number.EPSILON) * f) / f;
+  return value < 0 ? -r : r;
+}
+
+/** "SUB-CONTRACTOR" → "Sub-Contractor"; mixed-case captions are left alone. */
+export function titleCaseCaption(label: string): string {
+  if (label !== label.toUpperCase()) return label;
+  return label.toLowerCase().replace(/(^|[\s\-/(])([a-z])/g, (_, p, c) => p + c.toUpperCase());
+}
+
+/** The date of formation as a real date (an Excel serial; B17 carries a date
+    format) with a four-digit year. Only an unambiguous date converts: ISO,
+    a day above 12, or a month/day/year print from the 5471 face — a US
+    form. "05/09/08" from a source of unknown convention stays as printed. */
+export function formedCell(text: string, sourceLabel?: string): string | number {
+  const s = String(text).trim();
+  const serial = (y: number, m: number, d: number) => {
+    if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+    const ms = Date.UTC(y, m - 1, d);
+    if (new Date(ms).getUTCMonth() !== m - 1) return null;
+    return Math.round((ms - Date.UTC(1899, 11, 30)) / 86400000);
+  };
+  const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (iso) return serial(+iso[1], +iso[2], +iso[3]) ?? s;
+  const m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/.exec(s);
+  if (!m) return s;
+  const yy = +m[3];
+  const year = m[3].length === 4 ? yy : yy + 2000 > new Date().getFullYear() ? 1900 + yy : 2000 + yy;
+  const a = +m[1], b = +m[2];
+  const usOrder = /5471 face/i.test(sourceLabel || "");
+  const md = a > 12 ? false : b > 12 ? true : usOrder ? true : null;
+  if (md === null) return s;
+  return (md ? serial(year, a, b) : serial(year, b, a)) ?? s;
+}
+
 export function buildWrites(ent: Entity): Writes {
   const basic: Record<string, string | number> = {};
   PROFILE_FIELDS.forEach((f) => {
     const v = ent.profile[f.key];
-    if (v !== undefined && v !== "") basic[f.cell] = v;
+    if (v === undefined || v === "") return;
+    basic[f.cell] = f.key === "formed" ? formedCell(v, ent.detected?.formed?.sourceLabel) : v;
   });
   OWNERSHIP_FIELDS.forEach((f) => {
     const v = ent.ownership[f.key];
@@ -4112,7 +4192,7 @@ export function buildWrites(ent: Entity): Writes {
     const sheet = (writes[w.sheet] ||= {});
     // The last thing before the value reaches a cell: 2 dp for numbers, ASCII
     // for text. Everything else passes through untouched.
-    const value = typeof w.value === "number" ? r2(w.value) : typeof w.value === "string" ? sanitize(w.value) : w.value;
+    const value = typeof w.value === "number" ? (w.dp ? roundDp(w.value, w.dp) : r2(w.value)) : typeof w.value === "string" ? sanitize(w.value) : w.value;
     if (sheet[w.ref] !== undefined && sheet[w.ref] !== "" && sheet[w.ref] !== value) continue;
     sheet[w.ref] = value;
   }
@@ -4354,7 +4434,7 @@ function provenanceRows(ent: Entity): CellValue[][] {
   rows.push(["FORM 5471 WORK PAPER — PROVENANCE (machine-assisted entries)"]);
   rows.push(["Generated", new Date().toISOString(), "App", "5471 Work Paper 2.1.0",
              "AI model", state.groq?.key ? state.groq.model : "none (no key configured)"]);
-  rows.push(["This sheet lists every figure placed by the AI model and every exchange rate with its source. Verify AI-placed figures against the source documents before filing. This work paper is a preparer aid — it is not tax advice, and the preparer remains responsible for the filed return."]);
+  rows.push(["This sheet lists every booked figure with how its line was chosen (keyword rule, section heading, AI model or preparer), every exchange rate with its source, and every blocking exception acknowledged before generation. Verify AI-placed and section-placed figures against the source documents before filing. This work paper is a preparer aid — it is not tax advice, and the preparer remains responsible for the filed return."]);
   rows.push([]);
   rows.push(["Kind", "Line / field", "Source caption", "Document", "Page", "Value", "Confidence", "Note"]);
 
@@ -4363,12 +4443,12 @@ function provenanceRows(ent: Entity): CellValue[][] {
       if (!c.via) continue;
       const flaggedLow = (ent.reviewItems || []).some((r) => r.id === `ai-low-${norm(c.label || "")}`);
       rows.push([
-        c.via === "groq" ? "AI mapping" : c.via === "manual" ? "Manual assignment" : "Rule mapping",
+        PROVENANCE_KIND[c.via] || "Rule mapping",
         `${label(target)} (${c.field})`,
         c.label || "", c.docName || "", c.page != null ? c.page : "",
         typeof c.value === "number" ? c.value : "",
-        flaggedLow ? "LOW — verify" : "model-reported ok",
-        "booked by the AI model; remap on Mapping & adjustments if wrong",
+        c.via === "groq" ? (flaggedLow ? "LOW — verify" : "model-reported ok") : "",
+        PROVENANCE_NOTE[c.via] || PROVENANCE_NOTE.rule,
       ]);
     }
   }
@@ -4395,8 +4475,30 @@ function provenanceRows(ent: Entity): CellValue[][] {
     rows.push(["Schedule write", "Schedule E O16 — income tax paid or accrued", "", "", "", schE.value as CellValue, "",
                "derived from Schedule C line 21a; drives Sch-H, Schedule I-1 and Form 8992"]);
   }
+
+  /* A blocking exception the preparer acknowledged is a decision the work
+     paper must record — the Boating paper shipped with an unbalanced Schedule
+     F and nothing on the sheet said anyone had seen the block. */
+  const acknowledged = allReviewItems(ent).filter((r) => r.level === "block" && r.dismissed);
+  rows.push([]);
+  rows.push(["ACKNOWLEDGED BLOCKING EXCEPTIONS — generation proceeded despite these"]);
+  if (!acknowledged.length) rows.push(["none"]);
+  for (const r of acknowledged) {
+    rows.push(["Acknowledged blocker", r.target || "", "", "", "", "", "",
+               `${r.message}${r.dismissedNote ? ` — preparer's note: "${r.dismissedNote}"` : " — no note left"}`]);
+  }
   return rows;
 }
+
+const PROVENANCE_KIND: Record<string, string> = {
+  rule: "Keyword rule", section: "Section heading", groq: "AI mapping", manual: "Manual assignment",
+};
+const PROVENANCE_NOTE: Record<string, string> = {
+  rule: "matched a keyword in the mapping catalogue; remap on Mapping & adjustments if wrong",
+  section: "no keyword matched — placed by the statement's own section heading; confirm the line",
+  groq: "booked by the AI model; verify against the source document",
+  manual: "assigned by the preparer",
+};
 
 export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffer) {
   const zip = await JSZip.loadAsync(bytes ?? templateBytes());

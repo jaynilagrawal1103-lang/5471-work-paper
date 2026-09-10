@@ -61,8 +61,8 @@ a(!dist.includes('(typeof h.amount=="number"?h.amount:0)+g'),
 a(dist.includes("(i[`F${a.row}`]=EN9r2(A.amount))"), "Schedule C is rounded again at workbook write");
 a(dist.includes("(s[`D${a.row}`]=EN9r2(A.boy))") && dist.includes("(s[`F${a.row}`]=EN9r2(A.eoy))"),
   "Schedule F is rounded again at workbook write");
-a(dist.includes('EN9v=typeof a.value=="number"?EN9r2(a.value):typeof a.value=="string"?EN9sanitize(a.value):a.value'),
-  "every other numeric cell written to the workbook is rounded, and strings are sanitised");
+a(dist.includes('EN9v=typeof a.value=="number"?(a.dp?EN9roundDp(a.value,a.dp):EN9r2(a.value)):typeof a.value=="string"?EN9sanitize(a.value):a.value'),
+  "every other numeric cell written to the workbook is rounded (to 2 dp, or to the precision a rate declares), and strings are sanitised");
 
 /* --- C2: the SKIP list --------------------------------------------------- */
 // The SKIP list keeps growing (v3 added the QuickBooks/Xero closing lines);
