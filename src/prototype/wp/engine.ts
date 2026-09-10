@@ -268,6 +268,11 @@ export const DEFAULT_RULES: MappingRule[] = [
        not. */
     "total revenue", "operating profit", "profit before tax", "net financial income",
     "total foreign capital", "total fixed assets", "net income for the year",
+    /* QuickBooks closes a P&L with "Net earnings"; Xero and Sage print
+       "Net profit for the period" / "Net loss". None were listed, so the
+       entity's whole profit was booked as an other DEDUCTION and net income
+       came out at nil. */
+    "net earnings", "net earnings for the year", "net profit for the period", "net loss for the year", "net loss",
     "result for the year", "profit for the year", "loss for the year",
     // The same subtotals as a French/Swiss statement prints them.
     "b\u00e9n\u00e9fice d'exploitation", "benefice d'exploitation",
@@ -420,6 +425,12 @@ function kwHit(label: string, kw: string): boolean {
 /** Longest matching keyword wins, so "accumulated depreciation" beats "depreciation". */
 export function matchRule(label: string, rules: MappingRule[]): string | null {
   const l = String(label).toLowerCase();
+  /* "Total for Current Liabilities", "Total for Assets", "Subtotal of …":
+     a total is a total whatever it totals, and the keyword list cannot
+     enumerate every section name a report engine might put after "for".
+     Checked before the keywords so that "Total for Assets" cannot fall
+     through to the "assets" fragment. */
+  if (/^(sub-?)?totals?\s+(for|of)\b/.test(l)) return "SKIP";
   let best: string | null = null;
   let bestLen = 0;
   for (const r of rules) {
@@ -535,6 +546,11 @@ export function detectLineNoColumnByStats(rows: string[][]): number | null {
 export const numericCell = (cell: string): number | null => {
   const s = String(cell).trim();
   if (!s) return null;
+  /* A slash or colon between digits is a page count ("1/1"), a fraction, a
+     date or a clock time — never an amount. numeric() strips punctuation, so
+     without this "1/1" read as eleven and "09:58" as 958, and a report footer
+     became a line item worth 11. */
+  if (/\d\s*[/:]\s*\d/.test(s)) return null;
   if (/^\(?\s*-?[\d.,\s ']+\s*\)?\s*(?:CR|DR)?\s*\/?\s*$/i.test(s) && /\d/.test(s)) return numeric(s);
   const textual = /[A-Za-z\u00C0-\u024F\u0600-\u06FF\u4E00-\u9FFF]/.test(s);
   const n = numeric(s);
@@ -570,6 +586,19 @@ export function signForLabel(label: string): 1 | -1 {
 
 /* Shared hygiene: strip the form-line token, drop line-number echoes and
    known form captions. Returns null when the row is not a ledger line. */
+/* Lines a report engine prints on every page that are not captions: the
+   accrual/cash-basis stamp, a weekday-and-date, a clock time, "Page 1 of 3".
+   A one-page report never trips the cross-page furniture test, so this is
+   the only thing standing between a QuickBooks footer and the ledger. */
+const REPORT_FURNITURE = new RegExp(
+  "\\b(accrual|cash)\\s+basis\\b|"
+  + "\\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|"
+  + "\\b\\d{1,2}:\\d{2}\\s*(am|pm)\\b|"
+  + "\\bpage\\s+\\d+\\s+of\\s+\\d+\\b|"
+  + "\\b(gmt|utc)z?\\b",
+  "i",
+);
+
 /* Exported for the parity harness, which replays real document rows through
    this pipeline and the shipped one and compares the results. Nothing else in
    the app calls it from outside this module. */
@@ -577,6 +606,7 @@ export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
   let { label, values, years } = row;
   // Before anything reads the caption: the lexicon is ASCII.
   label = sanitize(String(label || ""));
+  if (REPORT_FURNITURE.test(label)) return null;
   let formLine: string | undefined;
   const lm = /^(\d{1,2})([a-c])?[.)]?\s+(.+)$/.exec(label);
   if (lm && lm[3].length > 2) {

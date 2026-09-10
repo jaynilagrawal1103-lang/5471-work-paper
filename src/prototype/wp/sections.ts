@@ -49,6 +49,9 @@ export type MapRow = {
   /** Set when the row is structure rather than data — why, in the preparer's
       words, so the log can say what was dropped and the reader can disagree. */
   skipReason?: string;
+  /** A section heading that carries the section's whole figure on its own
+      line, with nothing itemised beneath it. See collapsedSections. */
+  collapsed?: Section;
 };
 
 
@@ -97,7 +100,7 @@ export function dropFurniture(rows: MapRow[]): MapRow[] {
 
 /* ---------- structural subtotals ---------- */
 
-const TOTAL_WORD = /^(total|subtotal|sub-total|sum|net result|grand total|totaal|totale|gesamt|合计|總計)\b/i;
+const TOTAL_WORD = /^(total|subtotal|sub-total|sum|net result|net (income|earnings|profit|loss)|grand total|totaal|totale|gesamt|合计|總計)\b/i;
 
 /** The outermost figures within a candidate group. A subtotal covers its
     IMMEDIATE children, so only the shallowest indent that carries numbers
@@ -278,4 +281,74 @@ export function refeedBySection(isRows: MapRow[], bsRows: MapRow[]): { is: MapRo
       .concat(toBs.map((m) => ({ ...m, feed: "bs" as const }))),
     moved: toBs.length + toIs.length,
   };
+}
+
+/* ---------- collapsed sections ----------
+
+   QuickBooks' summary balance sheet prints a section's total AS the section:
+
+       Current Assets                     $24,292.34
+       Long-term assets
+     Total for Assets                     $24,292.34
+
+   "Current Assets" is a banner by name, so it was tagged as a section and
+   never booked; the assets side has no fallback line on purpose; and the
+   entity's entire asset base went to the unmatched list. A heading that
+   carries a figure and has NO value-bearing rows indented beneath it is not a
+   heading — it is the only line the section has, and it belongs on that
+   section's "other" line. A heading with itemised children beneath it is left
+   alone: structRows already drops it as their summary. */
+
+/** Mark section-named rows that carry the section's figure with nothing
+    itemised beneath them. Run AFTER structRows, on positioned (PDF) rows only:
+    grid rows have no indent, so every row would look childless. */
+export function collapsedSections<T extends MapRow>(rows: T[]): T[] {
+  return rows.map((m, i) => {
+    if (m.skipReason || m.row.isBanner || amtOf(m) === null) return m;
+    const label = String(m.row.label || "").trim();
+    let section: Section | null = null;
+    for (const [re, s] of SECTION_BANNERS) if (re.test(label)) { section = s; break; }
+    if (!section) return m;
+    const ind = indentOf(m);
+    const below: MapRow[] = [];
+    for (let j = i + 1; j < rows.length; j++) {
+      if (indentOf(rows[j]) <= ind) break;
+      below.push(rows[j]);
+    }
+    return kidsSum(below) ? m : { ...m, collapsed: section };
+  });
+}
+
+/** Where a collapsed section's single figure goes. Unlike sectionRoute, this
+    DOES have an answer for the assets side, because the figure is known to be
+    the whole section rather than some unidentified caption within it. */
+export function collapsedRoute(label: string, section: Section): string | null {
+  const s = String(label || "").toLowerCase();
+  if (section === "assets") {
+    return /non-?current|long.?term|fixed|tangible|intangible|property|plant/.test(s) ? "BS:39" : "BS:OCA";
+  }
+  if (section === "liabilities") {
+    if (/equity|capital|patrimonio|eigen vermogen|capitaux propres|fonds propres|shareholders?|stockholders?/.test(s)) return "BS:61";
+    return /non-?current|long.?term/.test(s) ? "BS:OL" : "BS:OCL";
+  }
+  if (section === "income") return "IS:7";
+  if (section === "costs") return "IS:OD";
+  return null;
+}
+
+/* ---------- the profit line in an equity section ----------
+
+   "Net income" is a subtotal on a P&L and is rightly SKIPped there. On a
+   QuickBooks balance sheet it is something else: equity is presented as
+   "Retained Earnings" (prior years) + "Net Income" (this year), and the second
+   line is a real component of closing equity. Skipping it understated retained
+   earnings by the whole year's profit. The SKIP is therefore feed-aware for
+   the profit captions only. */
+const PROFIT_LINE = /^(net\s+(income|earnings|profit|loss)|(profit|loss)\s+(for|of)\s+the\s+(year|period)|current[-\s]year\s+(earnings|profit|net\s+income|result))\b/i;
+
+/** The retained-earnings line, when a SKIP-matched profit caption sits on the
+    balance-sheet side; null when the SKIP should stand. */
+export function equityOverride(label: string, feed: MapRow["feed"], section?: Section | null): string | null {
+  if (feed !== "bs" && section !== "liabilities") return null;
+  return PROFIT_LINE.test(String(label || "").trim()) ? "BS:61" : null;
 }

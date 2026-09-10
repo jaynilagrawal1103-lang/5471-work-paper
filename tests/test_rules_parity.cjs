@@ -134,6 +134,19 @@ t("a project already on the current version is left alone", () => {
   assert.strictEqual(STORE.upgradeRules(cur, STORE.RULE_CATALOGUE_VERSION), cur, "returned a new array unnecessarily");
 });
 
+t("a v2 project receives the v3 SKIP keywords inside its existing SKIP group", () => {
+  // v3 added keywords to a group every saved catalogue already has, so they
+  // are merged into it rather than appended as a new group.
+  const v2 = SRC.map((g) => ({ t: g.t, kw: g.kw.filter((k) => !/^net (earnings|profit for the period|loss)/.test(k)) }));
+  const upgraded = STORE.upgradeRules(v2, 2);
+  assert.strictEqual(upgraded.length, v2.length, "no new group expected");
+  const skip = upgraded.find((g) => g.t === "SKIP");
+  for (const k of ["net earnings", "net earnings for the year", "net profit for the period", "net loss for the year", "net loss"]) {
+    assert.ok(skip.kw.includes(k), k);
+  }
+  assert.strictEqual(STORE.upgradeRules(upgraded, 3), upgraded, "already current — untouched");
+});
+
 t("the preparer's own edits survive the upgrade", () => {
   const mine = [{ t: "IS:7", kw: ["omzet uit dienstverlening"] }];
   const upgraded = STORE.upgradeRules(mine, 1);

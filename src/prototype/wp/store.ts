@@ -7,7 +7,7 @@ import {
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
-import { refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
+import { collapsedRoute, collapsedSections, equityOverride, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
   AI_BATCH, TPM_BUDGET, aiMode, askResume, classifyFailure, estTokens, maxTokensFor,
@@ -414,7 +414,16 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 2;
+export const RULE_CATALOGUE_VERSION = 3;
+
+/** SKIP keywords added at each version. The SKIP group already exists in
+    every saved catalogue, so these are MERGED into it rather than added as a
+    group — and only when absent, so a preparer who removed one stays removed
+    for the version they removed it in. */
+const SKIP_ADDED_SINCE: Record<number, string[]> = {
+  // v3 (2026-09-10): QuickBooks/Xero/Sage closing lines booked as deductions.
+  2: ["net earnings", "net earnings for the year", "net profit for the period", "net loss for the year", "net loss"],
+};
 
 /** target → first keyword, for each group added at version 2. Identified by
     keyword rather than by index so reordering the catalogue is harmless. */
@@ -432,10 +441,15 @@ export function upgradeRules(saved: MappingRule[], savedVersion: number | undefi
   const wanted = new Set<string>();
   for (let v = from; v < RULE_CATALOGUE_VERSION; v++) for (const k of RULES_ADDED_SINCE[v] || []) wanted.add(k);
   const add = DEFAULT_RULES.filter((r) => r.kw.some((k) => wanted.has(k.toLowerCase()) && !known.has(k.toLowerCase())));
-  if (!add.length) return saved;
+  const skipWords: string[] = [];
+  for (let v = from; v < RULE_CATALOGUE_VERSION; v++) for (const k of SKIP_ADDED_SINCE[v] || []) if (!known.has(k)) skipWords.push(k);
+  if (!add.length && !skipWords.length) return saved;
+  const merged = skipWords.length
+    ? saved.map((r) => (r.t === "SKIP" ? { ...r, kw: [...r.kw, ...skipWords] } : r))
+    : saved;
   // Ahead of the saved rules: a longer keyword still wins, so position only
   // decides ties, and a rule the preparer wrote should not lose one.
-  return [...saved, ...add.map((r) => ({ t: r.t, kw: [...r.kw] }))];
+  return [...merged, ...add.map((r) => ({ t: r.t, kw: [...r.kw] }))];
 }
 
 let state: WpState = {
@@ -1666,6 +1680,10 @@ export const actions = {
             }
             pdfIs = structRows(pdfIs);
             pdfBs = structRows(pdfBs);
+            // A section heading carrying the section's whole figure with
+            // nothing itemised beneath it (QuickBooks' summary layout).
+            pdfIs = collapsedSections(pdfIs);
+            pdfBs = collapsedSections(pdfBs);
             let skipped = 0;
             for (const m of [...pdfIs, ...pdfBs]) {
               if (m.skipReason) skipped++;
@@ -1858,7 +1876,14 @@ export const actions = {
           if (m.skipReason || m.row.isBanner) continue;
           const matched = matchWithTranslation(m.row.label);
           let target = matched.target;
-          if (target === "SKIP") continue;
+          if (target === "SKIP") {
+            // "Net income" in an equity section is closing equity, not a
+            // P&L subtotal — the one SKIP that depends on which statement
+            // the caption is printed in.
+            const equity = equityOverride(m.row.label, m.feed, m.section);
+            if (!equity) continue;
+            target = equity;
+          }
           const ov = overrides[norm(m.row.label)];
           if (ov !== undefined) {
             // The user's standing decision wins over rules and feed scoping.
@@ -1893,6 +1918,19 @@ export const actions = {
           // Only once the rules have failed: the banner's own routing. Last
           // resort, and honest about the assets side having no catch-all.
           if (!target && m.section) target = sectionRoute(m.section, m.row.label) || null;
+          // A section heading that IS the section's only line (QuickBooks
+          // summary layout) goes to that section's "other" line, and says so.
+          if (!target && m.collapsed) {
+            target = collapsedRoute(m.row.label, m.collapsed);
+            if (target) {
+              rv({
+                id: `collapsed-section-${norm(m.row.label)}`, level: "info", category: "mapping", applied: true,
+                sourceLabel: m.row.label,
+                message: `"${m.row.label}" carried a single figure with nothing itemised beneath it (a summary-layout statement), so it was booked as a whole to ${target === "BS:61" ? "retained earnings" : target === "BS:OCA" ? "other current assets" : target === "BS:39" ? "other assets" : target === "BS:OCL" ? "other current liabilities" : target === "BS:OL" ? "other liabilities" : target === "IS:7" ? "gross receipts" : "other deductions"}. Attach the detailed statement if one exists and re-process.`,
+                source: m.docName,
+              });
+            }
+          }
 
           if (!target) {
             unmatched.push({

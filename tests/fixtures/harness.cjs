@@ -65,20 +65,29 @@ function book(items, opts = {}) {
   if (opts.section && M.EN9tagSections) feed = M.EN9tagSections(feed);
   if (opts.structure && M.EN9structRows) feed = M.EN9structRows(feed);
   if (opts.dedupe && M.EN9dedupeRows) feed = M.EN9dedupeRows(feed);
+  if (opts.collapsed && M.EN9collapsedSections) feed = M.EN9collapsedSections(feed);
 
   for (const it of feed) {
     if (it.EN9skip) { skipped.push({ label: it.row.label, why: it.EN9skip }); continue; }
     const norm = M.Yv(it.row);
     if (!norm) { unmatched.push({ label: it.row.label, why: "prose filter" }); continue; }
     let target = M.Tv(norm.label, rules);
+    /* SKIP is decided before any fallback or veto, exactly as the real
+       booking loop does — a subtotal under a liabilities banner is still a
+       subtotal, not something to re-route. */
+    if (target === "SKIP") {
+      const equity = opts.equity && M.EN9equityOverride ? M.EN9equityOverride(norm.label, it.feed, it.section) : null;
+      if (!equity) { skipped.push({ label: norm.label, why: "SKIP rule" }); continue; }
+      target = equity;
+    }
     /* order: keyword rule -> section routing (documentary) -> model guess */
     if (!target && opts.section && M.EN9sectionRoute) target = M.EN9sectionRoute(it.section, norm.label) || null;
+    if (!target && opts.collapsed && it.EN9collapsed && M.EN9collapsedRoute) target = M.EN9collapsedRoute(norm.label, it.EN9collapsed) || null;
     if (!target && opts.oracle) target = opts.oracle(norm.label, it.row.page) || null;
     if (opts.section && M.EN9sectionOk && target && !M.EN9sectionOk(it.section, target)) {
       blocked.push({ label: norm.label, target, section: it.section });
       target = M.EN9sectionRoute ? (M.EN9sectionRoute(it.section, norm.label) || null) : null;
     }
-    if (target === "SKIP") { skipped.push({ label: norm.label, why: "SKIP rule" }); continue; }
     if (target && it.feed === "is" && !target.startsWith("IS")) target = null;
     if (target && it.feed === "bs" && !target.startsWith("BS")) target = null;
     if (!target) { unmatched.push({ label: norm.label, why: "no rule" }); continue; }

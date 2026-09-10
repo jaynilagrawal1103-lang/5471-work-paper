@@ -64,19 +64,28 @@ function book(items, opts = {}) {
   let feed = items;
   if (opts.section) feed = SECT.tagSections(feed);
   if (opts.structure) feed = SECT.structRows(feed);
+  if (opts.collapsed) feed = SECT.collapsedSections(feed);
 
   for (const it of feed) {
     if (it.skipReason) { skipped.push({ label: it.row.label, why: it.skipReason }); continue; }
     const norm = ENG.applyRowHygiene(it.row);
     if (!norm) { unmatched.push({ label: it.row.label, why: "prose filter" }); continue; }
     let target = ENG.matchRule(norm.label, rules);
+    /* SKIP is decided before any fallback or veto, exactly as the real
+       booking loop does — a subtotal under a liabilities banner is still a
+       subtotal, not something to re-route. */
+    if (target === "SKIP") {
+      const equity = opts.equity ? SECT.equityOverride(norm.label, it.feed, it.section) : null;
+      if (!equity) { skipped.push({ label: norm.label, why: "SKIP rule" }); continue; }
+      target = equity;
+    }
     if (!target && opts.section) target = SECT.sectionRoute(it.section, norm.label) || null;
+    if (!target && opts.collapsed && it.collapsed) target = SECT.collapsedRoute(norm.label, it.collapsed) || null;
     if (!target && opts.oracle) target = opts.oracle(norm.label, it.row.page) || null;
     if (opts.section && target && !SECT.sectionOk(it.section, target)) {
       blocked.push({ label: norm.label, target, section: it.section });
       target = SECT.sectionRoute(it.section, norm.label) || null;
     }
-    if (target === "SKIP") { skipped.push({ label: norm.label, why: "SKIP rule" }); continue; }
     if (target && it.feed === "is" && !target.startsWith("IS")) target = null;
     if (target && it.feed === "bs" && !target.startsWith("BS")) target = null;
     if (!target) { unmatched.push({ label: norm.label, why: "no rule" }); continue; }
@@ -95,4 +104,6 @@ const val = (lines, key, field) => {
   return field === "amount" ? (L.amount ?? null) : (L[field] ?? null);
 };
 
-module.exports = { toRows, book, val, ENG, STORE, SECT };
+const BANNERS = () => load("src/prototype/wp/sectionBanners.ts");
+
+module.exports = { toRows, book, val, ENG, STORE, SECT, BANNERS };
