@@ -7,6 +7,7 @@ import {
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
+import { parseQuestionnaire, type Questionnaire } from "./questionnaire";
 import { collapsedRoute, collapsedSections, equityOverride, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
@@ -79,7 +80,7 @@ function daysBetweenPeriods(from?: string, to?: string): number | null {
   const days = Math.round((b.getTime() - a.getTime()) / 86400000);
   return days > 0 && days < 400 ? days : null;
 }
-import { summarizeLedger, type LedgerSummary } from "./relatedPartyLedger";
+import { summarizeLedger, summarizeSalary, type LedgerSummary, type SalarySchedule } from "./relatedPartyLedger";
 import { addWorksheet, applyWrites, resolveTemplateRows, templateBytes, type CellValue, type Writes } from "./xlsxPatch";
 import { safeDownload } from "./safeBrowser";
 import { lookupRates, yearFromPeriod, FX_META } from "./fxRates";
@@ -1506,6 +1507,8 @@ export const actions = {
     const cfCandidates: CfCandidate[] = [];
     let siblingPlans: CfCandidate[] = [];
     let ledger: LedgerSummary | null = null;
+    let questionnaire: Questionnaire | null = null;
+    let salary: SalarySchedule | null = null;
 
     const rv = (item: Omit<ReviewItem, "id"> & { id?: string }) => {
       if (!review.some((r) => item.id && r.id === item.id)) review.push({ ...item, id: item.id || uid() });
@@ -1716,6 +1719,17 @@ export const actions = {
             }
           } else if (cls.kind === "related-party-ledger") {
             ledger = summarizeLedger(parsed.grid, file.name) || ledger;
+          } else if (cls.kind === "client-questionnaire") {
+            questionnaire = parseQuestionnaire(parsed.grid, file.name);
+            profileGrids.push({ rows: parsed.grid, doc: file.name });
+            log.push(`${file.name}: client questionnaire — ${[
+              questionnaire.roles ? `roles "${questionnaire.roles}"` : "",
+              questionnaire.wagesReceived !== undefined ? `wages received ${questionnaire.wagesReceived.toLocaleString()}` : "",
+              questionnaire.additionalHolders.length ? `${questionnaire.additionalHolders.length} additional shareholder(s)` : "",
+            ].filter(Boolean).join(", ") || "no answers read"}`);
+          } else if (cls.kind === "related-party-salary") {
+            salary = summarizeSalary(parsed.grid, file.name) || salary;
+            if (salary) log.push(`${file.name}: salary schedule${salary.person ? ` for ${salary.person}` : ""} — ${salary.lines.length} line(s), total ${(salary.statedTotal ?? salary.sumOfLines).toLocaleString()}${salary.warnings.length ? ` (${salary.warnings.join("; ")})` : ""}`);
           } else if (cls.kind === "trial-balance") {
             for (const row of extractRows(parsed.grid)) {
               mapRows.push({ row, docId: file.id, docName: file.name, feed: "both", kind: "grid" });
@@ -2199,6 +2213,38 @@ export const actions = {
             }
           }
 
+          /* The questionnaire answers questions the statements and the prior
+             return never do. Blank fields only, like every other source —
+             except the entity's name, where the return's UPPERCASE print is
+             replaced by the questionnaire's own casing when the two are
+             clearly the same company. */
+          if (questionnaire) {
+            const qs = `${questionnaire.fileName} · client questionnaire`;
+            if (questionnaire.corporationName) {
+              const isUpper = (v: string) => v === v.toUpperCase() && /[A-Z]/.test(v);
+              if (profile.legalName && isUpper(profile.legalName) && entitySimilarity(profile.legalName, questionnaire.corporationName) >= 0.6) {
+                profile.legalName = questionnaire.corporationName;
+                detected.legalName = { key: "legalName", value: questionnaire.corporationName, sourceLabel: qs, confidence: "high" };
+                log.push(`entity name re-cased from the questionnaire: ${questionnaire.corporationName}`);
+              } else {
+                propose(profile, "legalName", questionnaire.corporationName, qs);
+              }
+            }
+            if (questionnaire.countryInc) propose(profile, "countryInc", questionnaire.countryInc, qs);
+            if (questionnaire.currency) propose(profile, "currency", questionnaire.currency, qs);
+            if (questionnaire.activity) propose(profile, "activity", questionnaire.activity, qs);
+            if (questionnaire.formed) propose(profile, "formed", questionnaire.formed, qs);
+            if (questionnaire.address.length) {
+              propose(profile, "addr1", questionnaire.address[0], qs);
+              if (questionnaire.address[1]) propose(profile, "addr2", questionnaire.address[1], qs);
+            }
+            if (questionnaire.isOfficer !== undefined) propose(ownership, "isOfficer", questionnaire.isOfficer ? "Yes" : "No", `${qs} · "${questionnaire.roles}"`);
+            if (questionnaire.filerShares && questionnaire.sharesOutstanding?.eoy) {
+              const pct = Math.round((questionnaire.filerShares.eoy ?? 0) / questionnaire.sharesOutstanding.eoy * 10000) / 100;
+              if (pct > 0) { propose(ownership, "ownEnd", String(pct), qs); propose(ownership, "ownStart", String(pct), qs); }
+            }
+          }
+
           const profileCandidates: ProfileCandidate[] = [];
           for (const { rows, doc } of profileGrids) {
             const found = detectProfile(rows, { doc });
@@ -2377,9 +2423,42 @@ export const actions = {
             if (merged.length !== (cur.shareholders || []).length) updateEntity(entityId, { shareholders: merged });
           }
         }
+        /* The questionnaire lists the filer and the other shareholders with
+           their shares. It seeds the Shareholders tab only when nothing else
+           has — a prior return's Schedule B outranks it — and records each
+           holder's relationship and citizenship, which no other document
+           states and which decide whether the corporation is a CFC at all. */
+        if (questionnaire) {
+          const cur = state.entities.find((e) => e.id === entityId);
+          if (cur && !(cur.shareholders || []).length) {
+            const seeded: Shareholder[] = [];
+            if (questionnaire.taxpayerName && questionnaire.filerShares && (questionnaire.filerShares.eoy ?? questionnaire.filerShares.boy) !== null) {
+              seeded.push({ id: uid(), name: questionnaire.taxpayerName, classOfShares: "Common",
+                boy: questionnaire.filerShares.boy ?? questionnaire.filerShares.eoy ?? 0, eoy: questionnaire.filerShares.eoy ?? questionnaire.filerShares.boy ?? 0,
+                source: `${questionnaire.fileName} · "Your Shares"` });
+            }
+            for (const h of questionnaire.additionalHolders) {
+              if (h.shares === null) continue;
+              seeded.push({ id: uid(), name: h.name, classOfShares: "Common", boy: h.shares, eoy: h.shares,
+                source: `${questionnaire.fileName} · additional shareholder${h.relationship ? ` (${h.relationship})` : ""}` });
+            }
+            if (seeded.length) {
+              updateEntity(entityId, { shareholders: seeded });
+              log.push(`${seeded.length} shareholder(s) seeded from the questionnaire — one share count per holder, taken as both beginning and end of year`);
+            }
+          }
+          const related = questionnaire.additionalHolders.filter((h) => h.name);
+          if (related.length) {
+            rv({
+              id: "q-holders", level: "info", category: "carry-forward", applied: true,
+              message: `The questionnaire names ${related.length} other shareholder(s): ${related.map((h) => `${h.name}${h.shares !== null ? ` (${h.shares} shares` : " ("}${h.relationship ? `, ${h.relationship}` : ""}${h.usCitizen !== undefined ? `, ${h.usCitizen ? "US citizen" : "not a US citizen"}` : ""})`).join("; ")}. Citizenship decides whether their holdings count toward CFC status; the template's Shareholding tab carries the names and counts only.`,
+              target: `${SHEET.shareholding}!B19`, source: questionnaire.fileName,
+            });
+          }
+        }
         const ent = state.entities.find((e) => e.id === entityId);
         if (!ent) return;   // removed mid-run
-        const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, ledger, rv });
+        const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, ledger, questionnaire, salary, rv });
         log.push(`${writes.list.length} schedule cell(s) prepared beyond the core statements`);
         // Sign-offs AND value edits survive re-processing, keyed by stable id.
         const prior = new Map(
@@ -3325,6 +3404,8 @@ type CaseFacts = {
   cf: CarryForward | null;
   cfSource: string;
   ledger: LedgerSummary | null;
+  questionnaire: Questionnaire | null;
+  salary: SalarySchedule | null;
   rv: (item: Omit<ReviewItem, "id"> & { id?: string }) => void;
 };
 
@@ -3332,7 +3413,7 @@ async function materializeCaseWrites(
   ent: Entity,
   facts: CaseFacts,
 ): Promise<{ list: CellWrite[]; dividends: DividendRec[] }> {
-  const { caseYears, equity, ato, cf, cfSource, ledger, rv } = facts;
+  const { caseYears, equity, ato, cf, cfSource, ledger, questionnaire, salary, rv } = facts;
   const list: CellWrite[] = [];
   const dividends: DividendRec[] = [];
   const avgRate = numeric(ent.fx.avgRate);
@@ -3700,6 +3781,55 @@ async function materializeCaseWrites(
         message: `Schedule M dividends-paid entered in column (b) at the year-average rate (US$${Math.round(divAmount / avgRate).toLocaleString()}). Column (b) is an inference — the recipient is the filer itself; Schedule M instructions use the average rate, the 18-Dec spot alternative would be US$${dividends[0].usdPerUnit ? Math.round(divAmount * dividends[0].usdPerUnit).toLocaleString() : "n/a"}. Confirm both choices.`,
         target: `${SHEET.schM}!dividends-paid row`,
       });
+    }
+  }
+
+  /* ---- the owner's compensation → Schedule M "compensation paid" ----
+     The questionnaire states what the filer was paid; a salary schedule
+     states the same thing month by month; and a P&L wage caption equals it
+     to the cent. That equality is the evidence: it ties a booked deduction to
+     a named related person, which is a Schedule M transaction — compensation
+     PAID by the corporation to the US person filing. (The hand-prepared work
+     paper put this on line 6, "compensation received"; that is the other
+     direction.) The template numbers this line 19, in its "paid" block. */
+  {
+    const facts: { amount: number; source: string; who: string | null }[] = [];
+    if (questionnaire?.wagesReceived !== undefined && questionnaire.wagesReceived > 0) {
+      facts.push({ amount: questionnaire.wagesReceived, source: `${questionnaire.fileName} · "Wages you received from the company"`, who: questionnaire.taxpayerName || null });
+    }
+    if (salary) {
+      const total = salary.statedTotal ?? salary.sumOfLines;
+      if (total > 0 && !facts.some((f) => Math.abs(f.amount - total) <= 0.01)) {
+        facts.push({ amount: total, source: `${salary.fileName} · salary schedule${salary.person ? ` for ${salary.person}` : ""}`, who: salary.person });
+      }
+    }
+    if (facts.length && avgRate) {
+      const booked = Object.entries(ent.contributions).flatMap(([target, list]) => list.map((c) => ({ target, ...c })));
+      let written = false;
+      for (const fact of facts) {
+        const hit = booked.find((c) => /^IS:/.test(c.target) && Math.abs(c.value - fact.amount) <= 0.01);
+        if (!hit) {
+          rv({
+            id: `schm-compensation-unmatched-${r2(fact.amount)}`, level: "warn", category: "related-party",
+            message: `${fact.source} states ${fact.amount.toLocaleString()} paid to ${fact.who || "the related person"}, but no P&L caption was booked at that amount, so Schedule M was NOT pre-filled. If the wages are inside a larger payroll caption, enter the compensation paid on Schedule M by hand.`,
+            target: `${SHEET.schM}!E28`, source: fact.source, suggestedValue: Math.round(fact.amount / avgRate),
+          });
+          continue;
+        }
+        if (written) continue;
+        const usd = Math.round(fact.amount / avgRate);
+        w({
+          sheet: SHEET.schM, ref: "E28", value: usd,
+          labelKey: { col: "B", contains: "compensation paid for technical" },
+          source: `${fact.source} = P&L "${hit.label}" at the year-average rate`, reviewId: "schm-compensation",
+        });
+        rv({
+          id: "schm-compensation", level: "info", category: "related-party", applied: true,
+          message: `Schedule M compensation paid, column (b) US person filing: US$${usd.toLocaleString()} — ${fact.source} equals the P&L caption "${hit.label}" (${fact.amount.toLocaleString()} ${ent.profile.currency || ""}) to the cent, translated at the year-average rate ${avgRate}. Note this is compensation the corporation PAID; line 6 ("compensation received") is the other direction.${fact.who && cf?.holderName && entitySimilarity(fact.who, cf.holderName) < 0.5 ? ` The schedule names ${fact.who}, not the filer — move the figure to the related-person column if ${fact.who} is not the person filing.` : ""}`,
+          target: `${SHEET.schM}!E28`, source: fact.source,
+        });
+        written = true;
+      }
     }
   }
 

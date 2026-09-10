@@ -228,6 +228,8 @@ const DOC_KIND_CHOICES: { label: string; kind: string; pageHint?: "fs-pnl" | "fs
   { label: "Local tax return", kind: "cfc-tax-return" },
   { label: "Prior-year US return (5471)", kind: "prior-year-us-return" },
   { label: "Related-party ledger", kind: "related-party-ledger" },
+  { label: "Client questionnaire", kind: "client-questionnaire" },
+  { label: "Related-party salary schedule", kind: "related-party-salary" },
   { label: "Trial balance", kind: "trial-balance" },
   { label: "Exclude (terms / other)", kind: "terms-and-conditions" },
 ];

@@ -9,6 +9,8 @@
    unknown document to a kind, never override a confident rules result. */
 
 import type { PdfDoc } from "./pdfText";
+import { looksLikeQuestionnaire } from "./questionnaire";
+import { looksLikeSalarySchedule } from "./relatedPartyLedger";
 import type { ParsedDoc } from "./engine";
 import { numeric } from "./engine";
 
@@ -18,6 +20,12 @@ export type DocKind =
   | "prior-year-us-return"
   | "related-party-ledger"
   | "trial-balance"
+  /** The preparer's client questionnaire — roles, wages received, the other
+      shareholders. Feeds the profile only. */
+  | "client-questionnaire"
+  /** A month-by-month salary schedule for one related person. Feeds
+      Schedule M only. */
+  | "related-party-salary"
   | "terms-and-conditions"
   | "unknown";
 
@@ -498,11 +506,16 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
   const notes: DocNote[] = [];
 
   if (!parsed.pdf) {
-    const ledger = looksLikeLedger(parsed, fileName);
+    /* Grids: the questionnaire and a salary schedule are recognised by their
+       own captions before the ledger test, because both would otherwise fall
+       to "trial balance" and have their answers read as line items. */
+    const questionnaire = looksLikeQuestionnaire(parsed.grid);
+    const salary = !questionnaire && looksLikeSalarySchedule(parsed.grid);
+    const ledger = !questionnaire && !salary && looksLikeLedger(parsed, fileName);
     return {
       fileId, fileName,
-      kind: ledger ? "related-party-ledger" : "trial-balance",
-      confidence: ledger ? 0.9 : 0.5,
+      kind: questionnaire ? "client-questionnaire" : salary ? "related-party-salary" : ledger ? "related-party-ledger" : "trial-balance",
+      confidence: questionnaire || salary ? 0.95 : ledger ? 0.9 : 0.5,
       method: "rules",
       pages: [{ page: 1, kind: "unknown", score: 0 }],
       statementYear: null,
@@ -666,6 +679,8 @@ export function feedsForPage(cls: DocClass, pageKind: PageKind): Set<FeedTarget>
         ? new Set<FeedTarget>(["carry-forward"])
         : new Set<FeedTarget>(["none"]);
     case "related-party-ledger": return new Set<FeedTarget>(["schM-ledger"]);
+    case "client-questionnaire": return new Set<FeedTarget>(["profile"]);
+    case "related-party-salary": return new Set<FeedTarget>(["schM-ledger"]);
     case "trial-balance": return new Set<FeedTarget>(["generic-is", "generic-bs", "profile"]);
     default: return new Set<FeedTarget>(["none"]);
   }

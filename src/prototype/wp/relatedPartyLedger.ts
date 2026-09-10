@@ -131,3 +131,67 @@ export function summarizeLedger(grid: string[][], fileName: string): LedgerSumma
   if (!out.rows.length) out.warnings.push(`${fileName}: ledger header found but no data rows parsed.`);
   return out;
 }
+
+/* ---------- a related party's salary schedule ----------
+
+   A one-page document listing what the corporation paid one person, month by
+   month, with a total: "January 2024 – KYD $2,500.00 … Year end bonus – KYD
+   $20,000.00 / Total: KYD $72,067.40". When the person is the US shareholder
+   (or a relative) it is a Schedule M transaction — compensation PAID — and the
+   total will match a P&L wage caption to the cent, which is how the two are
+   tied together. Read as printed; nothing is inferred beyond the arithmetic. */
+
+export type SalarySchedule = {
+  fileName: string;
+  /** The heading's subject ("W. Justin Thompson – 2024 Salary" → the name). */
+  person: string | null;
+  currency: string | null;
+  lines: { label: string; amount: number }[];
+  /** The document's own total, when it prints one. */
+  statedTotal: number | null;
+  /** Sum of the lines — compared against statedTotal, never substituted. */
+  sumOfLines: number;
+  warnings: string[];
+};
+
+const MONTH_LINE = /^(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/i;
+const AMOUNT_TAIL = /([A-Z]{3})?\s*\$?\s*(-?\(?[\d.,]+\)?)\s*$/;
+
+/** Six or more month lines carrying amounts, and a total. */
+export function looksLikeSalarySchedule(grid: string[][]): boolean {
+  const lines = grid.map((r) => r.map((c) => String(c ?? "").trim()).filter(Boolean).join(" ")).filter(Boolean);
+  const months = lines.filter((l) => MONTH_LINE.test(l) && AMOUNT_TAIL.test(l) && numeric((AMOUNT_TAIL.exec(l) || [])[2] || "") !== null).length;
+  const total = lines.some((l) => /^total\b/i.test(l));
+  const salary = lines.some((l) => /salary|wages|remuneration|payroll/i.test(l));
+  return months >= 6 && total && salary;
+}
+
+export function summarizeSalary(grid: string[][], fileName: string): SalarySchedule | null {
+  if (!looksLikeSalarySchedule(grid)) return null;
+  const out: SalarySchedule = { fileName, person: null, currency: null, lines: [], statedTotal: null, sumOfLines: 0, warnings: [] };
+  const text = grid.map((r) => r.map((c) => String(c ?? "").trim()).filter(Boolean).join(" ")).filter(Boolean);
+  const currencies = new Map<string, number>();
+  for (const line of text) {
+    // "W. Justin Thompson – 2024 Salary": the heading names the person.
+    if (!out.person && /salary|wages|remuneration/i.test(line) && !AMOUNT_TAIL.test(line.replace(/\b(19|20)\d{2}\b/g, ""))) {
+      out.person = line.replace(/\s*[–—-]\s*(19|20)?\d{0,4}\s*(salary|wages|remuneration).*$/i, "").trim() || null;
+      continue;
+    }
+    const m = AMOUNT_TAIL.exec(line);
+    if (!m) continue;
+    const amount = numeric(m[2]);
+    if (amount === null) continue;
+    if (m[1]) currencies.set(m[1].toUpperCase(), (currencies.get(m[1].toUpperCase()) || 0) + 1);
+    const label = line.slice(0, m.index).replace(/[\s–—:-]+$/, "").trim();
+    if (/^total\b/i.test(label)) { out.statedTotal = amount; continue; }
+    out.lines.push({ label, amount });
+  }
+  out.sumOfLines = Math.round(out.lines.reduce((n, l) => n + l.amount, 0) * 100) / 100;
+  if (currencies.size) out.currency = [...currencies.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  if (currencies.size > 1) out.warnings.push(`more than one currency on the schedule: ${[...currencies.keys()].join(", ")}`);
+  if (out.statedTotal !== null && Math.abs(out.statedTotal - out.sumOfLines) > 0.01) {
+    out.warnings.push(`the lines sum to ${out.sumOfLines} but the schedule states ${out.statedTotal}`);
+  }
+  return out;
+}
+
