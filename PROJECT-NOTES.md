@@ -581,3 +581,95 @@ Tests: `tests/test_read_status.cjs` (11 assertions), wired into `test:all`
 (now 916). They cover the UNKNOWN case explicitly — read but unidentified must
 still report "text read" — and that one file's warning cannot make another look
 like a scan.
+
+## Session 2026-09-10 — Boating Made Easy Ltd: tool vs hand-prepared work paper
+
+A cell-by-cell reconciliation of the tool's work paper against the preparer's
+own (2024, Cayman, KYD; QuickBooks P&L + balance sheet + the 2023 US return)
+found the P&L right to the cent except for two garbage rows that wiped out
+the profit, and a balance sheet with an empty assets side. Every gap was
+traced to a rule and fixed in both trees, in the owner's priority order.
+Commits `0ec404c`, `50e11f0`, `2f40a0c`, `879382d`, `2753a14`.
+
+**Priority 1 — the five defects (fixture `tests/test_fixture_boating.cjs`).**
+- A · "Net earnings" booked as Other deduction 16: SKIP gains `net earnings`,
+  `net earnings for the year`, `net profit for the period`, `net loss for the
+  year`, `net loss` (catalogue v3; saved projects receive them in their SKIP group).
+- B · The QuickBooks footer "Accrual Basis Wednesday, June 11, 2025 09:58 PM
+  GMTZ" booked as a deduction of 11 ("1/1" read as eleven): `numericCell`
+  refuses digit-slash-digit and digit-colon-digit tokens; `applyRowHygiene`
+  drops report furniture (weekday+month+day, hh:mm AM/PM, timezone token,
+  Accrual/Cash Basis, Page n of m).
+- C · "Current Assets 24,292.34" — the summary layout's only asset line —
+  left unmatched: a banner-named row carrying a value with nothing itemised
+  beneath it is a collapsed section and books to the section's "other" line
+  (`collapsedSections` / `collapsedRoute`, info `collapsed-section-*`).
+- D · Equity "Net Income 12,875.74" SKIPped: on a balance-sheet feed the
+  profit captions book to retained earnings (`equityOverride` → BS:61).
+- E · "Total for Current Liabilities = 0" booked: captions starting `total
+  for/of` or `totals` are subtotals whatever the feed (prefix rule ahead of
+  keyword matching).
+Result: net income 12,875.74; Schedule F balances at 24,292.34 both sides.
+
+**Priority 2 — the silent inconsistencies** (`tests/test_boating_p2.cjs`).
+Separate-category code read from Sch J/E/H (`GEN`) → Schedule J C10, Schedule
+P B10, Sch-H C8 (template default was "FB - Foreign Branch"); C36 answers Yes
+only for a holder with a corporate suffix; C35 from the face's Item H boxes
+(src) and the questionnaire; C40 "No" from 2019; `cf-ownership-mismatch`
+when the face's % disagrees with Schedule B's share count (100% vs 50% here —
+it halves the 8992 pro-rata share); `re-rollforward` presents the retained-
+earnings roll-forward the way the manual tab does (prior-filed opening,
+books' opening, net income, closing, residual) on a new **Retained Earnings**
+template tab — the residual is a suggested value, never written;
+`re-opening-mismatch` when Schedule F D61 ≠ Schedule J F15.
+
+**Priority 3 — the prior filing's rate** (`fx-prior-rate`). The Treasury
+table says KYD 0.82; the prior return used 0.833 (Sch H line 5e / Sch M
+header, read as printed). Owner's decision: keep the table, warn only — the
+warning quantifies the opening column line by line (cash 30,257 → 29,785
+−472; receivables −332; inventories −23; other current assets +565; net
+current assets 16,834 → 16,572, −262) and offers the stated rate for C61.
+
+**Priority 4 — the questionnaire and the salary schedule** (`879382d`,
+`tests/test_questionnaire.cjs`). Two documents the hand-prepared paper used
+and the tool had never read: the Bright!Tax client questionnaire (.xls —
+roles, wages received, other shareholders with relationship and citizenship)
+and a month-by-month salary .docx. New kinds `client-questionnaire` (feeds
+profile) and `related-party-salary` (feeds Schedule M). A stated wage that
+equals a booked P&L caption to the cent (72,067.40) writes Schedule M
+"compensation PAID" (label-keyed row) — the manual paper had it on line 6,
+"compensation received", the other direction; an unmatched wage is a warning.
+
+**Priority 5** (`2753a14`, `tests/test_boating_p5.cjs`): attached-statement
+captions ("SUB-CONTRACTOR") on the seeded opening line; name re-cased from
+the statements' header; B17 as a real date (unambiguous order or 5471-face
+source only); Schedule R "NONE / <cyEnd> / 0 / 0" when the prior return filed
+it and no distribution was found; Provenance sheet labels rows by how the
+line was chosen (keyword rule / section heading / AI / preparer, `via:
+"section"` recorded), Confidence blank for non-AI rows, and lists every
+acknowledged blocker with the preparer's note; `CellWrite.dp` keeps
+exchange-rate precision (Sch E Q16 was reaching the sheet as 0.83).
+
+**Template** (`assets/master-template.xlsx`, re-embedded): Shareholding
+Details A25 "l" → "7"; Schedule J C10 default GEN; new Retained Earnings tab.
+
+**Dist port.** Every rule lands in both trees; dist sentinels EN9NUMSLASH,
+EN9FURNITURE, EN9TOTALFOR, EN9COLLAPSE*, EN9EQUITY, EN9ROLLFWD, EN9CFCAT,
+EN9PRIORRATE, EN9QUEST*, EN9SCHMCOMP, EN9CFSTMT, EN9CFSCHR, EN9SCHRNONE,
+EN9STMTCASE, EN9ACK. The questionnaire/salary parsers in dist are transpiled
+from the very source the tests cover. Bridge gained `EN9carryForward`,
+`EN9formedCell`, `EN9titleCase`.
+
+**Source-only, deliberately (not ported):** the C35 officer flag from the
+prior return's Item H boxes — dist answers C35 from the questionnaire only.
+The dist Item-H parser does not expose the per-filer row the check needs; the
+questionnaire path covers the case seen, and the flag stays editable.
+
+**Known input facts, not tool defects.** Two copies of the 2023 return on
+disk disagree (Schedule J line 14 = 16,834 in the zip's "V1", 20,627 in the
+109-page "Clnt V1"); both work papers used 16,834. The manual paper's 0.62
+Schedule F imbalance and its 12,876.02 net income are its own input rounding.
+
+Tests: `test:all` now 46 suites (449 named assertions + 15 whole-suite
+passes). The engine-logic workbook at `outputs/5471-engine-logic` was
+regenerated with the new rules, exceptions and cell writes.
