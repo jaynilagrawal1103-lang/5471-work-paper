@@ -2125,12 +2125,32 @@ export const actions = {
               propose(ownership, "ownEnd", String(cf.pctVoting), `${cfSource} · 5471 face`);
             }
             propose(ownership, "cfc", "Yes", `${cfSource} · prior-year filing`);
-            if (cf.pctVoting === undefined || cf.pctVoting >= 10) {
-              propose(ownership, "tenPct", "Yes",
-                cf.pctVoting !== undefined
-                  ? `${cfSource} · ${cf.pctVoting}% voting per prior filing`
-                  : `${cfSource} · prior-year filing`);
+            /* "Does the entity have a 10% CORPORATE shareholder?" is a question
+               about the holders' legal form, not the filer's own percentage —
+               the old rule answered Yes for any 10% holder, individuals
+               included. Yes only when a Schedule B holder is a company. */
+            {
+              const holders = [...(cf.holders || []), ...(cf.usHolders || [])];
+              const corporate = holders.filter((h) => isCorporateName(h.name));
+              if (corporate.length) {
+                propose(ownership, "tenPct", "Yes", `${cfSource} · Schedule B holder ${corporate.map((h) => h.name).join(", ")}`);
+              } else if (holders.length) {
+                propose(ownership, "tenPct", "No", `${cfSource} · Schedule B holders are individuals`);
+              }
             }
+            /* Item H on the face: the filer's own Shareholder / Officer /
+               Director boxes. Parsed for years and never proposed. */
+            {
+              const filer = cf.holderName;
+              const people = cf.itemH || [];
+              const mine = people.find((p) => !!filer && entitySimilarity(p.name, filer) >= 0.5)
+                ?? (people.length === 1 ? people[0] : undefined);
+              if (mine) {
+                propose(ownership, "isOfficer", mine.isOfficer || mine.isDirector ? "Yes" : "No", `${cfSource} · Item H boxes for ${mine.name}`);
+              }
+            }
+            // The transition tax (section 965) was a 2017/2018 event.
+            if (caseYears.cy && caseYears.cy >= 2019) propose(ownership, "transition", "No", `tax year ${caseYears.cy} is after the 2017–18 transition years`);
             if (cf.pctVoting !== undefined && cf.pctVoting < 50) {
               rv({
                 id: "cf-cfc-status", level: "warn", category: "carry-forward",
@@ -2824,6 +2844,27 @@ export function readState(ent: Entity | undefined, file: EntityFile): ReadStatus
   return "could not be read";
 }
 
+/** Net income as the Income Statement tab will compute it from the booked
+    lines: gross profit (1a − 1b − COGS) + lines 4–9, less lines 11–17, plus
+    the signed items on lines 20–21b. null when nothing is booked. */
+export function bookNetIncome(lines: Record<string, LineValue>): number | null {
+  const amt = (row: number) => { const v = lines[`IS:${row}`]?.amount; return typeof v === "number" ? v : 0; };
+  if (!Object.keys(lines).some((k) => k.startsWith("IS:"))) return null;
+  const grossProfit = amt(7) - amt(8) - (amt(10) + amt(11) + amt(12));
+  const income = grossProfit + [14, 15, 16, 17, 18, 19, 20, 22, 23, 24].reduce((n, r) => n + amt(r), 0);
+  const deductions = [26, 27, 28, 29, 30, 31, 32].reduce((n, r) => n + amt(r), 0)
+    + POOLS["IS:OD"].rows.reduce((n, r) => n + amt(r), 0);
+  const below = [53, 54, 55].reduce((n, r) => n + amt(r), 0);
+  return r2(income - deductions + below);
+}
+
+/** Does a shareholder name read as a company rather than a person? The
+    suffixes the world's registries actually use, plus the bare words. */
+export function isCorporateName(name: string): boolean {
+  return /\b(inc|incorporated|corp|corporation|co|company|ltd|limited|llc|l\.l\.c|plc|pty|pte|gmbh|ag|s\.?a\.?|s\.?r\.?l|b\.?v|n\.?v|s\.?p\.?a|oy|ab|as|kk|k\.k|sdn|bhd|holdings?|trust|partners(hip)?|lp|l\.p|fund|group)\b\.?$/i.test(String(name || "").trim())
+    || /\b(inc|corp|ltd|llc|gmbh|b\.v\.|n\.v\.|s\.a\.|pty|plc)\b/i.test(String(name || ""));
+}
+
 /** Same strings in the same order. */
 const sameList = (a: string[] | undefined, b: string[]) =>
   !!a && a.length === b.length && a.every((x, i) => x === b[i]);
@@ -3273,6 +3314,29 @@ async function materializeCaseWrites(
   const pyRate = numeric(ent.fx.pyRate);
   const w = (write: CellWrite) => list.push(write);
 
+  /* ---- carry-forward: separate-category code ---- */
+  /* The template ships with "FB - Foreign Branch" selected on Schedule J,
+     which is the rare case. The filed code is on the prior return's Schedules
+     J, E, H and P; carry it to every tab that asks. */
+  if (cf) {
+    const CATEGORY_LABEL: Record<string, string> = {
+      GEN: "GEN - General", PAS: "PAS - Passive", FB: "FB - Foreign Branch",
+      "901j": "901j", RBT: "RBT - Re-sourced by Treaty", "951A": "951A",
+    };
+    const code = cf.separateCategory && CATEGORY_LABEL[cf.separateCategory];
+    if (code) {
+      w({ sheet: SHEET.schJ, ref: "C10", value: code, source: `${cfSource} · separate category as filed` });
+      w({ sheet: SHEET.schP, ref: "B10", value: code, source: `${cfSource} · separate category as filed` });
+      w({ sheet: SHEET.schH, ref: "C8", value: code, source: `${cfSource} · separate category as filed` });
+    } else {
+      rv({
+        id: "cf-category-code", level: "info", category: "carry-forward",
+        message: `The separate-category code (GEN / PAS / FB / 901j / RBT / 951A) could not be read from ${cfSource}. Schedule J C10, Schedule P B10 and Sch-H C8 keep the template default "GEN - General" — confirm against the prior filing.`,
+        target: `${SHEET.schJ}!C10`, source: cfSource,
+      });
+    }
+  }
+
   /* ---- carry-forward: opening E&P, shareholding, prior-filed USD ---- */
   if (cf?.openingEP) {
     w({
@@ -3348,6 +3412,26 @@ async function materializeCaseWrites(
       });
     }
   }
+  /* The face states the filer's voting percentage; Schedule B states the
+     holders and their shares. When the two disagree, one of them is wrong,
+     and the 8992 pro-rata share is computed from the Schedule B figure — a
+     filer shown as 100% on page 1 and 50% on page 2 has been carried, silently,
+     by both the tool and a hand-prepared work paper. */
+  if (cf?.pctVoting !== undefined && holderRows.length >= 2 && cf.holderName) {
+    const total = holderRows.reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+    const mine = holderRows.find((h) => entitySimilarity(h.name, cf.holderName!) >= 0.5);
+    if (total > 0 && mine) {
+      const pct = Math.round((Number(mine.eoy) || 0) / total * 10000) / 100;
+      if (Math.abs(pct - cf.pctVoting) > 1) {
+        rv({
+          id: "cf-ownership-mismatch", level: "warn", category: "consistency",
+          message: `${cfSource} states on its face that the filer owned ${cf.pctVoting}% of the voting stock, but its Schedule B gives ${mine.name} ${mine.eoy} of ${total} shares = ${pct}%. Basic Information carries ${cf.pctVoting}%; Shareholding Details and the Form 8992 pro-rata share use ${pct}%. One of the two is wrong on the prior filing — resolve it before generating.`,
+          target: `${SHEET.basic}!C34`, source: cfSource,
+        });
+      }
+    }
+  }
+
   /* Schedule A states the shares issued and outstanding for the corporation as
      a whole. The shareholder rows must add up to it. When they do not, a holder
      was dropped during extraction — which silently inflates everyone else's
@@ -3428,6 +3512,53 @@ async function materializeCaseWrites(
           id: "cf-boy-grouping", level: "warn", category: "carry-forward",
           message: `Beginning-of-year liabilities were carried exactly as filed: the prior-year return reports nothing on line 15 and US$${filedOcl!.toLocaleString()} on line 16, while the current year splits payables across lines 15 and 16. The two columns therefore present the same money on different lines. Re-split the opening column if you want the years shown consistently — the amounts are unchanged either way.`,
           target: `${SHEET.bs}!D46`, source: cfSource,
+        });
+      }
+    }
+    /* ---- retained-earnings roll-forward ----
+       Within the books, opening + net income − distributions = closing. The
+       prior filing's closing retained earnings is a different number from the
+       books' opening whenever the accountant re-stated, the rate moved, or
+       last year's return was prepared from something other than these books.
+       That difference is real, it is usually unexplained, and until now it
+       was visible only to a preparer who built a roll-forward by hand. The
+       tab lays it out; the exception names the residual; nothing is plugged. */
+    {
+      const closing = numeric(String(ent.lines["BS:61"]?.eoy ?? ""));
+      const filedUsd = cf.priorClosingUSD.re?.value;
+      if (closing !== null && filedUsd !== undefined) {
+        const rateUsed = cf.priorRate?.value ?? pyRate ?? null;
+        const priorFc = rateUsed ? r2(filedUsd * rateUsed) : null;
+        const ni = bookNetIncome(ent.lines);
+        const distributions = r2(ent.dividends.reduce((n, d) => n + (Number(d.amountFunctional) || 0), 0));
+        if (priorFc !== null && ni !== null) {
+          w({
+            sheet: SHEET.re, ref: "F10", value: priorFc, reviewId: "re-rollforward",
+            source: `${cfSource} · Schedule F line 22 US$${filedUsd.toLocaleString()} at ${rateUsed}${cf.priorRate ? " (the rate the prior filing states)" : " (prior year-end rate)"}`,
+          });
+          const booksOpening = r2(closing - ni + distributions);
+          const residual = r2(booksOpening - priorFc);
+          const ties = Math.abs(residual) <= 1;
+          rv({
+            id: "re-rollforward", level: ties ? "info" : "warn", category: "consistency", applied: true,
+            message: ties
+              ? `Retained earnings roll forward: prior filing ${priorFc.toLocaleString()} + net income ${ni.toLocaleString()} − distributions ${distributions.toLocaleString()} = ${closing.toLocaleString()} per Schedule F. Ties.`
+              : `Retained earnings do not roll forward. Prior filing closed at US$${filedUsd.toLocaleString()} = ${priorFc.toLocaleString()} at ${rateUsed}; the books' closing ${closing.toLocaleString()} less net income ${ni.toLocaleString()} plus distributions ${distributions.toLocaleString()} implies an opening of ${booksOpening.toLocaleString()}. Difference ${residual.toLocaleString()} — a re-statement, a rate difference, or a prior return prepared from other figures. Nothing has been plugged: confirm the cause and enter it on the Retained Earnings tab (F24) so the tab ties to Schedule F.`,
+            target: `${SHEET.re}!F24`, source: cfSource, suggestedValue: residual,
+          });
+        }
+      }
+      /* Schedule F's opening retained earnings (converted from the filed USD)
+         and Schedule J's opening E&P (carried in functional currency) are
+         two readings of the same prior-year figure. When they differ, the
+         difference is exactly the rate. */
+      const boyRe = numeric(String(ent.lines["BS:61"]?.boy ?? ""));
+      if (boyRe !== null && cf.openingEP && Math.abs(boyRe - cf.openingEP.value) > 1) {
+        const impliedRate = cf.priorClosingUSD.re?.value && cf.openingEP.value ? Math.round(cf.priorClosingUSD.re.value / cf.openingEP.value * 1e6) / 1e6 : null;
+        rv({
+          id: "re-opening-mismatch", level: "warn", category: "consistency",
+          message: `Schedule F opens retained earnings at ${boyRe.toLocaleString()} (the filed US$${(cf.priorClosingUSD.re?.value ?? 0).toLocaleString()} at the ${ent.profile.pyEnd || "prior year-end"} rate ${pyRate ?? "—"}), while Schedule J line 1a carries ${cf.openingEP.value.toLocaleString()} as filed in functional currency — a difference of ${r2(boyRe - cf.openingEP.value).toLocaleString()}.${impliedRate ? ` The prior filing's own figures imply a rate of ${impliedRate}` : ""}${cf.priorRate ? `, and it states ${cf.priorRate.value} on Schedule H` : ""}. Both are the same year-end balance; one rate should serve both.`,
+          target: `${SHEET.bs}!D61`, source: cfSource,
         });
       }
     }

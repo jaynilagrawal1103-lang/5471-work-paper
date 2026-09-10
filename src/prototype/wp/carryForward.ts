@@ -76,6 +76,16 @@ export type CarryForward = {
   periodBegin?: string;
   periodEnd?: string;
   priorTaxAccruedFunctional?: SourcedValue;   // Sch E — for E-1 redetermination review
+  /** Schedule J/E/H/P "Separate Category" code as filed: GEN, PAS, FB, 901j,
+      RBT, 951A. The template ships with FB pre-selected, which is the rare
+      case; a work paper that inherits the filed code is right by default. */
+  separateCategory?: string;
+  /** The exchange rate the prior filing itself states — Schedule H line 5e
+      ("Enter exchange rate used for line 5d") or the Schedule M header. When
+      it differs from the rate table the opening column will not tie to the
+      prior filing's functional-currency figures, and the preparer should be
+      told by how much rather than left to discover it. */
+  priorRate?: SourcedValue;
 };
 
 const pagesOfKind = (cls: DocClass, ...kinds: PageKind[]): Set<number> =>
@@ -380,6 +390,8 @@ export function extractCarryForward(
   const schJ = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schJ"), pageFilter));
   const schF = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schF"), pageFilter));
   const schE = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schE"), pageFilter));
+  const schH = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schH"), pageFilter));
+  const schM = rowsOnPages(parsed, intersect(pagesOfKind(cls, "us-5471-schM"), pageFilter));
   const facePages = intersect(pagesOfKind(cls, "us-5471-face", "us-5471-schA", "us-5471-schB"), pageFilter);
   const face = rowsOnPages(parsed, facePages);
   const faceGeo = rowsOnPagesGeo(parsed, facePages);   // index-aligned with `face`
@@ -393,6 +405,37 @@ export function extractCarryForward(
 
   // Schedule J line 14 — the single most important carry-forward number.
   out.openingEP = matchFormLine(schJ, /balance at beginning of next year/i, "first") ?? undefined;
+
+  /* The separate-category code prints as "Separate Category (Enter code …) | GEN"
+     on Schedules J, E, H and P alike; any one of them will do, J first. */
+  for (const rows of [schJ, schE, schH]) {
+    if (out.separateCategory) break;
+    for (let i = 0; i < rows.length; i++) {
+      const text = rows[i].cells.join(" ");
+      if (!/separate category/i.test(text)) continue;
+      const here = [text, rows[i + 1]?.cells.join(" ") || ""].join(" ");
+      const m = /\b(901j|951A|GEN|PAS|FB|RBT)\b/.exec(here.replace(/\b901J\b/g, "901j"));
+      if (m) { out.separateCategory = m[1]; break; }
+    }
+  }
+
+  /* The rate the prior filing used. Schedule H line 5e states it outright;
+     the Schedule M header repeats it ("… exchange rate used throughout this
+     schedule | CAYMAN ISLANDS, DO .833000000"). Read as printed — no rounding,
+     the trailing zeros are the filing's own. */
+  for (const [rows, re] of [[schH, /exchange rate used/i], [schM, /exchange rate used throughout/i]] as const) {
+    if (out.priorRate) break;
+    for (let i = 0; i < rows.length; i++) {
+      const text = rows[i].cells.join(" ");
+      if (!re.test(text)) continue;
+      const here = [text, rows[i + 1]?.cells.join(" ") || ""].join(" ");
+      const m = /(?:^|[\s|])(\d{0,3}\.\d{3,9})(?=\s|$)/.exec(here);
+      if (m) {
+        const v = parseFloat(m[1]);
+        if (isFinite(v) && v > 0) { out.priorRate = { value: v, page: rows[i].page, rowText: text }; break; }
+      }
+    }
+  }
 
   /* Schedule F column (b). Where both columns print, the rightmost value is
      EOY; where only one prints, only its x tells us which column it is. */

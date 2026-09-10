@@ -65,7 +65,9 @@ a(dist.includes('EN9v=typeof a.value=="number"?EN9r2(a.value):typeof a.value=="s
   "every other numeric cell written to the workbook is rounded, and strings are sanitised");
 
 /* --- C2: the SKIP list --------------------------------------------------- */
-const skip = dist.match(/P1=\[\{kw:\[([\s\S]{0,1400}?)\],t:"SKIP"\}/);
+// The SKIP list keeps growing (v3 added the QuickBooks/Xero closing lines);
+// the bound is a safety net against a runaway match, not a size limit.
+const skip = dist.match(/P1=\[\{kw:\[([\s\S]{0,3000}?)\],t:"SKIP"\}/);
 a(!!skip, "the SKIP rule is findable in the bundle");
 const kws = skip ? skip[1].toLowerCase() : "";
 a(kws.includes('"total for income"'), "C2: QuickBooks 'Total for Income' is skipped");

@@ -12,7 +12,12 @@ export const SHEET = {
   schH: "Sch - H",
   schJ: "Schedule J",
   schM: "Schedule M",
+  schP: "Schedule P",
   schR: "Schedule R",
+  /** The roll-forward tab: prior-filed opening + net income − distributions
+      ± adjustments = closing per Schedule F. Where an unexplained difference
+      between the books and the prior filing is shown, not hidden. */
+  re: "Retained Earnings",
 };
 
 export type FieldSpec = {
@@ -216,6 +221,8 @@ export const FORMULA_REFS: Record<string, (ref: string) => boolean> = {
     return m[1] === "L" || m[1] === "N" || m[1] === "P";
   },
   [SHEET.basic]: (ref) => ["A6", "B59", "B60", "B61"].includes(ref),
+  // Only the entry cells are writable; every USD cell and every total is a formula.
+  [SHEET.re]: (ref) => !["F10", "F16", "F17", "F21", "F24", "F25"].includes(ref) && /^[A-Z]+\d+$/.test(ref) && !/^[A-E]\d+$/.test(ref),
 };
 
 /* Leftover captions from the template's demo client; cleared when the run
