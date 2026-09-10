@@ -2844,6 +2844,32 @@ export function readState(ent: Entity | undefined, file: EntityFile): ReadStatus
   return "could not be read";
 }
 
+/** The prior filing's Schedule F lines re-translated at two rates — the
+    table's and the one the prior filing states — so a rate warning can say
+    exactly what it costs line by line. Current items only, signed the way
+    Schedule F carries them, so `net` is net current assets. */
+export function rateEffectLines(
+  filed: Partial<Record<string, { value: number }>>,
+  tableRate: number,
+  priorRate: number,
+): { lines: { label: string; atTable: number; atPrior: number; diff: number }[]; net: { atTable: number; atPrior: number; diff: number } } {
+  const ORDER: [string, string, 1 | -1][] = [
+    ["cash", "cash", 1], ["ar", "trade notes and accounts receivable", 1], ["badDebts", "allowance for bad debts", 1],
+    ["inventories", "inventories", 1], ["oca", "other current assets", 1],
+    ["ap", "accounts payable", -1], ["ocl", "other current liabilities", -1],
+  ];
+  const lines: { label: string; atTable: number; atPrior: number; diff: number }[] = [];
+  let netT = 0, netP = 0;
+  for (const [key, label, sign] of ORDER) {
+    const usd = filed[key]?.value;
+    if (usd === undefined) continue;
+    const atTable = Math.round(usd * tableRate), atPrior = Math.round(usd * priorRate);
+    lines.push({ label, atTable, atPrior, diff: atTable - atPrior });
+    netT += sign * atTable; netP += sign * atPrior;
+  }
+  return { lines, net: { atTable: netT, atPrior: netP, diff: netT - netP } };
+}
+
 /** Net income as the Income Statement tab will compute it from the booked
     lines: gross profit (1a − 1b − COGS) + lines 4–9, less lines 11–17, plus
     the signed items on lines 20–21b. null when nothing is booked. */
@@ -3515,6 +3541,26 @@ async function materializeCaseWrites(
         });
       }
     }
+    /* ---- the rate the prior filing used vs the table ----
+       Decision (owner): the table stands; the preparer is told, line by
+       line, what following it costs. KYD is pegged at 0.833 and the prior
+       return says so on Schedule H; the Treasury table says 0.82. At 0.82
+       every opening balance is ~1.6% lower in functional currency than the
+       figure the prior filing carried, and the column no longer ties to
+       last year's — while tying exactly in USD. */
+    if (cf.priorRate && pyRate && Math.abs(pyRate - cf.priorRate.value) / cf.priorRate.value > 0.005) {
+      const stated = cf.priorRate.value;
+      const fx = rateEffectLines(cf.priorClosingUSD, pyRate, stated);
+      const cy = cyRate && Math.abs(cyRate - stated) / stated > 0.005 ? ` The current year-end rate ${cyRate} differs from it in the same way.` : "";
+      rv({
+        id: "fx-prior-rate", level: "warn", category: "fx",
+        message: `The prior filing states an exchange rate of ${stated} (${cfSource} p.${cf.priorRate.page}); the rate table gives ${pyRate} for the prior year end, and that is what the opening column uses. Re-translated at ${pyRate} instead of ${stated}: ${
+          fx.lines.map((l) => `${l.label} ${l.atPrior.toLocaleString()} → ${l.atTable.toLocaleString()} (${l.diff > 0 ? "+" : ""}${l.diff.toLocaleString()})`).join("; ")
+        }; net current assets ${fx.net.atPrior.toLocaleString()} → ${fx.net.atTable.toLocaleString()} (${fx.net.diff > 0 ? "+" : ""}${fx.net.diff.toLocaleString()}). The column ties to the prior filing in USD either way; in functional currency it does not, by that amount.${cy} To carry the prior filing's rate instead, enter ${stated} on Basic Information C61.`,
+        target: `${SHEET.basic}!C61`, source: cfSource, suggestedValue: stated,
+      });
+    }
+
     /* ---- retained-earnings roll-forward ----
        Within the books, opening + net income − distributions = closing. The
        prior filing's closing retained earnings is a different number from the

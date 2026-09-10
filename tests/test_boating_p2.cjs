@@ -116,6 +116,37 @@ t("bookNetIncome mirrors the Income Statement tab", () => {
   assert.strictEqual(STORE.bookNetIncome({ "IS:7": { amount: 1000 }, "IS:8": { amount: 100 }, "IS:11": { amount: 300 }, "IS:54": { amount: -50 } }), 550);
 });
 
+/* ---- the rate warning, line by line, exactly as the owner reconciled it ---- */
+
+t("the opening column at the table rate vs the prior filing's rate, per line", () => {
+  // The prior return's Schedule F column (b), as filed in USD.
+  const filed = { cash: { value: 36323 }, ar: { value: 25511 }, inventories: { value: 1801 }, oca: { value: -43426 } };
+  const fx = STORE.rateEffectLines(filed, 0.82, 0.833);
+  const by = Object.fromEntries(fx.lines.map((l) => [l.label, l]));
+  assert.deepStrictEqual([by.cash.atPrior, by.cash.atTable, by.cash.diff], [30257, 29785, -472]);
+  assert.deepStrictEqual([by["trade notes and accounts receivable"].atPrior, by["trade notes and accounts receivable"].atTable, by["trade notes and accounts receivable"].diff], [21251, 20919, -332]);
+  assert.deepStrictEqual([by.inventories.atPrior, by.inventories.atTable, by.inventories.diff], [1500, 1477, -23]);
+  assert.deepStrictEqual([by["other current assets"].atPrior, by["other current assets"].atTable, by["other current assets"].diff], [-36174, -35609, 565]);
+  assert.deepStrictEqual([fx.net.atPrior, fx.net.atTable, fx.net.diff], [16834, 16572, -262]);
+});
+
+t("liabilities count against net current assets; absent lines are absent", () => {
+  const fx = STORE.rateEffectLines({ cash: { value: 1000 }, ap: { value: 400 } }, 0.5, 1);
+  assert.deepStrictEqual(fx.lines.map((l) => l.label), ["cash", "accounts payable"]);
+  assert.deepStrictEqual(fx.net, { atTable: 300, atPrior: 600, diff: -300 });
+});
+
+t("the table rate stands; the warning suggests the prior filing's rate, in both trees", () => {
+  const store = fs.readFileSync(path.join(root, "src", "prototype", "wp", "store.ts"), "utf8");
+  assert.ok(store.includes('id: "fx-prior-rate"'));
+  assert.ok(store.includes("target: `${SHEET.basic}!C61`, source: cfSource, suggestedValue: stated"));
+  assert.ok(store.includes("/ cf.priorRate.value > 0.005"), "half a percent is the threshold");
+  const dist = fs.readFileSync(path.join(root, "dist", "index.html"), "utf8");
+  assert.ok(dist.includes('id:"fx-prior-rate"'), "dist lacks the warning");
+  assert.ok(dist.includes("n.separateCategory=m[1]") && dist.includes("n.priorRate={value:v,page:rows[k].page"), "dist parser lacks the category/rate read");
+  assert.ok(dist.includes('ref:"C10",value:EN9cc') && dist.includes('ref:"B10",value:EN9cc'), "dist does not write the category code");
+});
+
 /* ---- the roll-forward, as the exception will state it ---- */
 
 t("the Boating residual is the 5,417 the hand-built tab plugged", () => {
