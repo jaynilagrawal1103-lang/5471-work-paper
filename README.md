@@ -19,6 +19,11 @@ npm install
 npm start          # serves the committed dist/ on localhost
 ```
 
+No install, no network? `npm start:local` (or `node scripts/serve-local.mjs`)
+serves the same committed `dist/` on <http://localhost:8080> using nothing but
+Node's standard library — no `npm install`, no `npx` download. Pass a port to
+change it: `node scripts/serve-local.mjs 3000`.
+
 > **Serve over HTTPS (or localhost).** Browsers block the tool's network calls
 > and IndexedDB persistence from `file://` — do not open `index.html` directly.
 >
