@@ -9,8 +9,11 @@ Form 5471 work paper (`form-5471-workpaper`, v2.1.0). Populates a Form 5471
 master workbook from client documents entirely in the browser. No backend is
 required to use the app.
 
-Mirror of `jaynilagrawal1103-lang/5471-work-paper`. Work branch:
-`claude/funny-keller-xiwwbz`.
+This repository is `jaynilagrawal1103-lang/5471-work-paper`, the original. A
+mirror lives at `squadai90-dot/Linkedin-Post-Automation`; the two client
+reconciliations were carried out there and ported back here on 2026-09-12 as
+`claude/reconciliation-fixes` (10 commits on top of `main` at 24f1f25).
+Work branch: `claude/reconciliation-fixes`.
 
 ## Layout
 
@@ -30,7 +33,7 @@ Mirror of `jaynilagrawal1103-lang/5471-work-paper`. Work branch:
   server, `start.sh`, `start.cmd`, `README.txt`. `dist-bundle/` is gitignored.
 - `npm run build` — intentionally a no-op that keeps the reviewed `dist/`. Use
   `build:full-DESTRUCTIVE` only after porting fixes to `src/`.
-- `npm run test:all` — the full test chain (49 suites, 1,275 assertions).
+- `npm run test:all` — the full test chain (54 suites, 1,344 assertions).
   Needs `npm i` first, and `npm run build:server` once (test:aikey reads
   `dist-server/server.cjs`).
 
@@ -92,6 +95,11 @@ cutting a release.
 
 ## Open issues
 
+- Undecided: `tests/fixtures/shori_rows.json` carries a real client entity name
+  and 15 partial bank/card numbers with balances. The Boating fixture beside it
+  anonymises its entity name; this one does not. The tests pin figures and
+  indents, not those captions, so anonymising is safe — awaiting the owner's
+  decision.
 - `dist/` and `src/` are not in parity; some fixes exist only in `dist/` (the
   OCR engine, the tie-out/Schedule E helpers, the C35 answer from the prior
   return's Item H boxes). See PROJECT-NOTES.md.
