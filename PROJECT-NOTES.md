@@ -920,6 +920,12 @@ noise) → denoise only when grainy (residual std > 5) → CLAHE → recognise �
 verify → validate → geometric or PP-StructureV3 tables → invisible text layer
 per WORD (render mode 3) so pdf.js sees the column gaps the parser keys on.
 Digital pages are never touched; `force` OCRs a text page for comparison only.
+A page that had to be TURNED (90/180/270) or straightened by ≥ 0.5° is
+rebuilt upright in the copy — the cleaned image becomes the page and the
+words sit on it in that frame. The browser e2e found why: writing the text
+back onto the sideways original put every line's words in a vertical run,
+pdf.js returned them that way, and the parser's baseline grouping scrambled
+the rows — 53 words at 0.99 confidence and nothing booked.
 Validation (`validate.py`): amount grammar where the grouping separator
 decides the decimal one (`$72.882.56` is malformed, not European), dates,
 letter-for-digit swaps, confidence floor 90 % on figures; engine disagreement

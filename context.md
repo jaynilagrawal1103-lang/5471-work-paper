@@ -75,6 +75,9 @@ Node 18 or newer. Verified on Node 22.
   unread bytes, the original stays attached. The dist patches are the
   `EN9OCR*` sentinels plus the `EN9RDPATH` block; the layer is re-injected
   with `npm run inject:layer`.
+- A page the service had to turn or straighten is rebuilt upright in the
+  searchable copy (cleaned image + words in that frame); text written back
+  onto a sideways page scrambles the parser's baseline grouping.
 - OCR readings are never corrected in place. The primary engine's text is what
   is booked; a second engine's reading, a grammar failure or low confidence
   becomes a review item with the alternative as `suggestedValue`, and the

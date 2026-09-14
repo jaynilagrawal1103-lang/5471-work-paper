@@ -33,7 +33,21 @@ def add_text_layer(pdf_bytes: bytes, pages: list[PageResult]) -> bytes:
         for pr in pages:
             if pr.status != "ocr" or not pr.words:
                 continue
-            page = doc[pr.page - 1]
+            rebuild = getattr(pr, "_rebuild", None)
+            if rebuild is not None:
+                # The page was turned or straightened: replace it with the
+                # cleaned, upright image so the copy reads the way the words
+                # were recognised (and the way a reviewer will look at it).
+                import cv2  # noqa: PLC0415
+                img, _dpi = rebuild
+                ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+                if not ok:
+                    continue
+                doc.delete_page(pr.page - 1)
+                page = doc.new_page(pno=pr.page - 1, width=pr.width, height=pr.height)
+                page.insert_image(page.rect, stream=buf.tobytes())
+            else:
+                page = doc[pr.page - 1]
             for w in pr.words:
                 x0, y0, x1, y1 = w.bbox
                 width, height = max(0.5, x1 - x0), max(0.5, y1 - y0)

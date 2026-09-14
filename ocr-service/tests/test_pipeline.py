@@ -122,6 +122,20 @@ def test_difficult_scan_is_deskewed_and_turned():
     # a noisy, faded, skewed scan: most figures still come through exactly
     assert len(expect_values(EXPECT_BS) & got1) >= 6, got1
     assert len(expect_values(EXPECT_PL) & got2) >= 8, got2
+    # both pages were rebuilt upright in the copy: the turned page is portrait
+    # again, and a caption and its amount share a baseline on each page
+    assert p1["preprocess"].get("rebuilt") and p2["preprocess"].get("rebuilt")
+    doc = fitz.open(stream=base64.b64decode(out["pdf_b64"]), filetype="pdf")
+    try:
+        assert doc[1].rect.width < doc[1].rect.height, "the turned page must come back portrait"
+        for pno, cap, amt in ((0, "Cash", "30,257.06"), (1, "Sales", "154,523.24")):
+            words = doc[pno].get_text("words")
+            c = next(w for w in words if w[4] == cap)
+            a = next(w for w in words if w[4] == amt)
+            assert abs(c[3] - a[3]) < 3.0, f"page {pno + 1}: '{cap}' and '{amt}' are not on one baseline ({c[3]:.1f} vs {a[3]:.1f})"
+            assert a[0] > c[2] + 150, "the amount sits in the right-hand column"
+    finally:
+        doc.close()
 
 
 def test_table_page_yields_rows_of_cells():

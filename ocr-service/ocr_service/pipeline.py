@@ -223,16 +223,31 @@ def _recognize_page(doc: fitz.Document, index: int, langs: list[str], dpi: int, 
             timing["structure"] = int((time.time() - t4) * 1000)
 
     flags.extend(validate_words(page_no, words))
-    # image pixels -> PDF points
+    # A page that had to be turned, or straightened by more than a hair, is
+    # rebuilt UPRIGHT in the searchable copy: the cleaned image becomes the
+    # page and the words sit on it in that frame. Writing the text back onto
+    # the sideways original would put every line's words in a vertical run,
+    # and a reader grouping by baseline would scramble them.
+    turned = rendered.steps.get("orientation", 0) in (90, 180, 270)
+    skewed = abs(float(rendered.steps.get("deskew_deg", 0.0) or 0.0)) >= 0.5
+    if turned or skewed:
+        s = 72.0 / dpi
+        to_pts = lambda bb: [float(v) * s for v in bb]  # noqa: E731
+        H, W = rendered.img_color.shape[:2]
+        pr.width, pr.height = W * s, H * s
+        pr.preprocess["rebuilt"] = True
+        pr._rebuild = (rendered.img_color, dpi)          # consumed by searchable.add_text_layer
+    else:
+        to_pts = rendered.to_page_points
     for w in words:
-        w.bbox = rendered.to_page_points(w.bbox)
+        w.bbox = to_pts(w.bbox)
     for f in flags:
         if f.kind != "page-failed":
-            f.bbox = rendered.to_page_points(f.bbox)
+            f.bbox = to_pts(f.bbox)
     pr.words = words
     pr.lines = _group_lines(words)
     if tables_raw:
-        pr.tables = [Table(t["engine"], rendered.to_page_points(t["bbox"]) if any(t["bbox"]) else [0, 0, pr.width, pr.height], t["rows"])
+        pr.tables = [Table(t["engine"], to_pts(t["bbox"]) if any(t["bbox"]) else [0, 0, pr.width, pr.height], t["rows"])
                      for t in tables_raw]
     else:
         pr.tables = _geometric_table(words, pr.lines)

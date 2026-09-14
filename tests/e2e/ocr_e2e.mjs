@@ -43,7 +43,7 @@ const CASES = [
   // every figure readable in the sidecar and the text layer, not a booking.
   { file: "table.pdf", verdict: "scanned", ocrPages: [1], amounts: [], words: ["30,257.06", "72,067.40", "(61,139.37)", "154,523.24", "1000", "Cash"] },
   { file: "multipage.pdf", verdict: "scanned", ocrPages: [1, 2, 3, 4, 5, 6], amounts: [30257.06, 154523.24] },
-  { file: "difficult.pdf", verdict: "scanned", ocrPages: [1, 2], amounts: [154523.24], lenient: true },
+  { file: "difficult.pdf", verdict: "scanned", ocrPages: [1, 2], amounts: [30257.06, 154523.24], lenient: true },
 ];
 
 async function main() {
