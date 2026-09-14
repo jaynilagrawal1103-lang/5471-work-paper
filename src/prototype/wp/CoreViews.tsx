@@ -268,12 +268,16 @@ function ReadStatusCell({ entityId, fileId }: { entityId: string; fileId: string
   const file = ent?.files.find((f) => f.id === fileId);
   if (!file) return null;
   const status = readState(ent, file);
-  const tone = status === "text read" ? "system"
+  const read = status === "text read" || status === "text read (OCR)";
+  const tone = read ? "system"
     : status === "not read yet" ? ""
     : status === "scan — needs OCR" ? "groq"
     : "user";
+  const title = status === "text read (OCR)"
+    ? `Text recognised by OCR (${file.ocr?.backend || file.ocr?.engine || "engine"}) — verify every figure against the scan`
+    : read ? undefined : explainUnreadable(file.name);
   return (
-    <span className={`actor-tag ${tone}`} title={status === "text read" ? undefined : explainUnreadable(file.name)}>
+    <span className={`actor-tag ${tone}`} title={title}>
       {status}
     </span>
   );

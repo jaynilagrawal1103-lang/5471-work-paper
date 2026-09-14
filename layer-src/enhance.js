@@ -738,7 +738,7 @@ function en9kBuild(){
   var lb=document.querySelector(".en9-logbtn");
   if(lb) items.push({label:"Toggle processing log", sec:"View", kbd:"", el:lb});
   var oc=document.querySelector(".en9-ocr");
-  if(oc) items.push({label:"OCR a scanned PDF (Tesseract, beta)", sec:"Tools", kbd:"", run:function(){ oc.scrollIntoView({behavior:"smooth",block:"center"}); }});
+  if(oc) items.push({label:"OCR a scanned PDF (PaddleOCR service \u00b7 Tesseract.js fallback)", sec:"Tools", kbd:"", run:function(){ oc.scrollIntoView({behavior:"smooth",block:"center"}); }});
   return items;
 }
 function en9kEnsure(){
@@ -806,31 +806,89 @@ function enhanceTopbarHint(){
 
 
 
-/* ---------- OCR for scanned PDFs (Tesseract.js, free & open source) ---------- */
-var EN9OCR={busy:false, result:null, io:null, stats:{runs:0,pages:0,words:0,fails:0}};
+/* ---------- OCR for scanned PDFs ----------
+   PaddleOCR (the ocr-service, reached through /api/ocr/* on this origin) is
+   the primary engine; the service itself cross-checks with Surya or
+   Tesseract. When no service answers, the in-browser Tesseract.js path below
+   is the final fallback. Either way OCR runs at UPLOAD, before Process
+   Entity: every PDF is probed for pages without a text layer, those pages
+   are recognised, and the scanned file is replaced in intake by a searchable
+   copy carrying a sidecar (engine, confidence, boxes, disputes) that the
+   store turns into review items and Provenance rows. Processing waits on
+   the gate below until the copy is in place. */
+var EN9OCR={busy:false, result:null, io:null, stats:{runs:0,pages:0,words:0,fails:0}, jobs:{}, service:null};
 /*EN9OCREXP*/try{window.EN9OCR=EN9OCR;window.en9OcrRun=function(){return en9OcrRun.apply(null,arguments)};}catch(EN9e){}
+
+/* The gate the store's processEntity awaits: one promise per file being
+   OCR'd, grouped by entity. `wait` resolves when every job for the entity has
+   finished — or rejects with the first failure, so a run never starts on
+   bytes OCR could not fix. */
+var EN9OCRGATE=(function(){
+  var open={};                                   /* entityId -> { fileId: {p, res, rej} } */
+  function mark(eid,fid){ var e=open[eid]||(open[eid]={}); if(e[fid]) return e[fid].p;
+    var h={}; h.p=new Promise(function(res,rej){ h.res=res; h.rej=rej; }); h.p.catch(function(){}); e[fid]=h; return h.p; }
+  function done(eid,fid,err){ var e=open[eid]; if(!e||!e[fid]) return; var h=e[fid]; delete e[fid];
+    if(!Object.keys(e).length) delete open[eid]; err?h.rej(err):h.res(); }
+  function pending(eid){ var e=open[eid]; return !!(e&&Object.keys(e).length); }
+  function wait(eid){ var e=open[eid]; if(!e) return Promise.resolve();
+    return Promise.all(Object.keys(e).map(function(k){return e[k].p;})); }
+  function list(eid){ var e=open[eid]||{}; return Object.keys(e); }
+  return {mark:mark, done:done, pending:pending, wait:wait, list:list};
+})();
+try{ globalThis.EN9OCRGATE=EN9OCRGATE; }catch(e){}
 
 function en9IsSandbox(){ try{ return /claudeusercontent\.com|claude\.ai/.test(location.hostname); }catch(e){ return false; } }
 function en9OcrFriendly(e){ var m=String(e&&e.message||e||"");
   if(/Failed to construct 'Worker'|blob-request|cannot be accessed from origin|Worker is not defined/i.test(m))
-    return "This preview sandbox blocks background workers, so the OCR engine cannot start here. It runs normally on your deployed site (Netlify) or when the file is opened directly in a browser.";
+    return "This preview sandbox blocks background workers, so the in-browser OCR engine cannot start here. It runs normally on your deployed site or when the file is opened directly in a browser.";
   if(/Could not download/i.test(m))
-    return m+" \u2014 check your network or ad-blocker; the open-source engine loads from cdn.jsdelivr.net on first use.";
+    return m+" — check your network or ad-blocker; the in-browser engine loads from cdn.jsdelivr.net on first use.";
   return m; }
 try{ window.__EN9OCR=EN9OCR; window.__en9OcrRun=function(){ return en9OcrRun.apply(null,arguments); }; }catch(e){}
 function en9LoadScript(u){ return new Promise(function(res,rej){
   var sc=document.createElement("script"); sc.src=u; sc.async=true;
   sc.onload=function(){res()}; sc.onerror=function(){rej(new Error("Could not download "+u))};
   document.head.appendChild(sc); }); }
+
+/* ---- the OCR service (PaddleOCR primary) ---- */
+EN9OCR.service={
+  base:function(){ try{ var u=localStorage.getItem("en9OcrUrl"); if(u) return u.replace(/\/+$/,""); }catch(e){} return "/api/ocr"; },
+  _health:null, _healthAt:0,
+  /* Cached for a minute: the intake watcher asks on every state change. */
+  health:function(force){ var self=this, now=Date.now();
+    if(!force&&self._health&&now-self._healthAt<60000) return Promise.resolve(self._health);
+    var ctl=typeof AbortController!=="undefined"?new AbortController():null;
+    if(ctl) setTimeout(function(){try{ctl.abort()}catch(e){}},5000);
+    /* fetch may be missing or throw synchronously (a test DOM, a file:// page);
+       that is "not reachable", never an exception out of the intake watcher */
+    return Promise.resolve().then(function(){ return fetch(self.base()+"/health",{signal:ctl&&ctl.signal,cache:"no-store"}); })
+      .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ j.reachable=r.ok&&j.reachable!==false; return j; }); })
+      .catch(function(e){ return {reachable:false, ok:false, error:String(e&&e.message||e)}; })
+      .then(function(j){ j.available=!!(j.reachable&&j.ok&&j.primary); self._health=j; self._healthAt=Date.now(); return j; }); },
+  describe:function(){ var h=this._health; if(!h||!h.available) return null;
+    var eng=h.engines||{}, p=eng[h.primary]||{}; var chain=(h.chain||[]).map(function(n){ return n+(eng[n]&&eng[n].backend?" ("+eng[n].backend+")":""); });
+    return {primary:h.primary, backend:p.backend||"", chain:h.chain||[], text:chain.join(" → ")}; },
+  post:function(path,blob,params,st){ var q=Object.keys(params||{}).filter(function(k){return params[k]!==undefined&&params[k]!==null&&params[k]!=="";})
+      .map(function(k){return encodeURIComponent(k)+"="+encodeURIComponent(params[k]);}).join("&");
+    var self=this;
+    return Promise.resolve().then(function(){ return fetch(self.base()+path+(q?"?"+q:""),{method:"POST",headers:{"content-type":blob.type||"application/pdf"},body:blob}); })
+      .then(function(r){ return r.text().then(function(t){ var j={}; try{ j=JSON.parse(t); }catch(e){ j={error:t.slice(0,200)}; }
+        if(!r.ok) throw new Error(j.error||j.detail&&(j.detail.error||JSON.stringify(j.detail))||("OCR service answered "+r.status)); return j; }); }); },
+  detect:function(blob){ return this.post("/detect",blob,{},null); },
+  ocr:function(blob,opts,st){ st&&st("Sending "+(opts.name||"the document")+" to the OCR service…");
+    return this.post("/ocr",blob,{pages:opts.pages||"auto",langs:opts.langs||"eng",force:opts.force?"1":"",filename:opts.name||"",verify:"1",structure:"1",pdf:"1"},st); }
+};
+
+/* ---- in-browser Tesseract.js: the final fallback ---- */
 EN9OCR.realIO={
-  loadEngines:function(st){ 
+  loadEngines:function(st){
     var chain=Promise.resolve();
-    if(!window.pdfjsLib){ st("Downloading PDF renderer\u2026");
+    if(!window.pdfjsLib){ st("Downloading PDF renderer…");
       chain=chain.then(function(){return en9LoadScript("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js")})
         .then(function(){ window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"; }); }
-    if(!window.Tesseract){ chain=chain.then(function(){ st("Downloading Tesseract OCR engine (open source)\u2026");
+    if(!window.Tesseract){ chain=chain.then(function(){ st("Downloading Tesseract OCR engine (open source)…");
       return en9LoadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"); }); }
-    if(!window.PDFLib){ chain=chain.then(function(){ st("Downloading PDF writer\u2026");
+    if(!window.PDFLib){ chain=chain.then(function(){ st("Downloading PDF writer…");
       return en9LoadScript("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"); }); }
     return chain;
   },
@@ -841,35 +899,77 @@ EN9OCR.realIO={
     return page.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise.then(function(){
       return {png:cv.toDataURL("image/png"), canvas:cv, scale:sc, w:v1.width, h:v1.height}; }); }); },
   makeWorker:function(langs,st){ return window.Tesseract.createWorker(langs,1,{logger:function(m){
-      if(m.status==="recognizing text") st("Reading text\u2026 "+Math.round((m.progress||0)*100)+"%"); }}); },
+      if(m.status==="recognizing text") st("Reading text… "+Math.round((m.progress||0)*100)+"%"); }}); },
   recognize:function(worker,pageimg){ return worker.recognize(pageimg.canvas).then(function(r){return r.data;}); },
-  buildPdf:function(pages){ var PL=window.PDFLib;
+  /* pages: [{n, copy:true}] keep the original page (its text layer intact);
+     [{n, png, w, h, words}] embed the image with an invisible text layer. */
+  buildPdf:function(pages,srcBuf){ var PL=window.PDFLib;
     return PL.PDFDocument.create().then(function(doc){
-      return pages.reduce(function(p,pg){ return p.then(function(){
-        return doc.embedPng(pg.png).then(function(img){
-          var page=doc.addPage([pg.w,pg.h]);
-          page.drawImage(img,{x:0,y:0,width:pg.w,height:pg.h});
-          (pg.words||[]).forEach(function(wd){
-            if(!wd.text||!wd.bbox) return;
-            var x=wd.bbox.x0/pg.scale, y1=wd.bbox.y1/pg.scale, hh=(wd.bbox.y1-wd.bbox.y0)/pg.scale;
-            var size=Math.max(4,Math.min(40,hh*0.92));
-            try{ page.drawText(wd.text,{x:x,y:pg.h-y1,size:size,opacity:0}); }catch(e){} });
-        }); }); }, Promise.resolve()).then(function(){ return doc.save(); });
+      var srcP=srcBuf&&pages.some(function(p){return p.copy;})?PL.PDFDocument.load(srcBuf):Promise.resolve(null);
+      return srcP.then(function(src){
+        return pages.reduce(function(p,pg){ return p.then(function(){
+          if(pg.copy&&src) return doc.copyPages(src,[pg.n-1]).then(function(cp){ doc.addPage(cp[0]); });
+          return doc.embedPng(pg.png).then(function(img){
+            var page=doc.addPage([pg.w,pg.h]);
+            page.drawImage(img,{x:0,y:0,width:pg.w,height:pg.h});
+            (pg.words||[]).forEach(function(wd){
+              if(!wd.text||!wd.bbox) return;
+              var x=wd.bbox.x0/pg.scale, y1=wd.bbox.y1/pg.scale, hh=(wd.bbox.y1-wd.bbox.y0)/pg.scale;
+              var size=Math.max(4,Math.min(40,hh*0.92));
+              try{ page.drawText(wd.text,{x:x,y:pg.h-y1,size:size,opacity:0}); }catch(e){} });
+          }); }); }, Promise.resolve()).then(function(){ return doc.save(); });
+      });
     }); }
 };
+
+/* Which pages of an attached PDF lack a text layer, read with the app's own
+   pdf.js through the bridge. null when the reader could not open it. */
+function EN9ocrProbe(blob){ try{ if(window.__WPACT&&window.__WPACT.EN9_probePdf) return window.__WPACT.EN9_probePdf(blob); }catch(e){} return Promise.resolve(null); }
+
+/* A sidecar for the store from the service's answer. */
+function EN9ocrSidecarFromService(resp,mode){ var d=resp.doc||{}, pages=resp.pages||[];
+  var used=(d.engines_used&&d.engines_used[0])||d.primary||"paddle";
+  var ver=null; pages.forEach(function(p){ if(!ver&&p.verify_engine) ver=p.verify_engine; });
+  return {engine:used, backend:(d.backends&&d.backends[used])||"", verifyEngine:ver, chain:d.engine_chain||[], mode:mode, source:"service",
+    at:new Date().toISOString(), verdict:d.verdict||"", ocrPages:d.ocr_pages||[],
+    pages:pages.map(function(p){ return {page:p.page,status:p.status,engine:p.engine||null,confMean:p.conf_mean==null?null:p.conf_mean,
+      words:(p.words||[]).map(function(w){return {text:w.text,bbox:w.bbox,conf:w.conf,engine:w.engine};}),
+      flags:(p.flags||[]).map(function(f){return {page:f.page,kind:f.kind,level:f.level,text:f.text,bbox:f.bbox,conf:f.conf,engine:f.engine,message:f.message,alt:f.alt==null?null:f.alt,alt_engine:f.alt_engine||null,alt_conf:f.alt_conf==null?null:f.alt_conf};})}; }),
+    stats:resp.stats||{}}; }
+
+/* A sidecar from the in-browser engine: word boxes back to page points, and
+   the one validation it can do — a figure read below the confidence floor. */
+function EN9ocrLooksNumeric(t){ t=String(t||"").trim(); if(!/\d/.test(t)) return false; if(/^\d{1,2}[,.]$|^\d{4}[,.;:]?$/.test(t)) return false;
+  var core=t.replace(/^\(?[-+−–]?\s?(?:[$€£¥₹]|USD|EUR|GBP|CHF|KYD)?\s?|\s?(?:%|USD|EUR|GBP|CHF|KYD|CR|DR)?\s?\)?[-+−–]?$/gi,"").trim();
+  return !!core&&core.split(/\s+/).every(function(p){ return /^[\d()\[\],.\-+−–'OoIlSsB|]+$/.test(p); }); }
+function EN9ocrSidecarFromLocal(pages,targets,mode,langs){ var out=[];
+  pages.forEach(function(pg){ if(pg.copy){ out.push({page:pg.n,status:"digital",engine:null,confMean:null,words:[],flags:[]}); return; }
+    var words=[], confs=[], flags=[];
+    (pg.words||[]).forEach(function(wd){ if(!wd.text||!wd.bbox) return; var c=(wd.confidence||0)/100; confs.push(c);
+      var bb=[wd.bbox.x0/pg.scale,wd.bbox.y0/pg.scale,wd.bbox.x1/pg.scale,wd.bbox.y1/pg.scale];
+      words.push({text:wd.text,bbox:bb,conf:c,engine:"tesseract.js"});
+      if(EN9ocrLooksNumeric(wd.text)&&c<0.9) flags.push({page:pg.n,kind:"low-confidence",level:"warn",text:wd.text,bbox:bb,conf:c,engine:"tesseract.js",message:"'"+wd.text+"' was read at "+Math.round(c*100)+"% confidence, below the 90% floor for figures — verify against the scan.",alt:null,alt_engine:null,alt_conf:null}); });
+    var mean=confs.length?confs.reduce(function(a,b){return a+b;},0)/confs.length:null;
+    out.push({page:pg.n,status:words.length?"ocr":"failed",engine:"tesseract.js",confMean:mean,words:words,flags:words.length?flags:[{page:pg.n,kind:"page-failed",level:"block",text:"",bbox:[0,0,pg.w,pg.h],conf:0,engine:"tesseract.js",message:"Page "+pg.n+" could not be read by the in-browser engine. Nothing on it should be trusted without checking the scan.",alt:null,alt_engine:null,alt_conf:null}]}); });
+  return {engine:"tesseract.js", backend:"Tesseract.js 5 in this browser (fallback — OCR service not reachable)", verifyEngine:null, chain:["tesseract.js"], mode:mode, source:"browser",
+    at:new Date().toISOString(), verdict:targets.length===pages.length?"scanned":"mixed", ocrPages:targets.slice(), pages:out, stats:{langs:langs}}; }
 
 /*EN9AUTOOCR-BEGIN*/
 /* A scan that the tool cannot read used to end the story: the file was
    reported unreadable and the preparer had to know that an OCR card existed,
    find it, pick the file again and choose a language. The engine was always
-   there — only the decision to start it was manual. This starts it.
+   there — only the decision to start it was manual.
 
-   It runs once per file, only for a PDF that opened with no text at all, only
-   while the app is idle, and it announces itself. The language is taken from
+   Two watchers now. EN9ocrIntakeTick runs at UPLOAD: every new PDF is probed
+   for pages without a text layer and those pages are OCR'd before the entity
+   can be processed (the store waits on EN9OCRGATE). EN9autoOcrTick is the
+   safety net from before: a scan that somehow reached processing unread is
+   OCR'd afterwards and the entity re-processed. Both run once per file, only
+   while the app is idle, and announce themselves. The language is taken from
    what the OTHER documents already established about the entity (a prior-year
-   US return names the country long before the scan is read), because Tesseract
-   asked to read every language at once is both slow and less accurate. */
+   US return names the country long before the scan is read). */
 var EN9autoOcrTried = {};
+var EN9ocrProbed = {};
 function EN9ocrLangsFor(ent) {
   var c = ((ent && ent.profile && ent.profile.countryInc) || "").toLowerCase();
   var m = ((ent && ent.profile && ent.profile.currency) || "").toUpperCase();
@@ -883,6 +983,39 @@ function EN9ocrLangsFor(ent) {
       || ["CLP","COP","MXN","ARS","PEN","UYU","BOB","PYG","CRC","GTQ","DOP"].indexOf(m) >= 0) return "eng+spa";
   return "eng";
 }
+function EN9ocrSay(m, fileId) {
+  try { window.__WPACT && window.__WPACT.__toast ? window.__WPACT.__toast(m) : 0; } catch (e) {}
+  try { console.info("[OCR] " + m); } catch (e) {}
+  var el = document.getElementById("en9-ocr-status"); if (el) el.textContent = m;
+  if (fileId && EN9OCR.jobs[fileId]) EN9OCR.jobs[fileId].message = m;
+  EN9ocrRenderJobs();
+}
+/* Upload-time detection: probe every new PDF, OCR the pages that need it. */
+function EN9ocrIntakeTick() {
+  try {
+    if (!window.__WPGET || !window.__WPACT || !window.__WPACT.EN9_probePdf || !window.__WPACT.EN9_replaceFile) return;
+    var st = window.__WPGET(); if (!st) return;
+    (st.entities || []).forEach(function (ent) {
+      (ent.files || []).forEach(function (f) {
+        if (!f || EN9ocrProbed[f.id] || !f.blob || !/\.pdf$/i.test(f.name || "") || f.ocr || /\(OCR\)\.pdf$/i.test(f.name || "")) return;
+        EN9ocrProbed[f.id] = 1;
+        var eid = ent.id;
+        EN9ocrProbe(f.blob).then(function (probe) {
+          if (!probe || !probe.scanPages || !probe.scanPages.length) return;
+          var cur = window.__WPGET(); var e2 = (cur.entities || []).find(function (x) { return x.id === eid; });
+          var f2 = e2 && (e2.files || []).find(function (x) { return x.id === f.id; });
+          if (!f2) return;                                   /* removed while probing */
+          var what = probe.scanPages.length === probe.pageCount ? "a scan with no text layer" : "a mixed PDF — " + probe.scanPages.length + " of " + probe.pageCount + " page(s) have no text layer";
+          EN9ocrSay("“" + f.name + "” is " + what + ". Reading it with OCR now; “Process entity” waits until it is done.");
+          // The pages are named explicitly: the probe already knows them, and a
+          // second detection inside the engine would only cost time.
+          EN9ocrStart(eid, f.id, { pages: probe.scanPages.join(","), mode: "auto", langs: EN9ocrLangsFor(e2) });
+        }).catch(function () {});
+      });
+    });
+  } catch (e) { /* never let the watcher break the app */ }
+}
+/* After-the-fact safety net (a scan that reached processing unread). */
 function EN9autoOcrTick() {
   try {
     if (EN9OCR.busy) return;
@@ -894,7 +1027,7 @@ function EN9autoOcrTick() {
       var list = queues[eid] || [];
       for (var i = 0; i < list.length; i++) {
         var f = list[i];
-        if (!f || EN9autoOcrTried[f.id]) continue;
+        if (!f || EN9autoOcrTried[f.id] || EN9OCR.jobs[f.id]) continue;
         var ent = (st.entities || []).find(function (x) { return x.id === eid; });
         // Wait for the run to finish writing the profile: the language is
         // chosen from the country the OTHER documents established, and reading
@@ -904,62 +1037,141 @@ function EN9autoOcrTick() {
         if (!att || !att.blob) { EN9autoOcrTried[f.id] = 1; continue; }
         EN9autoOcrTried[f.id] = 1;
         var langs = EN9ocrLangsFor(ent);
-        var say = function (m) {
-          try { window.__WPACT.__toast ? window.__WPACT.__toast(m) : 0; } catch (e) {}
-          try { console.info("[auto-OCR] " + m); } catch (e) {}
-          var el = document.getElementById("en9-ocr-status");
-          if (el) el.textContent = m;
-        };
-        say("“" + f.name + "” is a scan with no text. Reading it with OCR (" + langs + ") — this runs in your browser and can take a minute a page.");
-        (function (entityId, name) {
-          en9OcrRun(att.blob, entityId, langs, say, function (res) {
+        var say = function (m) { EN9ocrSay(m); };
+        say("“" + f.name + "” is a scan with no text. Reading it with OCR (" + langs + ") — this can take a minute a page.");
+        (function (entityId, fileId, name) {
+          EN9ocrRunAny(att.blob, entityId, { pages: "auto", langs: langs, mode: "auto", name: name }, say).then(function (res) {
             if (!res || !res.file) { say("OCR could not read “" + name + "”. Add a text-based PDF or the source spreadsheet instead."); return; }
             try {
-              window.__WPACT.addFiles(entityId, [res.file]);
-              EN9OCR.result = null;
-              say("Added “" + res.file.name + "”. Re-processing — every figure it produced is OCR-derived and must be checked against the scan.");
-              setTimeout(function () { try { window.__WPACT.processEntity(entityId); } catch (e) {} }, 400);
+              var p = window.__WPACT.EN9_replaceFile ? window.__WPACT.EN9_replaceFile(entityId, fileId, res.file, res.sidecar) : null;
+              if (!p) { window.__WPACT.addFiles(entityId, [res.file]); }
+              Promise.resolve(p).then(function () {
+                EN9OCR.result = null;
+                say("Added “" + res.file.name + "”. Re-processing — every figure it produced is OCR-derived and must be checked against the scan.");
+                setTimeout(function () { try { window.__WPACT.processEntity(entityId); } catch (e) {} }, 400);
+              });
             } catch (e) { say("OCR finished but the result could not be attached — use the OCR card on Document intake."); }
           });
-        })(eid, f.name);
+        })(eid, f.id, f.name);
         return;                                  // one file at a time
       }
     }
   } catch (e) { /* never let the watcher break the app */ }
 }
-if (typeof window !== "undefined") setInterval(EN9autoOcrTick, 1500);
+if (typeof window !== "undefined") { setInterval(EN9autoOcrTick, 1500); setInterval(EN9ocrIntakeTick, 1200); window.addEventListener("wp:state", function () { setTimeout(EN9ocrIntakeTick, 50); }); }
 /*EN9AUTOOCR-END*/
-function en9OcrRun(file,entityId,langs,st,done){
-  if(EN9OCR.busy){ if(st) st("An OCR run is already in progress \u2014 wait for it to finish."); return; }
+
+/* One OCR job on an attached file: mark the gate, run, replace the file,
+   release the gate. Failures release the gate with the error so a waiting
+   Process Entity stops rather than reads the wrong bytes. */
+function EN9ocrStart(entityId, fileId, opts) {
+  if (EN9OCR.jobs[fileId] && EN9OCR.jobs[fileId].status === "running") return EN9OCR.jobs[fileId].p;
+  var st0 = window.__WPGET && window.__WPGET(); var ent = st0 && (st0.entities || []).find(function (x) { return x.id === entityId; });
+  var att = ent && (ent.files || []).find(function (x) { return x.id === fileId; });
+  if (!att || !att.blob) return Promise.resolve(null);
+  EN9autoOcrTried[fileId] = 1;
+  var gateP = EN9OCRGATE.mark(entityId, fileId);
+  var job = EN9OCR.jobs[fileId] = { entityId: entityId, fileId: fileId, name: att.name, status: "running", mode: opts.mode || "manual", message: "queued", startedAt: Date.now() };
+  var say = function (m) { EN9ocrSay(m, fileId); };
+  job.p = EN9ocrRunAny(att.blob, entityId, { pages: opts.pages || "auto", langs: opts.langs || EN9ocrLangsFor(ent), force: !!opts.force, mode: opts.mode || "manual", name: att.name }, say)
+    .then(function (res) {
+      if (!res || !res.file) throw new Error(job.error || "no result");
+      return Promise.resolve(window.__WPACT.EN9_replaceFile(entityId, fileId, res.file, res.sidecar)).then(function (newId) {
+        if (!newId) throw new Error("the document is no longer attached");
+        job.status = "done"; job.newId = newId; job.engine = res.sidecar.backend || res.sidecar.engine;
+        var flags = res.sidecar.pages.reduce(function (n, p) { return n + (p.flags || []).filter(function (x) { return x.level !== "info"; }).length; }, 0);
+        say("“" + att.name + "” read by " + (res.sidecar.backend || res.sidecar.engine) + (res.sidecar.verifyEngine ? " (cross-checked by " + res.sidecar.verifyEngine + ")" : "") +
+          " — " + res.sidecar.ocrPages.length + " page(s)" + (flags ? ", " + flags + " reading(s) flagged for review" : "") + ". Every figure from it is OCR-derived and must be checked against the scan.");
+        EN9OCRGATE.done(entityId, fileId);
+        EN9OCR.result = null;
+        return newId;
+      });
+    })
+    .catch(function (e) {
+      job.status = "failed"; job.error = String(e && e.message || e);
+      say("OCR could not read “" + att.name + "”: " + en9OcrFriendly(e) + " The original file stays attached and unread — supply a clearer scan, a text PDF or the source spreadsheet.");
+      EN9OCRGATE.done(entityId, fileId, new Error("OCR of “" + att.name + "” failed: " + en9OcrFriendly(e)));
+      return null;
+    })
+    .then(function (r) { EN9ocrRenderJobs(); return r; });
+  EN9ocrRenderJobs();
+  return job.p;
+}
+
+/* Service first, in-browser engine last. Resolves {file, sidecar} or null. */
+function EN9ocrRunAny(blob, entityId, opts, st) {
+  var name = opts.name || blob.name || "document.pdf";
+  return EN9OCR.service.health().then(function (h) {
+    if (h.available) {
+      st("OCR service: " + (EN9OCR.service.describe() || {}).text + ".");
+      return EN9OCR.service.ocr(blob, { pages: opts.pages, langs: opts.langs, force: opts.force, name: name }, st).then(function (resp) {
+        if (!resp || !resp.pdf_b64) throw new Error("the OCR service returned no document");
+        var bin = atob(resp.pdf_b64), arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        var nm = String(name).replace(/ \(OCR\)\.pdf$/i, ".pdf").replace(/\.pdf$/i, "") + " (OCR).pdf";
+        var f = new File([arr], nm, { type: "application/pdf" });
+        var sc = EN9ocrSidecarFromService(resp, opts.mode || "manual");
+        EN9OCR.stats.runs++; EN9OCR.stats.pages += (sc.ocrPages || []).length; EN9OCR.stats.words += (resp.stats && resp.stats.words) || 0;
+        if (resp.stats && resp.stats.failed_pages && resp.stats.failed_pages.length) EN9OCR.stats.fails++;
+        return { file: f, sidecar: sc };
+      });
+    }
+    st("OCR service not reachable (" + (h.error || "no engine") + ") — falling back to Tesseract.js in this browser.");
+    return new Promise(function (resolve) {
+      en9OcrRun(blob, entityId, opts.langs || "eng", st, function (res) { resolve(res); }, { pages: opts.pages, force: opts.force, mode: opts.mode, name: name });
+    });
+  });
+}
+
+/* In-browser engine. `opts.pages`: "auto" (probe for pages without text),
+   "all", or "2,4-6"; pages not selected are copied from the original
+   unchanged. done(result) with {file, sidecar, pages, words} or null. */
+function en9OcrRun(file,entityId,langs,st,done,opts){
+  opts=opts||{};
+  if(EN9OCR.busy){ if(st) st("An OCR run is already in progress — wait for it to finish."); done&&done(null); return; }
   EN9OCR.busy=true; EN9OCR.result=null;
-  var io=EN9OCR.io||EN9OCR.realIO, worker=null;
-  st("Preparing\u2026");
+  var io=EN9OCR.io||EN9OCR.realIO, worker=null, srcBuf=null, targets=null;
+  st("Preparing…");
   io.loadEngines(st)
   .then(function(){ return file.arrayBuffer(); })
-  .then(function(buf){ return io.openPdf(buf); })
+  .then(function(buf){ srcBuf=buf.slice(0); return io.openPdf(buf); })
   .then(function(pdf){
-    return io.makeWorker(langs,st).then(function(w){ worker=w;
-      var pages=[], chain=Promise.resolve();
-      for(var n=1;n<=pdf.numPages;n++)(function(n2){
-        chain=chain.then(function(){ st("Rendering page "+n2+" of "+pdf.numPages+"\u2026");
-          return io.renderPage(pdf,n2).then(function(pg){
-            st("Recognizing page "+n2+" of "+pdf.numPages+"\u2026");
-            return io.recognize(worker,pg).then(function(data){
-              pg.words=(data&&data.words)||[]; pg.canvas=null; pages.push(pg); }); }); });
-      })(n);
-      return chain.then(function(){ return pages; });
+    var total=pdf.numPages, spec=String(opts.pages||"auto").toLowerCase();
+    var pick;
+    if(spec==="all") pick=Promise.resolve(null);
+    else if(spec==="auto"||spec==="detect"){ pick=EN9ocrProbe(new Blob([srcBuf],{type:"application/pdf"})).then(function(p){ return p&&p.scanPages&&p.scanPages.length<p.pageCount?p.scanPages:(p&&p.scanPages&&p.scanPages.length?p.scanPages:null); }); }
+    else { var set=[]; spec.split(/[,\s]+/).forEach(function(part){ var m=/^(\d+)(?:-(\d+))?$/.exec(part); if(!m) return; var a=+m[1], b=+(m[2]||m[1]); for(var k=Math.min(a,b);k<=Math.max(a,b);k++) if(k>=1&&k<=total&&set.indexOf(k)<0) set.push(k); }); pick=Promise.resolve(set.sort(function(a,b){return a-b;})); }
+    return pick.then(function(sel){
+      if(sel&&!sel.length){
+        if(opts.force) sel=null;                    /* forced: every page, text or not */
+        else throw new Error("every page of this PDF already has a text layer, so there is nothing to OCR. Tick “also OCR pages that already have text” to read it anyway.");
+      }
+      targets=sel||Array.from({length:total},function(_,i){return i+1;});
+      return io.makeWorker(langs,st).then(function(w){ worker=w;
+        var pages=[], chain=Promise.resolve();
+        for(var n=1;n<=total;n++)(function(n2){
+          if(targets.indexOf(n2)<0){ pages.push({n:n2,copy:true}); return; }
+          chain=chain.then(function(){ st("Rendering page "+n2+" of "+total+"…");
+            return io.renderPage(pdf,n2).then(function(pg){
+              st("Recognizing page "+n2+" of "+total+"…");
+              return io.recognize(worker,pg).then(function(data){
+                pg.n=n2; pg.words=(data&&data.words)||[]; pg.canvas=null; pages.push(pg); }); }); });
+        })(n);
+        return chain.then(function(){ pages.sort(function(a,b){return a.n-b.n;}); return pages; });
+      });
     });
   })
   .then(function(pages){
     var tw=pages.reduce(function(a,p){return a+(p.words?p.words.length:0);},0);
-    if(!tw) throw new Error("No text could be recognized \u2014 the scan may be too poor. Try a clearer copy.");
-    st("Building searchable PDF\u2026");
-    return io.buildPdf(pages).then(function(bytes){
-      var nm=String(file.name||"document.pdf").replace(/\.pdf$/i,"")+" (OCR).pdf";
+    if(!tw) throw new Error("No text could be recognized — the scan may be too poor. Try a clearer copy.");
+    st("Building searchable PDF…");
+    return io.buildPdf(pages,srcBuf).then(function(bytes){
+      var nm=String(file.name||"document.pdf").replace(/ \(OCR\)\.pdf$/i,".pdf").replace(/\.pdf$/i,"")+" (OCR).pdf";
       var f=new File([bytes],nm,{type:"application/pdf"});
-      EN9OCR.result={file:f, entityId:entityId, pages:pages.length, words:tw};
-      EN9OCR.stats.runs++; EN9OCR.stats.pages+=pages.length; EN9OCR.stats.words+=tw;
-      st("Done \u2014 "+pages.length+" page(s), "+tw+" word(s) recognized.");
+      var sidecar=EN9ocrSidecarFromLocal(pages,targets,opts.mode||"manual",langs);
+      EN9OCR.result={file:f, entityId:entityId, pages:targets.length, words:tw, sidecar:sidecar};
+      EN9OCR.stats.runs++; EN9OCR.stats.pages+=targets.length; EN9OCR.stats.words+=tw;
+      st("Done — "+targets.length+" page(s), "+tw+" word(s) recognized in this browser.");
       done&&done(EN9OCR.result);
     });
   })
@@ -969,9 +1181,25 @@ function en9OcrRun(file,entityId,langs,st,done){
 
 function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
   var e=(s.entities||[]).find(function(x){return x.id===entityId;});
-  (e&&e.files||[]).forEach(function(f){
-    if(/\.pdf$/i.test(f.name||"")&&f.blob&&!/\(OCR\)\.pdf$/i.test(f.name)) out.push(f); });
+  (e&&e.files||[]).forEach(function(f){ if(/\.pdf$/i.test(f.name||"")&&f.blob) out.push(f); });
   return out; }
+
+/* Running / finished jobs, shown on the OCR card and beside the Process button. */
+function EN9ocrRenderJobs(){
+  var host=document.getElementById("en9-ocr-jobs"); if(host){ while(host.firstChild) host.removeChild(host.firstChild);
+    var jobs=Object.keys(EN9OCR.jobs).map(function(k){return EN9OCR.jobs[k];}).sort(function(a,b){return b.startedAt-a.startedAt;}).slice(0,8);
+    jobs.forEach(function(j){ var row=el("div","en9-ocr-job "+j.status);
+      row.appendChild(el("span","en9-ocr-jobname",j.name)); row.appendChild(el("span","en9-ocr-jobstate",j.status==="running"?"running":j.status==="done"?"done · "+(j.engine||""):"failed"));
+      row.appendChild(el("span","en9-ocr-jobmsg",j.message||"")); host.appendChild(row); }); }
+  /* the run panel: say why Process entity is waiting */
+  try{ var s=st(), active=s&&s.activeEntityId;
+    var pend=Object.keys(EN9OCR.jobs).filter(function(k){var j=EN9OCR.jobs[k];return j.status==="running"&&(!active||j.entityId===active);}).map(function(k){return EN9OCR.jobs[k].name;});
+    document.querySelectorAll(".run-panel").forEach(function(rp){
+      var hint=rp.querySelector(".en9-ocr-wait");
+      if(pend.length){ if(!hint){ hint=el("div","en9-ocr-wait"); rp.appendChild(hint); }
+        hint.textContent="OCR is reading "+pend.join(", ")+" — “Process entity” waits until it finishes, so the run uses the recognised text."; }
+      else if(hint) hint.remove(); }); }catch(e){}
+}
 
 function enhanceOcrPanel(){
   var dz=document.querySelector(".dropzone");
@@ -983,56 +1211,70 @@ function enhanceOcrPanel(){
        so the full OCR panel can never linger on Shareholders/Dividends. */
     if(old.parentElement!==dz.parentElement||old.previousElementSibling!==dz)
       dz.parentElement.insertBefore(old, dz.nextSibling);
-    var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); old.EN9_fillSrc&&old.EN9_fillSrc(); return; }
+    var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); old.EN9_fillSrc&&old.EN9_fillSrc(); old.EN9_engine&&old.EN9_engine(); return; }
   var card=el("section","panel en9-ocr");
-  card.appendChild(el("strong",null,"OCR a scanned PDF (beta) \u2014 Tesseract, free & open source"));
-  card.appendChild(el("p","en9-ocr-sub","For image-only PDFs the parser refuses (\u201Cno text layer\u201D). This reads them with the open-source Tesseract engine and produces a searchable copy you can add to intake. The engine (~a few MB) is downloaded from cdn.jsdelivr.net on first use \u2014 your document itself never leaves this browser. Every figure from an OCR\u2019d document must be verified against the original: recognition can misread digits."));
+  card.appendChild(el("strong",null,"OCR a scanned PDF — automatic at upload, manual here"));
+  card.appendChild(el("p","en9-ocr-sub","Every PDF you add is checked for pages without a text layer. Those pages are read automatically — by the PaddleOCR service when it is running, otherwise by Tesseract.js in this browser — and “Process entity” waits until the recognised text is in place. With the in-browser engine the document never leaves this browser; with the service it goes only to your own server. Use this card to run OCR by hand: on a file the check did not catch, on specific pages, or again with another language. Every figure from an OCR’d document is flagged for verification against the original scan."));
+  var eng=el("div","en9-ocr-engine","Checking for the OCR service…"); card.appendChild(eng);
+  function showEngine(){ EN9OCR.service.health().then(function(h){ var d=EN9OCR.service.describe();
+    eng.textContent=d?"OCR service online — "+d.text+". Figures are cross-checked by the second engine; disagreements are flagged, never auto-corrected.":
+      "OCR service not reachable"+(h&&h.error?" ("+h.error+")":"")+" — Tesseract.js in this browser will be used (engine downloads from cdn.jsdelivr.net on first use; the document itself never leaves this browser). Start ocr-service/ for PaddleOCR."; }); }
+  card.EN9_engine=showEngine; showEngine();
   var row=el("div","en9-ocr-row");
   var sel=document.createElement("select"); sel.setAttribute("data-en9",""); en9OcrFillEntities(sel);
   var src=document.createElement("select"); src.setAttribute("data-en9",""); src.className="en9-ocr-src";
-  var fi=document.createElement("input"); fi.type="file"; fi.accept=".pdf"; fi.setAttribute("data-en9","");
+  var fi=document.createElement("input"); fi.type="file"; fi.accept=".pdf,.png,.jpg,.jpeg"; fi.setAttribute("data-en9","");
   function fillSrc(){ var cur=src.value;
     while(src.firstChild)src.removeChild(src.firstChild);
     var o0=document.createElement("option"); o0.value=""; o0.textContent="— choose a file from this computer —"; src.appendChild(o0);
     en9OcrIntakePdfs(sel.value).forEach(function(f){ var o=document.createElement("option");
-      o.value=f.id; o.textContent="Already attached: "+f.name; src.appendChild(o); });
+      o.value=f.id; o.textContent="Already attached: "+f.name+(f.ocr?" (already OCR’d)":""); src.appendChild(o); });
     if([...src.options].some(function(o){return o.value===cur;})) src.value=cur;
     fi.style.display=src.value?"none":""; }
   src.addEventListener("change",fillSrc);
   sel.addEventListener("change",fillSrc);
   card.EN9_fillSrc=fillSrc;
+  var pgl=el("label","en9-ocr-pages"); pgl.appendChild(document.createTextNode("Pages "));
+  var pg=document.createElement("input"); pg.type="text"; pg.placeholder="auto (pages without text) · all · 2,4-6"; pg.setAttribute("data-en9",""); pgl.appendChild(pg);
+  var fl=el("label","en9-ocr-force"); var fc=document.createElement("input"); fc.type="checkbox"; fc.setAttribute("data-en9","");
+  fl.appendChild(fc); fl.appendChild(document.createTextNode(" also OCR pages that already have text (readings kept for comparison, the text layer is not replaced)"));
   var lg=el("label","en9-ocr-lang"); var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=false; cb.setAttribute("data-en9","");
-  lg.appendChild(cb); lg.appendChild(document.createTextNode(" also recognise Dutch (slower; English is always on)"));
-  var btn=el("button","button en9-ocr-btn","Run OCR"); btn.type="button";
-  row.appendChild(sel); row.appendChild(src); row.appendChild(fi); row.appendChild(lg); row.appendChild(btn);
+  lg.appendChild(cb); lg.appendChild(document.createTextNode(" also recognise Dutch (English and the entity’s country language are always on)"));
+  var btn=el("button","button en9-ocr-btn","Run OCR now"); btn.type="button";
+  row.appendChild(sel); row.appendChild(src); row.appendChild(fi); row.appendChild(pgl); row.appendChild(lg); row.appendChild(btn);
   fillSrc();
-  card.appendChild(row);
-  if(en9IsSandbox()) card.appendChild(el("div","en9-ocr-sandbox","\u26A0 You are viewing this inside the claude.ai preview, which blocks the background workers OCR needs. Everything else works here \u2014 but run OCR on your deployed site (or open the downloaded HTML directly in your browser)."));
-  var stat=el("div","en9-ocr-status"); card.appendChild(stat);
+  card.appendChild(row); card.appendChild(fl);
+  if(en9IsSandbox()) card.appendChild(el("div","en9-ocr-sandbox","⚠ You are viewing this inside the claude.ai preview, which blocks the background workers the in-browser engine needs. Everything else works here — but run OCR on your deployed site (or open the downloaded HTML directly in your browser)."));
+  var stat=el("div","en9-ocr-status"); stat.id="en9-ocr-status"; card.appendChild(stat);
+  var jobs=el("div","en9-ocr-jobs"); jobs.id="en9-ocr-jobs"; card.appendChild(jobs);
   var acts=el("div","en9-ocr-acts"); acts.style.display="none";
   var addb=el("button","button primary","Add to intake"); addb.type="button";
   var dlb=el("button","button","Download searchable PDF"); dlb.type="button";
   acts.appendChild(addb); acts.appendChild(dlb); card.appendChild(acts);
-  card.appendChild(el("div","en9-ocr-note","Documents added this way are named \u201C\u2026 (OCR).pdf\u201D so every caption\u2019s source chip shows OCR provenance. Treat all extracted figures as unverified until checked."));
+  card.appendChild(el("div","en9-ocr-note","Documents read by OCR are named “… (OCR).pdf” so every caption’s source chip shows OCR provenance; the Provenance sheet of the work paper lists the engine, confidence and page position of every figure they contribute. Treat all extracted figures as unverified until checked."));
   btn.addEventListener("click",function(){
-    var f=null;
-    if(src.value){ var att=en9OcrIntakePdfs(sel.value).find(function(x){return x.id===src.value;});
-      f=att&&att.blob||null;
-      if(!f){ stat.textContent="That attached document is no longer available — choose the file from this computer instead."; return; } }
-    else f=fi.files&&fi.files[0];
-    if(!f){ stat.textContent="Pick an already-attached PDF from the dropdown, or choose a file from this computer."; return; }
     if(!sel.value){ stat.textContent="Choose the entity this document belongs to."; return; }
+    var s2=st(), ent=s2&&(s2.entities||[]).find(function(x){return x.id===sel.value;});
+    var langs=EN9ocrLangsFor(ent); if(cb.checked&&langs.indexOf("nld")<0) langs+="+nld";
+    var pages=(pg.value||"auto").trim()||"auto";
     acts.style.display="none";
-    en9OcrRun(f,sel.value,cb.checked?"eng+nld":"eng",function(m){stat.textContent=m;},function(res){
-      if(res) acts.style.display="";
+    if(src.value){ EN9ocrStart(sel.value, src.value, {pages:pages, force:fc.checked, mode:"manual", langs:langs}); return; }
+    var f=fi.files&&fi.files[0];
+    if(!f){ stat.textContent="Pick an already-attached PDF from the dropdown, or choose a file from this computer."; return; }
+    EN9ocrRunAny(f, sel.value, {pages:pages, force:fc.checked, mode:"manual", langs:langs, name:f.name}, function(m){stat.textContent=m;}).then(function(res){
+      if(res){ EN9OCR.result={file:res.file, entityId:sel.value, sidecar:res.sidecar}; acts.style.display=""; }
     });
   });
   addb.addEventListener("click",function(){
     var r=EN9OCR.result; if(!r) return;
-    if(window.__WPACT&&window.__WPACT.addFiles){ window.__WPACT.addFiles(r.entityId,[r.file]);
-      stat.textContent="Added \u201C"+r.file.name+"\u201D to intake \u2014 run processing, then verify every figure against the original scan.";
+    if(window.__WPACT&&window.__WPACT.addFiles){
+      Promise.resolve(window.__WPACT.addFiles(r.entityId,[r.file])).then(function(){
+        try{ var s3=st(), e3=(s3.entities||[]).find(function(x){return x.id===r.entityId;}); var nf=e3&&(e3.files||[]).slice().reverse().find(function(x){return x.name===r.file.name;});
+          if(nf){ EN9ocrProbed[nf.id]=1; if(r.sidecar&&window.__WPACT.EN9_replaceFile) window.__WPACT.EN9_replaceFile(r.entityId,nf.id,r.file,r.sidecar); } }catch(e){}
+      });
+      stat.textContent="Added “"+r.file.name+"” to intake — process the entity, then verify every figure against the original scan.";
       EN9OCR.result=null; acts.style.display="none"; }   /* one-shot: no double intake */
-    else stat.textContent="Could not reach the intake action \u2014 download the PDF and drop it on the entity instead.";
+    else stat.textContent="Could not reach the intake action — download the PDF and drop it on the entity instead.";
   });
   dlb.addEventListener("click",function(){
     var r=EN9OCR.result; if(!r) return;
@@ -1042,6 +1284,7 @@ function enhanceOcrPanel(){
   /* rebuilt after a tab switch: surface a still-pending OCR result */
   if(EN9OCR.result){ stat.textContent="Done — previous OCR result is ready to add to intake."; acts.style.display=""; }
   dz.parentElement.insertBefore(card, dz.nextSibling);
+  EN9ocrRenderJobs();
 }
 function en9OcrFillEntities(sel){
   if(!sel) return; var s=st(); if(!s) return;
@@ -1058,7 +1301,7 @@ function en9OcrFillEntities(sel){
 /* ---------- Settings: OCR engine details, usage & pending verification ---------- */
 function en9OcrDocs(){ var s=st(), out=[]; if(!s) return out;
   (s.entities||[]).forEach(function(e){ (e.files||[]).forEach(function(f){
-    if(/\(OCR\)\.pdf$/i.test(f.name||"")) out.push({entity:e.name,name:f.name}); }); });
+    if(f.ocr||/\(OCR\)\.pdf$/i.test(f.name||"")) out.push({entity:e.name,name:f.name,engine:f.ocr&&(f.ocr.backend||f.ocr.engine)||"in-browser engine"}); }); });
   return out; }
 function enhanceOcrSettings(){
   var stacks=document.querySelectorAll(".view-stack"), host=null;
@@ -1071,60 +1314,63 @@ function enhanceOcrSettings(){
   if(!card){ card=el("section","panel en9-ocrset");
     host.appendChild(card); }
   while(card.firstChild)card.removeChild(card.firstChild);
-  card.appendChild(el("strong",null,"OCR engine \u2014 Tesseract.js (free & open source)"));
+  card.appendChild(el("strong",null,"OCR engines — PaddleOCR first, Surya second, Tesseract last"));
   /* engine facts */
+  var h=EN9OCR.service._health, d=EN9OCR.service.describe();
   var facts=el("div","en9-os-grid");
-  [["Engine","Tesseract.js v5 \u2014 browser build of Google\u2019s Tesseract OCR"],
-   ["License","Apache-2.0 \u00B7 free forever \u00B7 no account, no API key"],
-   ["Companions","pdf.js 3.11.174 (page rendering) \u00B7 pdf-lib 1.17.1 (searchable-PDF output)"],
-   ["Languages","English by default; Dutch can be enabled on the intake card"],
-   ["Privacy","Recognition runs entirely in this browser \u2014 the document never leaves it. Engine code (~a few MB) downloads once from cdn.jsdelivr.net on first use, then is cached."]
+  [["Service",d?"online — "+d.text:(h?"not reachable"+(h.error?" ("+h.error+")":""):"not checked yet")+" — start ocr-service/ (python -m ocr_service) beside the app server"],
+   ["Primary","PaddleOCR 3.x — PP-OCRv6 (or PP-OCRv5) text detection and recognition, PP-StructureV3 for table pages; PP-OCRv5 through ONNX Runtime on hosts with no model download"],
+   ["Second reading","Surya when installed; otherwise Tesseract re-reads every numeric token. A disagreement is flagged with both readings — the primary’s is kept, nothing is auto-corrected"],
+   ["Final fallback","Tesseract.js v5 in this browser (Apache-2.0, free forever, no key), used only when no service answers — engine ~a few MB from cdn.jsdelivr.net on first use"],
+   ["Preprocessing","300 dpi render · orientation · deskew · denoise when grainy · contrast (CLAHE)"],
+   ["Validation","amount/date/percentage/currency grammar, thousands and decimal separators, negatives in parentheses, letter-for-digit swaps (O/0, l/1, S/5), confidence floor 90% on figures"],
+   ["Privacy","documents go to the OCR service on your own server (same origin, /api/ocr/*), never to a third party; the in-browser fallback never uploads anything"]
   ].forEach(function(p){ var r=el("div","en9-os-row");
     r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); facts.appendChild(r); });
   card.appendChild(facts);
-  /* usage & quota */
+  /* usage */
   var stq=EN9OCR.stats, docs=en9OcrDocs();
   card.appendChild(el("h4","en9-os-h","Usage"));
   var ug=el("div","en9-os-grid");
-  [["This session",stq.runs+" document(s) \u00B7 "+stq.pages+" page(s) \u00B7 "+stq.words.toLocaleString("en-US")+" word(s) recognized"+(stq.fails?" \u00B7 "+stq.fails+" failed run(s)":"")],
-   ["Quota","Unlimited \u2014 open-source engine, nothing metered, nothing pending to renew"],
-   ["OCR documents in this workpaper",docs.length?docs.length+" file(s) \u2014 ALL pending manual verification until each figure is checked against the original scan":"none yet"]
+  [["This session",stq.runs+" document(s) · "+stq.pages+" page(s) · "+stq.words.toLocaleString("en-US")+" word(s) recognized"+(stq.fails?" · "+stq.fails+" failed run(s)":"")],
+   ["Quota","Unlimited — open-source engines on your own machine, nothing metered"],
+   ["OCR documents in this workpaper",docs.length?docs.length+" file(s) — ALL pending manual verification until each figure is checked against the original scan":"none yet"]
   ].forEach(function(p){ var r=el("div","en9-os-row");
     r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); ug.appendChild(r); });
   card.appendChild(ug);
   if(docs.length){ var dl=el("div","en9-os-pending");
-    docs.forEach(function(d2){ dl.appendChild(el("div","en9-auth-src",d2.entity+" \u2192 "+d2.name+" \u2014 verification pending")); });
+    docs.forEach(function(d2){ dl.appendChild(el("div","en9-auth-src",d2.entity+" → "+d2.name+" — "+d2.engine+" — verification pending")); });
     card.appendChild(dl); }
   /* how it works */
   card.appendChild(el("h4","en9-os-h","How it works"));
   var steps=el("ol","en9-os-list");
-  ["Each page of the scanned PDF is rendered to a high-resolution image (2.4\u00D7) with pdf.js.",
-   "Tesseract reads the image and returns every word with its exact position and a confidence score.",
-   "pdf-lib rebuilds the document: the original page image with an invisible, position-accurate text layer underneath \u2014 the same approach as OCRmyPDF.",
-   "The result is named \u201C\u2026 (OCR).pdf\u201D and can be added to intake; the normal parser then reads it like any digital PDF, and every caption\u2019s source chip carries the OCR provenance."
+  ["On upload every PDF is probed page by page with the app’s own PDF reader: pages with a text layer are left alone, pages without one are queued for OCR. Mixed documents are OCR’d only where needed.",
+   "The queued pages go to the OCR service, which renders each at 300 dpi, straightens and cleans it, and reads it with PaddleOCR. A second engine re-reads the figures; anything they disagree on, anything malformed and anything below the confidence floor is flagged.",
+   "The service writes the recognised words back into the PDF as an invisible, position-accurate text layer — the same approach as OCRmyPDF — leaving digital pages untouched. The scanned file is replaced in intake by this copy, named “… (OCR).pdf”, with a sidecar of engines, confidences and positions.",
+   "“Process entity” waits for OCR to finish, then reads the copy like any digital PDF. Every flag becomes a review item; the Provenance sheet cites engine, confidence and page position for each OCR’d figure."
   ].forEach(function(x){ var li=document.createElement("li"); li.textContent=x; li.setAttribute("data-en9",""); steps.appendChild(li); });
   card.appendChild(steps);
   /* accepted files */
   card.appendChild(el("h4","en9-os-h","Accepted input"));
-  card.appendChild(el("p","en9-os-p","PDF files only (.pdf) \u2014 specifically image-only scans the parser refuses with \u201Cno text layer\u201D. Digital PDFs don\u2019t need OCR (they parse directly). Photos (JPG/PNG) must be converted to PDF first. Best results: flat 300\u00A0dpi scans, straight pages, dark text on light background, machine-printed type. Not suitable for handwriting."));
+  card.appendChild(el("p","en9-os-p","PDF files only (.pdf) reach intake directly — scanned or mixed. A PNG/JPEG photo can be run through the OCR card, which wraps it as a one-page PDF. Best results: flat 300 dpi scans, dark text on light background, machine-printed type. Skew up to about 8° and pages on their side are corrected. Not suitable for handwriting."));
   /* pros & cons */
   card.appendChild(el("h4","en9-os-h","Strengths & limits"));
   var pc=el("div","en9-os-2col");
   var pros=el("div","en9-os-pros"); pros.appendChild(el("strong",null,"Strengths"));
-  ["Free and unlimited \u2014 no quota, no key, no cost",
-   "Private \u2014 the document never leaves this browser",
-   "100+ language support in the engine family; Dutch included here",
-   "Position-accurate output, so the tool\u2019s table reconstruction works normally"
-  ].forEach(function(x){ pros.appendChild(el("div","en9-auth-fact","\u2713 "+x)); });
+  ["Free and unlimited — no quota, no key, no cost",
+   "Private — documents stay on your own server or in this browser",
+   "Two engines on every figure; disagreements surface as review items with both readings",
+   "Position-accurate output, so the tool’s table reconstruction works normally"
+  ].forEach(function(x){ pros.appendChild(el("div","en9-auth-fact","✓ "+x)); });
   var cons=el("div","en9-os-cons"); cons.appendChild(el("strong",null,"Limits"));
-  ["Recognition is probabilistic \u2014 digits can be misread (8\u21943, 1\u21947); every figure must be verified",
+  ["Recognition is probabilistic — digits can be misread (8↔3, 1↔7); every figure must be verified",
    "Complex or borderless tables can come out misaligned",
-   "Poor, skewed, or low-contrast scans may fail or produce noise",
+   "Poor, heavily skewed or low-contrast scans may fail or produce noise",
    "Handwriting is not supported",
-   "First use downloads the engine (~a few MB) \u2014 needs a network connection that once"
-  ].forEach(function(x){ cons.appendChild(el("div","en9-auth-miss","\u2013 "+x)); });
+   "The in-browser fallback downloads its engine (~a few MB) on first use"
+  ].forEach(function(x){ cons.appendChild(el("div","en9-auth-miss","– "+x)); });
   pc.appendChild(pros); pc.appendChild(cons); card.appendChild(pc);
-  card.appendChild(el("p","en9-os-foot","Values booked from an OCR\u2019d document are never treated as verified: the \u201C(OCR)\u201D name follows them through every source chip, evidence trace and export until you confirm them against the original."));
+  card.appendChild(el("p","en9-os-foot","Values booked from an OCR’d document are never treated as verified: the “(OCR)” name follows them through every source chip, evidence trace and export until you confirm them against the original."));
 }
 
 /* ---------- master pass ---------- */

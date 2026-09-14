@@ -11,3 +11,8 @@ dist-bundle/
 
 # Client reconciliation outputs — real client financial data, kept out of the repo
 5471_Reconciliation_*.xlsx
+
+# OCR service (Python)
+ocr-service/.venv/
+__pycache__/
+.pytest_cache/

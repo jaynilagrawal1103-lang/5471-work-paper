@@ -7,6 +7,7 @@ import {
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
+import { pdfToDoc } from "./pdfText";
 import { parseQuestionnaire, type Questionnaire } from "./questionnaire";
 import { irsCountryCode } from "./countryCodes";
 import { collapsedRoute, collapsedSections, contraRevenueFlip, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
@@ -100,6 +101,32 @@ export type EntityFile = {
   /** SHA-256 of the bytes, or an "nk:" fallback key where the crypto API is
       unavailable. Identity for the duplicate refusal. */
   sha?: string;
+  /** Present when this file's text layer was produced by OCR: which engine
+      read each page, how confident it was, where every word sits, and what
+      the validator or a second engine disputed. Travels with the file so
+      each figure booked from it can cite its evidence. */
+  ocr?: OcrSidecar;
+};
+
+/** One recognised token, box in PDF points on its page. */
+export type OcrWord = { text: string; bbox: number[]; conf: number; engine: string };
+/** A reading a reviewer must look at. `text` is what was kept; `alt` is what
+    a second engine or the validator proposes instead — never applied. */
+export type OcrFlag = {
+  page: number; kind: string; level: "block" | "warn" | "info"; text: string; bbox: number[];
+  conf: number; engine: string; message: string; alt?: string | null; alt_engine?: string | null; alt_conf?: number | null;
+};
+export type OcrPage = {
+  page: number; status: string; engine?: string | null; confMean?: number | null;
+  words: OcrWord[]; flags: OcrFlag[];
+};
+export type OcrSidecar = {
+  /** Primary engine that read the pages ("paddle"), and the model behind it. */
+  engine: string; backend?: string; verifyEngine?: string | null; chain?: string[];
+  mode: "auto" | "manual"; source: "service" | "browser"; at: string;
+  originalName: string; originalSha?: string;
+  verdict: string; ocrPages: number[]; pages: OcrPage[];
+  stats?: Record<string, unknown>;
 };
 export type LineValue = { amount?: number | null; boy?: number | null; eoy?: number | null };
 export type EntityStatus = "idle" | "processing" | "ready" | "error";
@@ -685,6 +712,46 @@ async function fanOutSiblings(parentId: string, plans: CfCandidate[]): Promise<v
   if (p2) updateEntity(parentId, { log: [...p2.log, `Fan-out: created ${fresh.map((p) => p.cfcName).join(", ")} from the additional Form 5471(s)`] });
 }
 
+/** Review items for a document whose text came from OCR: one notice naming
+    the engine and pages, and one item per disputed reading. The disputed
+    value is offered as `suggestedValue`, never applied — the figure booked
+    is what the primary engine read, and the preparer decides. A page the
+    engines could not read at all blocks generation: nothing from it is on
+    the work paper, and silence would hide that. */
+export function ocrReviewItems(f: EntityFile): (Omit<ReviewItem, "id"> & { id: string })[] {
+  const o = f.ocr;
+  if (!o) return [];
+  const out: (Omit<ReviewItem, "id"> & { id: string })[] = [];
+  const confs = o.pages.filter((p) => p.status === "ocr" && typeof p.confMean === "number").map((p) => p.confMean as number);
+  const mean = confs.length ? confs.reduce((a, b) => a + b, 0) / confs.length : null;
+  const failed = o.pages.filter((p) => p.status === "failed").map((p) => p.page);
+  out.push({
+    id: `ocr-doc-${f.id}`, level: "info", category: "process", source: f.name,
+    message: `${f.name} was read by OCR — ${o.backend || o.engine}${o.verifyEngine ? `, cross-checked by ${o.verifyEngine}` : ""} — on page(s) ${o.ocrPages.join(", ") || "none"}` +
+      `${mean != null ? `, mean confidence ${Math.round(mean * 100)}%` : ""}${o.mode === "manual" ? " (started by the preparer)" : " (detected automatically at upload)"}. ` +
+      `Every figure it contributes is machine-read: verify each against the original scan${o.originalName && o.originalName !== f.name ? ` (${o.originalName})` : ""}.`,
+  });
+  if (failed.length) {
+    out.push({
+      id: `ocr-failed-${f.id}`, level: "block", category: "source-gap", source: f.name,
+      message: `${f.name}: page(s) ${failed.join(", ")} could not be read by any OCR engine, so NOTHING from them feeds the work paper. Supply a clearer scan or type the figures onto the schedule lines.`,
+    });
+  }
+  for (const p of o.pages) {
+    for (const fl of p.flags || []) {
+      if (fl.level === "info") continue;
+      out.push({
+        id: `ocr-flag-${f.id}-p${fl.page}-${fl.kind}-${norm(fl.text || "").slice(0, 24)}-${Math.round((fl.bbox || [0])[0] || 0)}`,
+        level: fl.level === "block" ? "block" : "warn", category: "source-gap", source: f.name,
+        message: `${f.name} p.${fl.page}: ${fl.message}`,
+        sourceLabel: fl.text || undefined,
+        suggestedValue: fl.alt ?? undefined,
+      });
+    }
+  }
+  return out;
+}
+
 /** Record (or reset) the scans awaiting OCR for one entity. `null` clears the
     entity's queue. Never throws: a missing global must not fail processing. */
 function queueScans(entityId: string, doc: { id: string; name: string } | null) {
@@ -728,6 +795,58 @@ export const actions = {
       __toast that did not exist. */
   __toast(text: string, kind: "ok" | "bad" | "" = "") {
     toast(text, kind);
+  },
+
+  /** Which pages of a PDF carry a text layer, read with the bundled pdf.js
+      — the same reader processing uses, so "no text" here means "no text"
+      there. The layer asks this at upload time to decide whether a document
+      needs OCR before Process Entity ever runs. null: not a PDF the reader
+      could open. */
+  async EN9_probePdf(blob: Blob): Promise<{ pageCount: number; textPages: number[]; scanPages: number[] } | null> {
+    try {
+      const doc = await pdfToDoc(await blob.arrayBuffer());
+      const withText = new Set(doc.rows.map((r) => r.page));
+      const all = Array.from({ length: doc.pageCount }, (_, i) => i + 1);
+      return { pageCount: doc.pageCount, textPages: all.filter((p) => withText.has(p)), scanPages: all.filter((p) => !withText.has(p)) };
+    } catch {
+      return null;
+    }
+  },
+
+  /** Swap a scanned document for its OCR'd copy in place: same position in
+      the list, same document-type override, the original's name and hash
+      recorded on the sidecar. A NEW file id is issued, because persistence
+      keys blobs by id and would otherwise keep serving the old bytes.
+      Returns the new id, or null when the entity or file is gone. */
+  async EN9_replaceFile(entityId: string, fileId: string, file: File, ocr: Omit<OcrSidecar, "originalName" | "originalSha">): Promise<string | null> {
+    const ent = state.entities.find((e) => e.id === entityId);
+    const old = ent?.files.find((f) => f.id === fileId);
+    if (!ent || !old) return null;
+    let sha: string | null = null;
+    try {
+      if (typeof crypto !== "undefined" && crypto.subtle) {
+        const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+        sha = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      }
+    } catch { /* fall back below */ }
+    if (!sha) sha = `nk:${file.name}|${file.size}|${file.lastModified || 0}`;
+    const fresh: EntityFile = {
+      id: uid(), name: file.name, size: file.size, parsable: true, blob: file, sha,
+      ocr: { ...ocr, originalName: old.name, originalSha: old.sha },
+    };
+    const cur = state.entities.find((e) => e.id === entityId);
+    if (!cur) return null;
+    const files = cur.files.map((f) => (f.id === fileId ? fresh : f));
+    const overrides = { ...(cur.docKindOverrides || {}) };
+    if (overrides[fileId]) { overrides[fresh.id] = overrides[fileId]; delete overrides[fileId]; }
+    const docClasses = { ...cur.docClasses };
+    delete docClasses[fileId];
+    updateEntity(entityId, { files, docKindOverrides: overrides, docClasses, status: "idle" });
+    set({ usage: { ...state.usage, storage: Math.max(0, state.usage.storage - old.size + file.size) } });
+    logEvent("Document replaced by OCR copy",
+      `${old.name} → ${file.name} · ${ocr.backend || ocr.engine}${ocr.verifyEngine ? ` (cross-checked by ${ocr.verifyEngine})` : ""} · page(s) ${ocr.ocrPages.join(", ") || "none"} · ${ocr.mode}`,
+      cur.name, "system");
+    return fresh.id;
   },
 
   setStakeholder(name: string) {
@@ -1555,6 +1674,25 @@ export const actions = {
   },
 
   async processEntity(entityId: string) {
+    /* OCR runs BEFORE processing, never after it. The layer holds a gate per
+       entity while a scan is being read; a run that starts now would read
+       the un-OCR'd bytes, book nothing from them, and have to be repeated.
+       So wait — visibly, the button shows "Processing…" — and read the
+       entity again afterwards, because the gate's work replaces files. */
+    {
+      const gate = (globalThis as unknown as { EN9OCRGATE?: { pending?: (id: string) => boolean; wait?: (id: string) => Promise<unknown> } }).EN9OCRGATE;
+      if (gate && typeof gate.pending === "function" && typeof gate.wait === "function" && gate.pending(entityId)) {
+        updateEntity(entityId, { status: "processing", progress: -1 });
+        toast("OCR is still reading this entity's scanned pages — processing starts when it finishes", "");
+        try {
+          await gate.wait(entityId);
+        } catch (e) {
+          updateEntity(entityId, { status: "idle" });
+          toast(`OCR did not finish: ${(e as Error).message} — processing was not started`, "bad");
+          return;
+        }
+      }
+    }
     const start = state.entities.find((e) => e.id === entityId);
     if (!start) return;
     if (!start.files.length) { toast("Add at least one document first", "bad"); return; }
@@ -1626,6 +1764,10 @@ export const actions = {
            on the next pass. */
         queueScans(entityId, null);
         for (const f of ent.files) {
+          // An OCR'd document's notice and disputed readings are raised
+          // whether or not the copy reads cleanly below: a page no engine
+          // could read must block even when the file itself fails to open.
+          for (const item of ocrReviewItems(f)) rv(item);
           try {
             const parsed = await readDocument(f.blob, { sheets: ent.docKindOverrides?.[f.id]?.sheets });
             if (!parsed) {
@@ -3090,11 +3232,16 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
  * green rather than "could not be read" — the reading worked; the
  * classification is a separate question, and conflating them sent people
  * hunting for a file problem that did not exist. */
-export type ReadStatus = "unsupported format" | "not read yet" | "text read" | "scan — needs OCR" | "could not be read";
+export type ReadStatus = "unsupported format" | "not read yet" | "text read" | "text read (OCR)" | "scan — needs OCR" | "could not be read";
 
 export function readState(ent: Entity | undefined, file: EntityFile): ReadStatus {
   if (!file || !file.parsable) return "unsupported format";
-  if (ent?.docClasses?.[file.id]) return "text read";
+  if (ent?.docClasses?.[file.id]) {
+    // An OCR'd copy reads like any digital PDF, but the preparer must be able
+    // to see at a glance that its text was recognised, not printed.
+    if (file.ocr) return "text read (OCR)";
+    return "text read";
+  }
   if (!ent || !ent.processedAt) return "not read yet";
   // A scan is distinguishable from a genuine read failure, and the difference
   // matters: one has a remedy in the app, the other does not.
@@ -4841,7 +4988,59 @@ function provenanceRows(ent: Entity): CellValue[][] {
     rows.push(["Acknowledged blocker", r.target || "", "", "", "", "", "",
                `${r.message}${r.dismissedNote ? ` — preparer's note: "${r.dismissedNote}"` : " — no note left"}`]);
   }
+  ocrProvenance(rows, ent);
   return rows;
+}
+
+/** Add OCR evidence to the Provenance sheet, in place.
+ *
+ * Every row that cites an OCR'd document gains three columns — the engine
+ * that read the figure, its confidence, and the box on the page it was read
+ * from — found by matching the booked value against the words recognised
+ * on that page. A section at the foot lists each OCR'd document with its
+ * engines, pages and dispute count, and the name and hash of the scan it
+ * replaced, so the filed figure can always be traced to the original image. */
+export function ocrProvenance(rows: CellValue[][], ent: Entity): void {
+  const byName = new Map<string, EntityFile>();
+  for (const f of ent.files || []) if (f.ocr) byName.set(f.name, f);
+  if (!byName.size) return;
+  const header = rows.findIndex((r) => r[0] === "Kind" && r[1] === "Line / field");
+  if (header >= 0) rows[header].push("OCR engine", "OCR confidence", "OCR position (x0, y0, x1, y1 pt)");
+  const asNum = (s: string): number | null => {
+    const t = s.replace(/[\s  ']/g, "");
+    const neg = /^\(.*\)$/.test(t) || /^-|-$|CR$/i.test(t);
+    let core = t.replace(/^\(|\)$|^-|-$|CR$|DR$|%$/gi, "").replace(/^[$€£¥₹]|[$€£¥₹]$/g, "").replace(/^(USD|EUR|GBP|CHF|KYD)|(USD|EUR|GBP|CHF|KYD)$/gi, "");
+    if (core.includes(",") && core.includes(".")) core = core.lastIndexOf(",") > core.lastIndexOf(".") ? core.replace(/\./g, "").replace(",", ".") : core.replace(/,/g, "");
+    else if (core.includes(",")) core = /,\d{1,2}$/.test(core) ? core.replace(",", ".") : core.replace(/,/g, "");
+    const v = Number(core);
+    if (!core || Number.isNaN(v)) return null;
+    return neg ? -v : v;
+  };
+  for (let i = header + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const f = typeof r[3] === "string" ? byName.get(r[3]) : undefined;
+    if (!f || !f.ocr) continue;
+    const page = typeof r[4] === "number" ? r[4] : Number(r[4]);
+    const value = typeof r[5] === "number" ? r[5] : null;
+    const pg = f.ocr.pages.find((p) => p.page === page);
+    let hit: OcrWord | undefined;
+    if (pg && value != null) {
+      hit = pg.words.find((w) => { const n = asNum(w.text); return n != null && Math.abs(Math.abs(n) - Math.abs(value)) < 0.005; });
+    }
+    if (hit) r.push(`${hit.engine}${f.ocr.backend ? ` · ${f.ocr.backend}` : ""}`, Math.round(hit.conf * 1000) / 10 + "%", hit.bbox.map((v) => Math.round(v)).join(", "));
+    else r.push(`${f.ocr.engine}${f.ocr.backend ? ` · ${f.ocr.backend}` : ""}`, pg?.status === "ocr" ? "value not located among the page's words — verify" : (pg ? `page ${pg.status}` : ""), "");
+  }
+  rows.push([]);
+  rows.push(["OCR DOCUMENTS — every figure from these was machine-read and must be verified against the scan"]);
+  rows.push(["Document", "Replaced scan", "Scan SHA-256", "Engine", "Cross-check", "Pages OCR'd", "Mean confidence", "Disputed readings", "Mode"]);
+  for (const f of byName.values()) {
+    const o = f.ocr!;
+    const confs = o.pages.filter((p) => typeof p.confMean === "number").map((p) => p.confMean as number);
+    const mean = confs.length ? Math.round((confs.reduce((a, b) => a + b, 0) / confs.length) * 1000) / 10 + "%" : "";
+    const disputed = o.pages.reduce((n, p) => n + (p.flags || []).filter((x) => x.level !== "info").length, 0);
+    rows.push([f.name, o.originalName || "", o.originalSha || "", o.backend || o.engine, o.verifyEngine || "none",
+               o.ocrPages.join(", "), mean, disputed, `${o.mode} · ${o.source} · ${o.at}`]);
+  }
 }
 
 const PROVENANCE_KIND: Record<string, string> = {

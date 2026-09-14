@@ -12,6 +12,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { migrate, pool, q } from "./db";
 import { readProxyConfig, registerAiProxy } from "./aiProxy";
+import { ocrHealth, readOcrConfig, registerOcrProxy } from "./ocrProxy";
 
 const PORT = Number(process.env.PORT || 8471);
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 25);
@@ -46,15 +47,19 @@ async function main() {
   });
 
   const aiCfg = readProxyConfig();
+  const ocrCfg = readOcrConfig();
 
   app.get("/api/health", async () => {
     const [{ now }] = await q<{ now: string }>("select now()");
     // aiProxy tells the browser whether a server-side key exists, so it can
     // choose the proxy over its own per-browser key. The key never leaves here.
-    return { ok: true, db: now, aiProxy: !!aiCfg.key, aiTokenRequired: !!aiCfg.token };
+    // ocr says whether the OCR service is up, so the app can route scans to
+    // it before processing rather than discovering its absence mid-run.
+    return { ok: true, db: now, aiProxy: !!aiCfg.key, aiTokenRequired: !!aiCfg.token, ocr: await ocrHealth(ocrCfg) };
   });
 
   registerAiProxy(app, aiCfg);
+  registerOcrProxy(app, ocrCfg);
 
   /* ---------------- workpapers ---------------- */
 
@@ -295,6 +300,7 @@ async function main() {
   await migrate(MIGRATIONS);
   await app.listen({ port: PORT, host: "0.0.0.0" });
   console.log(`5471 work-paper server on :${PORT}${DIST ? ` serving ${DIST}` : " (API only)"}`);
+  console.log(`OCR service: ${ocrCfg.url} (proxied at /api/ocr/*; set OCR_SERVICE_URL to change)`);
   console.log(
     aiCfg.key
       ? `AI proxy: ON (key held server-side, ${aiCfg.perMin}/min per IP${aiCfg.token ? ", token required" : ", NO token — rely on CORS_ORIGINS"})`

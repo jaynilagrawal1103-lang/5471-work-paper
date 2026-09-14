@@ -21,9 +21,15 @@ Work branch: `claude/reconciliation-fixes`.
   external scripts or stylesheets. It is committed as reviewed.
 - `src/`, `layer-src/` — sources. Some session fixes live in `dist/` only and
   are not yet ported back to `src/`. See `PROJECT-NOTES.md`.
-- `server/` — optional Fastify server plus an AI proxy. Not needed to run the app.
-- `scripts/` — build, bundle, and local-serve scripts.
-- `tests/` — plain `node` `.cjs` tests, one npm script each.
+- `server/` — optional Fastify server plus an AI proxy and the OCR proxy
+  (`/api/ocr/*` → `OCR_SERVICE_URL`). Not needed to run the app.
+- `ocr-service/` — Python OCR service (FastAPI, :8472): PaddleOCR 3.x primary
+  (PP-OCRv6/PP-OCRv5 native, or PP-OCRv5 via ONNX Runtime offline), Surya
+  second, Tesseract last. `python -m ocr_service`; pytest in `ocr-service/tests`.
+- `scripts/` — build, bundle, and local-serve scripts (`serve-local.mjs` also
+  proxies `/api/ocr/*`).
+- `tests/` — plain `node` `.cjs` tests, one npm script each; `tests/e2e/` holds
+  the Chromium end-to-end OCR run; `tests/fixtures/ocr/` the OCR PDFs.
 
 ## Commands
 
@@ -33,9 +39,15 @@ Work branch: `claude/reconciliation-fixes`.
   server, `start.sh`, `start.cmd`, `README.txt`. `dist-bundle/` is gitignored.
 - `npm run build` — intentionally a no-op that keeps the reviewed `dist/`. Use
   `build:full-DESTRUCTIVE` only after porting fixes to `src/`.
-- `npm run test:all` — the full test chain (54 suites, 1,344 assertions).
+- `npm run test:all` — the full test chain (56 suites, 1,367 assertions).
   Needs `npm i` first, and `npm run build:server` once (test:aikey reads
   `dist-server/server.cjs`).
+- `npm run start:ocr` (or `python -m ocr_service` inside `ocr-service/`) —
+  the OCR service; `npm run test:ocrservice` runs its pytest suite (needs the
+  Python deps from `ocr-service/requirements.txt`, and Tesseract for the
+  fallback engine). `npm run test:e2e-ocr` drives Chromium through
+  upload → detect → OCR → process → generate against `serve-local` + the
+  service; not part of `test:all`.
 
 Node 18 or newer. Verified on Node 22.
 
@@ -54,6 +66,19 @@ Node 18 or newer. Verified on Node 22.
   literal in dist; regenerate the dist literal from src rather than editing
   it by hand, escaping non-ASCII as uppercase `\uXXXX` as esbuild does.
 
+- OCR runs BEFORE processing, never after it. The layer probes every new PDF
+  page by page (`__WPACT.EN9_probePdf`), OCRs the scanned pages through the
+  service (in-browser Tesseract.js only when no service answers), replaces the
+  scan in intake (`EN9_replaceFile`, new file id, sidecar on `EntityFile.ocr`),
+  and `processEntity` awaits `globalThis.EN9OCRGATE.wait(id)` first. A failed
+  OCR releases the gate with the error: processing does not start on the
+  unread bytes, the original stays attached. The dist patches are the
+  `EN9OCR*` sentinels plus the `EN9RDPATH` block; the layer is re-injected
+  with `npm run inject:layer`.
+- OCR readings are never corrected in place. The primary engine's text is what
+  is booked; a second engine's reading, a grammar failure or low confidence
+  becomes a review item with the alternative as `suggestedValue`, and the
+  Provenance sheet cites engine, confidence and page position per figure.
 - `dist/index.html` stays committed and is the reviewed artifact; CI must not
   rebuild it.
 - `scripts/serve-local.mjs` resolves `dist/` either as a sibling (unzipped
@@ -82,6 +107,11 @@ line 6 is inferred from a booked wage when one person owns the corporation,
 a gate that fills a required cell can no longer be acknowledged or
 policy-overridden past, and an unparseable date of formation is flagged.
 
+On 2026-09-14 the OCR path was rebuilt around a PaddleOCR service with
+auto-detection at upload and a processing gate; see the 2026-09-14 section of
+`PROJECT-NOTES.md`. `test:all` is 56 suites / 1,367 assertions; the Python
+service has 25 pytest tests that run the engines loadable on the host.
+
 ## Rule catalogue upgrades
 
 Adding a group to `DEFAULT_RULES` is not enough. `upgradeRules` reaches a saved
@@ -100,9 +130,17 @@ cutting a release.
   anonymises its entity name; this one does not. The tests pin figures and
   indents, not those captions, so anonymising is safe — awaiting the owner's
   decision.
+- Native PaddleOCR weights (PP-OCRv6/v5, PP-StructureV3) download from a model
+  hoster on first use; this sandbox could reach none, so the real-engine tests
+  ran PP-OCRv5 through ONNX Runtime plus Tesseract 5.3.4, and the Surya
+  adapter was verified only as "installed, models absent → skipped". A host
+  with access (or a copied `~/.paddlex`) exercises the native path.
+- jsdom cannot run the bundled pdf.js text layer, so `test_ocr_workflow.cjs`
+  stubs the shipped reader's probe by file name; the real probe is covered by
+  the Chromium e2e only.
 - `dist/` and `src/` are not in parity; some fixes exist only in `dist/` (the
-  OCR engine, the tie-out/Schedule E helpers, the C35 answer from the prior
-  return's Item H boxes). See PROJECT-NOTES.md.
+  in-browser OCR engine lives in the layer, the tie-out/Schedule E helpers,
+  the C35 answer from the prior return's Item H boxes). See PROJECT-NOTES.md.
 - Schedule Q fills tested-income unit 1 only; a corporation with more than one
   tested unit needs the rest by hand.
 - The template formats Basic Information B17 as `mm-dd-yy`, so a correct date

@@ -87,8 +87,22 @@ FlateDecode) is kept for producers pdf.js rejects. It handles compressed object
 streams, text inside Form XObjects, and Identity-H CID fonts with no ToUnicode map
 (recovering characters by inverting the embedded TrueType `cmap` table).
 
-Scanned PDFs have no text layer; the tool reports that plainly and offers the
-in-browser OCR card (Tesseract.js, on Document intake) to build a searchable copy.
+Scanned PDFs have no text layer. Every uploaded PDF is probed page by page, and
+pages without text are OCR'd **before** the entity is processed: by the
+PaddleOCR service in `ocr-service/` when it is running (PP-OCRv6/PP-OCRv5 with a
+second engine cross-checking every figure; see `ocr-service/README.md`), or by
+Tesseract.js in the browser as the final fallback. The scan is replaced in intake
+by a searchable `… (OCR).pdf` copy carrying a sidecar of engine, confidence and
+position for every word; disputed readings become review exceptions and the
+Provenance sheet cites the engine for each OCR'd figure. The OCR card on Document
+intake still runs OCR by hand — on any file, on chosen pages, or over existing text.
+
+```bash
+cd ocr-service && python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt && python -m ocr_service   # :8472
+# then, in another terminal:
+npm run start:local      # proxies /api/ocr/* to the service (OCR_SERVICE_URL to change)
+```
 
 ### Review workflow
 
@@ -151,9 +165,10 @@ could exist for the same cell.
 **Judgment** — filer category, book-to-tax adjustments, E&P, Subpart F and GILTI,
 foreign tax credit, previously taxed E&P, functional currency determination.
 
-**Data the documents don't contain** — prior-year carryovers, and text in scanned
-images until you run them through the OCR card. (Fiscal / non-calendar year ends now
-get OFX daily rates over the actual period.)
+**Data the documents don't contain** — prior-year carryovers, and handwriting on
+scanned pages (printed text on scans is OCR'd automatically, but every OCR'd
+figure is a machine reading to be verified against the image). (Fiscal /
+non-calendar year ends now get OFX daily rates over the actual period.)
 
 `docs/5471-workpaper-user-guide.docx` covers the concepts, but **predates the current UI** (tab numbering and stage counts have changed) — the in-app copy is authoritative.
 

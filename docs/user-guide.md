@@ -27,8 +27,21 @@ Review & sign-off, and Settings.
 
 - Reads `.xlsx` `.xlsm` `.csv` `.tsv` `.txt` and text-layer PDFs.
 - **PDFs are parsed locally, in the browser** (pdf.js, bundled — no CDN, no
-  upload). Scanned PDFs have no text layer; the OCR card on Document intake
-  builds a searchable copy, also locally.
+  upload).
+- **Scanned pages are detected at upload and OCR'd before processing.** Every
+  PDF you add is probed page by page; pages without a text layer are read
+  automatically — by the PaddleOCR service when it is running beside the app
+  (`ocr-service/`, reached at `/api/ocr/*`), otherwise by Tesseract.js in the
+  browser — and **Process entity waits until the recognised text is in
+  place**. A mixed PDF is OCR'd only on the pages that need it. The scan is
+  replaced in intake by a searchable copy named `… (OCR).pdf`, its Read
+  status shows **text read (OCR)**, and the review lists the engine, the
+  pages and every reading the engines disputed — the primary engine's reading
+  is kept, the alternative is offered, nothing is corrected silently.
+- **Manual OCR** stays available on the OCR card of Document intake: pick an
+  attached file or one from disk, name the pages (`auto`, `all`, `2,4-6`),
+  and optionally re-read pages that already carry text. It uses the same
+  service and the same fallback as the automatic path.
 - A byte-identical re-upload of a document already attached to the entity is
   refused, because booking the same file twice would double every figure.
 - Re-processing an entity asks for confirmation when results already exist.
@@ -69,4 +82,8 @@ Generation is refused while:
 The generated workbook is your master template — all sheets, formulas, styling
 and hidden tabs preserved — plus a **Provenance** sheet listing every value the
 tool wrote (source document, rule or AI, confidence) and every exchange rate
-with its source and date.
+with its source and date. Figures read by OCR carry three more columns — the
+engine, its confidence and the position on the page the figure was read from
+— and an **OCR DOCUMENTS** section names each OCR'd file, the scan it
+replaced (with its SHA-256), the engines used and the number of disputed
+readings.
