@@ -11,9 +11,10 @@ required to use the app.
 
 This repository is `jaynilagrawal1103-lang/5471-work-paper`, the original. A
 mirror lives at `squadai90-dot/Linkedin-Post-Automation`; the two client
-reconciliations were carried out there and ported back here on 2026-09-12 as
-`claude/reconciliation-fixes` (10 commits on top of `main` at 24f1f25).
-Work branch: `claude/reconciliation-fixes`.
+reconciliations were carried out there and ported back here on 2026-09-12.
+All of that work, and the 2026-09-14 OCR rebuild, is now merged: `main` is at
+`b5d4d0c`. Work branch: `claude/inspiring-bardeen-k08w1q`, which as of
+2026-09-15 is level with `origin/main`.
 
 ## Layout
 
@@ -130,6 +131,17 @@ against the booted shipped bundle, not only against source.
 Bundle and single-file delivery verified: the unzipped bundle serves the full
 page on HTTP 200, and deep links fall back correctly.
 
+On 2026-09-15 the shipped single file was re-verified end to end for local
+delivery: `dist/index.html` (3,368,495 bytes) has zero external `src`/`href`
+URLs, `node scripts/serve-local.mjs <port>` returns HTTP 200 with the whole
+file at `/` and at an unknown deep path, and headless Chromium boots the page
+— all 16 workspace sections render (~16 KB of text) with no console errors.
+The page reports "Backend unreachable - working locally", which is the
+expected no-backend state, not a fault. Serving it over HTTP is what makes the
+in-page OCR service discovery reach `/api/ocr`; opening the file directly from
+disk also works, and then OCR falls back to the local 8472 probe or the
+in-browser engine.
+
 A second client reconciliation (SHORI CORPORATION 2024) on 2026-09-11 found
 three more defects and fixed them: QuickBooks group totals printed at the
 parent account's indent were booked as accounts, a sales return kept the sign
@@ -151,8 +163,10 @@ address). The owner then chose "OCR without installing anything", so
 PP-OCRv5 now also runs inside the browser through ONNX Runtime Web, and the
 offline build packs the engine into the page so a downloaded file OCRs with
 no network at all (see the 2026-09-14 follow-ups in `PROJECT-NOTES.md`).
-`test:all` is 58 suites / 1,378 assertions; the Python service 25. All of
-this is uncommitted at the owner's request, pending their word to commit.
+`test:all` is 58 suites / 1,378 assertions; the Python service 25. That work
+is committed and merged — it is `main` at `b5d4d0c`, not a pending branch.
+(These suite counts are carried over from the sessions that ran them; they were
+not re-run on 2026-09-15, which had no `node_modules` installed.)
 
 ## Rule catalogue upgrades
 
