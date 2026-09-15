@@ -39,7 +39,7 @@
     "test:stale": "node tests/test_stale_values.cjs",
     "test:boy": "node tests/test_boy_carryforward.cjs",
     "test:numfmt": "node tests/test_number_format.cjs",
-    "test:all": "npm run test:stale && npm run test:boy && npm run test:numfmt && npm run test:stacked && npm run test:profile && npm run test:swiss && npm run test:ocr && npm run test:readstatus && npm run test:intake && npm run test:spanish && npm run test:schedb && npm run test:item2d && npm run test:translate && npm run test:sections && npm run test:sanitize && npm run test:rulesparity && npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fxparity && npm run test:fx && npm run test:aiparity && npm run test:ai && npm run test:ids && npm run test:sheets && npm run test:boygrp && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:bridge && npm run test:boot && npm run test:fixture && npm run test:boating && npm run test:p2 && npm run test:questionnaire && npm run test:p5 && npm run test:shori && npm run test:ruleup && npm run test:schm && npm run test:mustanswer && npm run test:qbgroups && npm run test:peg && npm run test:gates && npm run test:ocrsrc && npm run test:ocrflow && npm run test:srcparity && npm run test:wired && npm run test:inject && npm run test:integrity && npm run test:guide",
+    "test:all": "npm run test:stale && npm run test:boy && npm run test:numfmt && npm run test:stacked && npm run test:profile && npm run test:swiss && npm run test:ocr && npm run test:readstatus && npm run test:intake && npm run test:spanish && npm run test:schedb && npm run test:item2d && npm run test:translate && npm run test:sections && npm run test:sanitize && npm run test:rulesparity && npm run test:rules && npm run test:detect && npm run test:spaces && npm run test:fxparity && npm run test:fx && npm run test:aiparity && npm run test:ai && npm run test:ids && npm run test:sheets && npm run test:boygrp && npm run test:gen && npm run test:groq && npm run test:tasks && npm run test:taskstore && npm run test:aikey && npm run test:tables && npm run test:schedc && npm run test:layer && npm run test:bridge && npm run test:boot && npm run test:fixture && npm run test:boating && npm run test:p2 && npm run test:questionnaire && npm run test:p5 && npm run test:shori && npm run test:ruleup && npm run test:schm && npm run test:mustanswer && npm run test:qbgroups && npm run test:peg && npm run test:gates && npm run test:ocrsrc && npm run test:ocrflow && npm run test:ocrbrowser && npm run test:srcparity && npm run test:wired && npm run test:inject && npm run test:integrity && npm run test:guide",
     "build:full-DESTRUCTIVE": "node scripts/build.mjs && node scripts/build-server.mjs && node scripts/inject-layer.mjs",
     "test:stacked": "node tests/test_stacked_form.cjs",
     "test:profile": "node tests/test_profile_boxed.cjs",
@@ -71,8 +71,12 @@
     "test:gates": "node tests/test_gates_prefill.cjs",
     "test:ocrsrc": "node tests/test_ocr_src.cjs",
     "test:ocrflow": "node tests/test_ocr_workflow.cjs",
-    "test:ocrservice": "python3 -m pytest -q ocr-service/tests",
+    "test:ocrservice": "cd ocr-service && python3 -m pytest -q tests",
     "test:e2e-ocr": "node tests/e2e/ocr_e2e.mjs",
+    "test:ocrbrowser": "node tests/test_ocr_browser.cjs",
+    "test:e2e-ocr-browser": "node tests/e2e/ocr_browser_e2e.mjs",
+    "test:e2e-ocr-offline": "node tests/e2e/ocr_browser_e2e.mjs --offline",
+    "build:standalone": "node scripts/build-standalone-ocr.mjs",
     "start:ocr": "python3 -m ocr_service"
   },
   "dependencies": {
@@ -92,6 +96,8 @@
     "esbuild": "^0.25.0",
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^24.0.0",
+    "onnxruntime-web": "^1.29.0",
+    "pdf-lib": "^1.17.1",
     "playwright-core": "^1.63.0",
     "typescript": "^5.6.0"
   },

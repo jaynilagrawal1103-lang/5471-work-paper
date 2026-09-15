@@ -30,10 +30,23 @@ Review & sign-off, and Settings.
   upload).
 - **Scanned pages are detected at upload and OCR'd before processing.** Every
   PDF you add is probed page by page; pages without a text layer are read
-  automatically — by the PaddleOCR service when it is running beside the app
-  (`ocr-service/`, reached at `/api/ocr/*`), otherwise by Tesseract.js in the
-  browser — and **Process entity waits until the recognised text is in
-  place**. A mixed PDF is OCR'd only on the pages that need it. The scan is
+  automatically — by the PaddleOCR service when one is running, otherwise by
+  **PaddleOCR (PP-OCRv5) running inside your browser** — and **Process entity
+  waits until the recognised text is in place**. Nothing needs installing for
+  the in-browser engine. In the **offline build** (`index.offline.html`, made
+  with `npm run build:standalone`) the engine and its models are packed into
+  the file itself: double-click it and OCR works with no internet at all. The
+  ordinary build downloads them once instead (about 36 MB, from
+  cdn.jsdelivr.net and github.com) and keeps them in the browser. Either way
+  the document never leaves your computer. A turned or skewed
+  scan is put upright and straightened before it is read. If that download is
+  blocked, Tesseract.js is the last resort and the sidecar says so. The service
+  is found on its own: the app's own server (`/api/ocr/*`) first, then
+  `http://127.0.0.1:8472` on this computer — so a page opened straight from
+  disk still finds a locally started `python -m ocr_service`. The OCR card
+  shows which engine will read; if the service runs elsewhere, type its
+  address in the card's **Service address** box and press **Check**; type
+  `off` to always read in the browser. A mixed PDF is OCR'd only on the pages that need it. The scan is
   replaced in intake by a searchable copy named `… (OCR).pdf`, its Read
   status shows **text read (OCR)**, and the review lists the engine, the
   pages and every reading the engines disputed — the primary engine's reading

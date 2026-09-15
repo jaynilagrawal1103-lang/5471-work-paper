@@ -995,3 +995,102 @@ trial-balance fixture (`table.pdf`) is OCR'd cleanly (63 tokens at 0.99) but
 books nothing, and its DIGITAL twin books nothing either: the classifier
 treats a bare four-column trial balance as `unknown`. That is a mapping
 question, deliberately untouched here; the e2e asserts the words instead.
+
+**Follow-up (same day): service discovery.** In use the OCR card read "OCR
+service not reachable (Failed to fetch)": the page had been opened from disk
+(or a static host), where the client's only address, same-origin `/api/ocr`,
+cannot exist, and there was no way to point it at a running service.
+`EN9OCR.service` now tries candidates in order and remembers the first that
+answers with an engine: the address typed on the card (localStorage
+`en9OcrUrl`) → `/api/ocr` (only on http/https pages) → `http://127.0.0.1:8472`
+→ `http://localhost:8472` → the page's own host on 8472. Posts go to the
+discovered base (`mode:"cors"`; the service already answers `*`). The card
+gained a **Service address** box with a **Check** button, `statusText()`
+words the offline state as a status with the next step ("No OCR service found
+(looked at …) … python -m ocr_service …"), never as an error, and the
+Settings card shows where the service was found and the addresses tried.
+Verified in Chromium from `file://`, from a bare static host (no `/api`) and
+from `serve-local`: all three find the service and OCR a scan through it.
+
+**Follow-up (same day): PaddleOCR inside the browser.** The owner could not
+install Python, so the single `index.html` now runs PP-OCRv5 itself:
+`EN9PPOCR` in the layer loads onnxruntime-web (`ort.wasm.min.js` +
+`ort-wasm-simd-threaded.wasm`, pinned `1.29.0`, cdn.jsdelivr.net; one thread,
+no proxy, so it works from `file://` without cross-origin isolation) and the
+`onnxocr` 3.1.0 wheel's det/rec/cls weights and dictionary from the OnnxOCR
+project's GitHub LFS store at commit `23b9798c` (`media.githubusercontent.com`,
+CORS `*`; the sha256 of each file is pinned in the layer and matches the
+wheel). The files (~22 MB models + ~14 MB runtime) are fetched once, with
+progress on the job line, and kept in IndexedDB `en9-ocr-models` (the host
+sends `max-age=300`, so the HTTP cache alone would re-download). The pipeline
+mirrors onnxocr without OpenCV: DetResizeForTest (max side 960, multiple of
+32, BGR ImageNet normalisation) → DB post-processing (threshold 0.3,
+8-connected regions, convex hull + rotating-calipers minimum-area rectangle,
+box score as the mean probability inside the quad, unclip 1.5 as a plain
+rectangle offset — exact for quads — box threshold 0.6) → clockwise ordering,
+clipping, PaddleOCR's `sorted_boxes` → each line straightened by an affine
+canvas transform (`get_rotate_crop_image`, turned when h/w ≥ 1.5) → the cls
+model (3×48×192, 0/180 at 0.9) → recognition in batches of six sorted by
+aspect ratio (height 48, width from the batch's widest ratio, min 320) →
+CTC decode over `blank + dict + space`, drop score 0.5 → lines split into
+words proportionally, as the service does. Page-level corrections the
+service made with OpenCV are done with detection results instead: most
+lines tall → the page is on its side, the cls vote on a sample decides
+which way, the page is turned and re-detected; the median angle of wide
+lines ≥ 0.5° → the page is rotated by that angle and re-detected; a majority
+of 180° lines → the whole page is turned. `en9OcrRun` embeds the corrected
+image in the copy and `buildPdf` now embeds Helvetica and shrinks each word
+to its box width, because a long caption drawn at box height ran into the
+next word's box and the extractor read "Trade notes and accounts receivable"
+as one token (21,250.66 went unbooked until then). The sidecar names
+`paddle` / "PP-OCRv5 via ONNX Runtime Web (in this browser)" (or
+`tesseract.js` with the load failure as the reason) and carries the
+service's grammar flags ported to JS: `suspicious-glyph` with the corrected
+alternative, `numeric-grammar`, `low-confidence`. Typing `off` as the
+service address skips discovery. `tests/test_ocr_browser.cjs` (8, in
+`test:all`) covers the geometry, the flags, the naming and the switch on the
+shipped bundle; `tests/e2e/ocr_browser_e2e.mjs` (89, `npm run
+test:e2e-ocr-browser`) opens `dist/index.html` from `file://` in Chromium
+with the CDN and GitHub answered from local files, and drives all six
+fixtures upload → OCR in the browser → Process (waits) → mapping → generated
+Provenance: every figure of the scanned, mixed and multi-page fixtures
+booked, table words exact, the difficult scan upright and straightened with
+both key figures booked, the models downloaded exactly once. Per page ~3–6 s
+headless here. `onnxruntime-web` and `pdf-lib` became devDependencies (the
+test serves them); pdf.js 3.11.174 for the fallback path is unpacked into
+`.cache/` by hand (the app itself depends on pdfjs-dist 4.x — do not install
+3.x into node_modules), and the model files are cached in `.cache/ppocrv5/`
+(gitignored, downloaded by the e2e when absent).
+
+**Follow-up (same day): the offline build.** Downloading 36 MB on first use is
+still a dependency on a network that a corporate machine may block, so
+`npm run build:standalone` (`scripts/build-standalone-ocr.mjs`) writes
+`dist/index.offline.html`: `dist/index.html` plus one `<script
+id="en9-ocr-assets">` of gzipped base64 holding onnxruntime-web's loader,
+its `.wasm` and its `.mjs` glue, pdf-lib, and the four PP-OCRv5 files. The
+weights are float32, which gzip barely dents interleaved — every fourth byte
+is a high-entropy mantissa — so the three `.onnx` files are stored byte-plane
+by byte-plane and woven back by `EN9OCRASSET.weave`; that alone takes the
+page from 32.4 to 31.0 MiB. 35.0 MB of engine packs to 27.8 MB. The build
+verifies each
+model against the sha256 the layer pins and refuses on a mismatch. In the
+layer `EN9OCRASSET` unpacks with `DecompressionStream("gzip")`; `EN9PPOCR`
+and `realIO.loadEngines` ask it first and fall back to the network when the
+block is absent, so `dist/index.html` behaves exactly as before. Two details
+matter for a `file://` page: the runtime's binary goes in through
+`ort.env.wasm.wasmBinary` rather than a fetch, and its `.mjs` glue through a
+**data:** URL — a `blob:` URL cannot be imported from an opaque origin.
+pdf.js is deliberately NOT packed: the app already bundles it with the worker
+inlined on the main thread, so that CDN branch was already dead code.
+Quantising the models to int8 was tried first and rejected: 16.2 MB → 4.3 MB,
+but whole lines disappeared and `61,139.37` came back as `61, 139.37`.
+`tests/e2e/ocr_browser_e2e.mjs --offline` (`npm run test:e2e-ocr-offline`)
+runs the six fixtures against the standalone file with **every** non-`file:`
+request aborted — 91 assertions, including a plain double-click with nothing
+configured (no service address, no store, no internet) that OCRs a scan at
+0.98 confidence, and an assertion that not one network request was made.
+`test:ocrbrowser` grew to 11 (packed-asset accessors, the gzip path lent
+Node's `DecompressionStream`, the honest error where a browser has none).
+`dist/index.offline.html` is gitignored — it is a build artifact, not the
+reviewed one. Also fixed: `npm run test:ocrservice` only worked from inside
+`ocr-service/`; it now cds there first.

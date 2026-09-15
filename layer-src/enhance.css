@@ -136,7 +136,12 @@ main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scrol
 .en9-os-foot{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:12px;max-width:84ch}
 @media (max-width:760px){.en9-os-2col{grid-template-columns:1fr}.en9-os-row{grid-template-columns:1fr}}
 .en9-ocr-src{min-width:260px;max-width:100%}
-.en9-ocr-engine{font-size:12px;color:#0f5132;background:#ecfdf3;border:1px solid #b7e4c7;border-radius:8px;padding:6px 10px;margin:0 0 10px;max-width:78ch}
+.en9-ocr-engine{font-size:12px;color:#0f5132;background:#ecfdf3;border:1px solid #b7e4c7;border-radius:8px;padding:6px 10px;margin:0 0 6px;max-width:78ch}
+.en9-ocr-engine.offline{color:#334155;background:#f8fafc;border-color:#cbd5e1}
+.en9-ocr-url{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:#475569;margin:0 0 10px}
+.en9-ocr-url label{display:flex;align-items:center;gap:6px}
+.en9-ocr-url input{width:300px;max-width:100%;font-size:12px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px}
+.en9-ocr-check{padding:4px 10px;font-size:12px}
 .en9-ocr-pages{font-size:12px;color:#475569;display:flex;align-items:center;gap:6px}
 .en9-ocr-pages input{width:220px;font-size:12px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px}
 .en9-ocr-force{display:block;font-size:12px;color:#475569;margin-top:8px}

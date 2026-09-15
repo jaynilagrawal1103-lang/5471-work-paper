@@ -1303,7 +1303,12 @@ main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scrol
 .en9-os-foot{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:12px;max-width:84ch}
 @media (max-width:760px){.en9-os-2col{grid-template-columns:1fr}.en9-os-row{grid-template-columns:1fr}}
 .en9-ocr-src{min-width:260px;max-width:100%}
-.en9-ocr-engine{font-size:12px;color:#0f5132;background:#ecfdf3;border:1px solid #b7e4c7;border-radius:8px;padding:6px 10px;margin:0 0 10px;max-width:78ch}
+.en9-ocr-engine{font-size:12px;color:#0f5132;background:#ecfdf3;border:1px solid #b7e4c7;border-radius:8px;padding:6px 10px;margin:0 0 6px;max-width:78ch}
+.en9-ocr-engine.offline{color:#334155;background:#f8fafc;border-color:#cbd5e1}
+.en9-ocr-url{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:#475569;margin:0 0 10px}
+.en9-ocr-url label{display:flex;align-items:center;gap:6px}
+.en9-ocr-url input{width:300px;max-width:100%;font-size:12px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px}
+.en9-ocr-check{padding:4px 10px;font-size:12px}
 .en9-ocr-pages{font-size:12px;color:#475569;display:flex;align-items:center;gap:6px}
 .en9-ocr-pages input{width:220px;font-size:12px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px}
 .en9-ocr-force{display:block;font-size:12px;color:#475569;margin-top:8px}
@@ -2175,36 +2180,119 @@ function en9OcrFriendly(e){ var m=String(e&&e.message||e||"");
   if(/Failed to construct 'Worker'|blob-request|cannot be accessed from origin|Worker is not defined/i.test(m))
     return "This preview sandbox blocks background workers, so the in-browser OCR engine cannot start here. It runs normally on your deployed site or when the file is opened directly in a browser.";
   if(/Could not download/i.test(m))
-    return m+" — check your network or ad-blocker; the in-browser engine loads from cdn.jsdelivr.net on first use.";
+    return m+" — check your network or ad-blocker; the in-browser engine loads its runtime from cdn.jsdelivr.net and its models from github.com on first use.";
   return m; }
 try{ window.__EN9OCR=EN9OCR; window.__en9OcrRun=function(){ return en9OcrRun.apply(null,arguments); }; }catch(e){}
-function en9LoadScript(u){ return new Promise(function(res,rej){
-  var sc=document.createElement("script"); sc.src=u; sc.async=true;
-  sc.onload=function(){res()}; sc.onerror=function(){rej(new Error("Could not download "+u))};
+
+/* ---- assets built into this file ----
+   The offline build (npm run build:standalone) packs the OCR runtime, the
+   PDF writer and the PP-OCRv5 weights into the page as gzipped base64, so a
+   downloaded index.html reads scans with no network at all. Without that
+   block every accessor reports "not here" and the code downloads as before. */
+var EN9OCRASSET={
+  has:function(name){ try{ var A=window.EN9OCRASSETS; return !!(A&&A.files&&A.files[name]); }catch(e){ return false; } },
+  /* Model weights are float32, whose four bytes compress far better apart
+     than interleaved, so the build stores them byte-plane by byte-plane.
+     This puts the bytes back in their original order. */
+  weave:function(a,s){ var n=a.length, m=Math.floor(n/s), body=m*s, out=new Uint8Array(n), pos=0, k, i;
+    for(k=0;k<s;k++){ for(i=0;i<m;i++) out[i*s+k]=a[pos+i]; pos+=m; }
+    for(i=body;i<n;i++) out[i]=a[i];
+    return out; },
+  raw:function(name){ var A=window.EN9OCRASSETS, b64=A.files[name], bin=atob(b64), arr=new Uint8Array(bin.length), self=this;
+    for(var i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+    var s=(A.tr&&A.tr[name])||0;
+    if(!A.gz) return Promise.resolve(s?self.weave(arr,s):arr);
+    if(typeof DecompressionStream==="undefined") return Promise.reject(new Error("this browser cannot unpack the built-in OCR engine (no DecompressionStream)"));
+    return new Response(new Blob([arr]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer()
+      .then(function(b){ var u=new Uint8Array(b); return s?self.weave(u,s):u; }); },
+  bytes:function(name){ return this.raw(name).then(function(a){ return a.buffer; }); },
+  text:function(name){ return this.raw(name).then(function(a){ return new TextDecoder("utf-8").decode(a); }); },
+  /* data: URLs import and execute from a file:// page; blob: URLs do not */
+  dataUrl:function(name,type){ return this.raw(name).then(function(a){ var s="", C=0x8000;
+    for(var i=0;i<a.length;i+=C) s+=String.fromCharCode.apply(null,a.subarray(i,i+C));
+    return "data:"+(type||"application/octet-stream")+";base64,"+btoa(s); }); }
+};
+try{ window.EN9OCRASSET=EN9OCRASSET; }catch(e){}
+
+/* A script from the page's own assets when it carries one, else from the CDN. */
+function en9RunScript(src,inline){ return new Promise(function(res,rej){
+  var sc=document.createElement("script");
+  if(inline!=null){ sc.textContent=inline; document.head.appendChild(sc); res(); return; }
+  sc.src=src; sc.async=true;
+  sc.onload=function(){res()}; sc.onerror=function(){rej(new Error("Could not download "+src))};
   document.head.appendChild(sc); }); }
+function en9LoadScript(u,asset){
+  if(asset&&EN9OCRASSET.has(asset)) return EN9OCRASSET.text(asset).then(function(js){ return en9RunScript(null,js); });
+  return en9RunScript(u,null); }
 
 /* ---- the OCR service (PaddleOCR primary) ---- */
 EN9OCR.service={
-  base:function(){ try{ var u=localStorage.getItem("en9OcrUrl"); if(u) return u.replace(/\/+$/,""); }catch(e){} return "/api/ocr"; },
+  /* Where the service may be. The page is often opened straight from disk
+     or from a static host, where a same-origin /api/ocr cannot exist; the
+     service itself listens on 8472 and answers cross-origin, so a local
+     instance is tried directly. A URL the user typed (kept in localStorage)
+     is always tried first. */
+  DEFAULT_PORT:8472,
+  userUrl:function(){ try{ var u=localStorage.getItem("en9OcrUrl"); return u?u.replace(/\/+$/,""):""; }catch(e){ return ""; } },
+  setUserUrl:function(u){ u=String(u||"").trim().replace(/\/+$/,""); if(/^(off|none|browser)$/i.test(u)) u="off"; else if(u&&!/^https?:\/\//i.test(u)) u="http://"+u;
+    try{ if(u) localStorage.setItem("en9OcrUrl",u); else localStorage.removeItem("en9OcrUrl"); }catch(e){}
+    this._base=null; this._health=null; this._healthAt=0; return u; },
+  /* "off" typed as the address: never look for a service, read in this browser */
+  off:function(){ return /^(off|none|browser)$/i.test(this.userUrl()); },
+  candidates:function(){ var out=[], u=this.userUrl(); if(this.off()) return out; if(u) out.push(u);
+    var proto="", host=""; try{ proto=location.protocol; host=location.hostname; }catch(e){}
+    if(proto==="http:"||proto==="https:") out.push("/api/ocr");
+    var lp="http://127.0.0.1:"+this.DEFAULT_PORT, ll="http://localhost:"+this.DEFAULT_PORT;
+    /* a page served from localhost:NNNN reaches its own machine's service either way */
+    if(out.indexOf(lp)<0) out.push(lp); if(out.indexOf(ll)<0) out.push(ll);
+    /* the page's own host on the service port: the app and the service on one LAN box */
+    if(host&&host!=="localhost"&&host!=="127.0.0.1"&&proto!=="file:"){ var hp=proto+"//"+host+":"+this.DEFAULT_PORT; if(out.indexOf(hp)<0) out.push(hp); }
+    return out; },
+  /* the address that last answered; /api/ocr until something is known */
+  _base:null,
+  base:function(){ return this._base||(this.off()?"":this.userUrl())||"/api/ocr"; },
   _health:null, _healthAt:0,
-  /* Cached for a minute: the intake watcher asks on every state change. */
-  health:function(force){ var self=this, now=Date.now();
-    if(!force&&self._health&&now-self._healthAt<60000) return Promise.resolve(self._health);
-    var ctl=typeof AbortController!=="undefined"?new AbortController():null;
-    if(ctl) setTimeout(function(){try{ctl.abort()}catch(e){}},5000);
+  _probe:function(base){ var ctl=typeof AbortController!=="undefined"?new AbortController():null;
+    if(ctl) setTimeout(function(){try{ctl.abort()}catch(e){}},4000);
     /* fetch may be missing or throw synchronously (a test DOM, a file:// page);
        that is "not reachable", never an exception out of the intake watcher */
-    return Promise.resolve().then(function(){ return fetch(self.base()+"/health",{signal:ctl&&ctl.signal,cache:"no-store"}); })
+    return Promise.resolve().then(function(){ return fetch(base+"/health",{signal:ctl&&ctl.signal,cache:"no-store",mode:"cors"}); })
       .then(function(r){ return r.json().catch(function(){return {};}).then(function(j){ j.reachable=r.ok&&j.reachable!==false; return j; }); })
       .catch(function(e){ return {reachable:false, ok:false, error:String(e&&e.message||e)}; })
-      .then(function(j){ j.available=!!(j.reachable&&j.ok&&j.primary); self._health=j; self._healthAt=Date.now(); return j; }); },
+      .then(function(j){ j.available=!!(j.reachable&&j.ok&&j.primary); j.base=base; return j; }); },
+  /* Cached for a minute: the intake watcher asks on every state change.
+     Each candidate is asked in turn; the first that answers with an engine
+     wins and is remembered for the posts. */
+  health:function(force){ var self=this, now=Date.now();
+    if(!force&&self._health&&now-self._healthAt<60000) return Promise.resolve(self._health);
+    var list=self.candidates(), tried=[];
+    function next(i){ if(i>=list.length){
+        var h={reachable:false, ok:false, available:false, tried:tried.slice(),
+          error:tried.length?tried.map(function(t){ return t.base+": "+t.error; }).join("; "):"no address to try"};
+        self._base=null; self._health=h; self._healthAt=Date.now(); return h; }
+      return self._probe(list[i]).then(function(j){
+        if(j.available){ self._base=j.base; j.tried=tried.slice(); self._health=j; self._healthAt=Date.now(); return j; }
+        tried.push({base:j.base, error:j.reachable?(j.error||"no engine loaded"):(j.error||"no answer")});
+        return next(i+1); }); }
+    return next(0); },
   describe:function(){ var h=this._health; if(!h||!h.available) return null;
     var eng=h.engines||{}, p=eng[h.primary]||{}; var chain=(h.chain||[]).map(function(n){ return n+(eng[n]&&eng[n].backend?" ("+eng[n].backend+")":""); });
-    return {primary:h.primary, backend:p.backend||"", chain:h.chain||[], text:chain.join(" → ")}; },
+    return {primary:h.primary, backend:p.backend||"", chain:h.chain||[], base:h.base||this.base(), text:chain.join(" → ")}; },
+  /* One line for the cards: never an error, always what to do next. */
+  statusText:function(){ var h=this._health, d=this.describe();
+    if(!h) return "Checking for the OCR service…";
+    if(d) return "OCR service online at "+(d.base==="/api/ocr"?"this server":d.base)+" — "+d.text+". Figures are cross-checked by the second engine; disagreements are flagged, never auto-corrected.";
+    var inBrowser=EN9OCRASSET.has("rec.onnx")
+      ? "PaddleOCR (PP-OCRv5) runs in this browser, and the engine and its models are built into this file — no download, no internet, nothing to install. The document never leaves this browser."
+      : "PaddleOCR (PP-OCRv5) runs in this browser: ONNX Runtime and the models (about 36 MB) download once from cdn.jsdelivr.net and github.com and are kept in this browser; the document itself never leaves it."
+      +(EN9OCR.browserEngine==="tesseract.js"?" (PaddleOCR could not be loaded here — "+(EN9OCR.browserReason||"")+" — so Tesseract.js is reading instead.)":"");
+    if(this.off()) return "OCR service turned off (address = off). "+inBrowser+" Clear the address and press Check to look for a service again.";
+    var where=(h.tried||[]).map(function(t){ return t.base==="/api/ocr"?"this server":t.base; }).join(", ")||this.base();
+    return "No OCR service found (looked at "+where+"). "+inBrowser+" A service reads faster and cross-checks every figure: start it with python -m ocr_service (in ocr-service/) on this computer, or enter its address below and press Check."; },
   post:function(path,blob,params,st){ var q=Object.keys(params||{}).filter(function(k){return params[k]!==undefined&&params[k]!==null&&params[k]!=="";})
       .map(function(k){return encodeURIComponent(k)+"="+encodeURIComponent(params[k]);}).join("&");
     var self=this;
-    return Promise.resolve().then(function(){ return fetch(self.base()+path+(q?"?"+q:""),{method:"POST",headers:{"content-type":blob.type||"application/pdf"},body:blob}); })
+    return Promise.resolve().then(function(){ return fetch(self.base()+path+(q?"?"+q:""),{method:"POST",mode:"cors",headers:{"content-type":blob.type||"application/pdf"},body:blob}); })
       .then(function(r){ return r.text().then(function(t){ var j={}; try{ j=JSON.parse(t); }catch(e){ j={error:t.slice(0,200)}; }
         if(!r.ok) throw new Error(j.error||j.detail&&(j.detail.error||JSON.stringify(j.detail))||("OCR service answered "+r.status)); return j; }); }); },
   detect:function(blob){ return this.post("/detect",blob,{},null); },
@@ -2212,17 +2300,259 @@ EN9OCR.service={
     return this.post("/ocr",blob,{pages:opts.pages||"auto",langs:opts.langs||"eng",force:opts.force?"1":"",filename:opts.name||"",verify:"1",structure:"1",pdf:"1"},st); }
 };
 
-/* ---- in-browser Tesseract.js: the final fallback ---- */
+/* ---- in-browser PaddleOCR: PP-OCRv5 through ONNX Runtime Web ----
+   The same PP-OCRv5 mobile models the Python service runs through ONNX
+   (the `onnxocr` wheel's det/rec/cls weights, fetched from the project's
+   GitHub LFS at a pinned commit and kept in IndexedDB), executed here by
+   onnxruntime-web (WebAssembly, one thread, no cross-origin isolation
+   needed). Detection is DB with the reference post-processing (threshold,
+   connected regions, minimum-area rectangle, unclip, box score), recognition
+   is CTC over the PP-OCRv5 dictionary, orientation of each line by the cls
+   model. Nothing leaves the browser: the runtime and the weights are
+   downloaded once, the document never is. Tesseract.js remains the last
+   resort when the runtime or the models cannot be fetched. */
+var EN9PPOCR={
+  ORT_VERSION:"1.29.0",
+  MODEL_COMMIT:"23b9798c261ea0a23ccf6823f1bf692e4bd4e98c",
+  MODEL_SHA:{det:"4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", rec:"5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5", cls:"f4bb53707100c5f3d59ba834eb05bb400369f20aed35d4b26807b1bfadd2a70e"},
+  params:{detSide:960, detThresh:0.3, boxThresh:0.6, unclip:1.5, minSize:3, recH:48, recW:320, recBatch:6, clsH:48, clsW:192, clsThresh:0.9, dropScore:0.5},
+  backend:"PP-OCRv5 via ONNX Runtime Web (in this browser)",
+  _ready:null, sessions:null, dict:null, error:null, status:null,
+  urls:function(){ var ort="https://cdn.jsdelivr.net/npm/onnxruntime-web@"+this.ORT_VERSION+"/dist/";
+    var models=""; try{ models=localStorage.getItem("en9OcrModelsUrl")||""; }catch(e){}
+    models=(models||"https://media.githubusercontent.com/media/jingsongliujing/OnnxOCR/"+this.MODEL_COMMIT+"/onnxocr/models/ppocrv5").replace(/\/+$/,"")+"/";
+    return {ortScript:ort+"ort.wasm.min.js", wasmPaths:ort, det:models+"det/det.onnx", rec:models+"rec/rec.onnx", cls:models+"cls/cls.onnx", dict:models+"ppocrv5_dict.txt"}; },
+  say:function(m){ try{ if(this.status) this.status(m); }catch(e){} },
+  /* ---- model store: IndexedDB, keyed by URL; silently absent where IndexedDB is ---- */
+  _db:function(){ return new Promise(function(res,rej){ try{ var r=indexedDB.open("en9-ocr-models",1);
+      r.onupgradeneeded=function(){ r.result.createObjectStore("files"); }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; r.onblocked=function(){ rej(new Error("blocked")); }; }catch(e){ rej(e); } }); },
+  _dbGet:function(key){ return this._db().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("files","readonly"), q=tx.objectStore("files").get(key);
+      q.onsuccess=function(){ res(q.result||null); }; q.onerror=function(){ rej(q.error); }; }).then(function(v){ db.close(); return v; },function(e){ db.close(); throw e; }); }).catch(function(){ return null; }); },
+  _dbPut:function(key,val){ return this._db().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("files","readwrite"); tx.objectStore("files").put(val,key);
+      tx.oncomplete=function(){ res(true); }; tx.onerror=function(){ rej(tx.error); }; }).then(function(v){ db.close(); return v; },function(e){ db.close(); throw e; }); }).catch(function(){ return false; }); },
+  /* Built into this file → no network, no store. Otherwise: this browser's
+     store, otherwise the download (once). */
+  fetchFile:async function(url,label,asset){ var self=this;
+    if(asset&&EN9OCRASSET.has(asset)){ self.say("Unpacking "+label+" (built into this file)…"); return await EN9OCRASSET.bytes(asset); }
+    var hit=await self._dbGet(url); if(hit&&hit.byteLength){ self.say(label+": from this browser's store ("+(hit.byteLength/1048576).toFixed(1)+" MB)."); return hit; }
+    self.say("Downloading "+label+"…");
+    var r=await fetch(url,{mode:"cors"}); if(!r||!r.ok) throw new Error("Could not download "+url+(r?" ("+r.status+")":""));
+    var buf;
+    if(r.body&&r.body.getReader){ var total=+(r.headers.get("content-length")||0), reader=r.body.getReader(), chunks=[], got=0, lastSaid=0;
+      for(;;){ var c=await reader.read(); if(c.done) break; chunks.push(c.value); got+=c.value.byteLength;
+        if(got-lastSaid>524288){ lastSaid=got; self.say("Downloading "+label+"… "+(got/1048576).toFixed(1)+(total?" of "+(total/1048576).toFixed(1):"")+" MB"); } }
+      buf=new Uint8Array(got); var off=0; chunks.forEach(function(ch){ buf.set(ch,off); off+=ch.byteLength; }); buf=buf.buffer; }
+    else buf=await r.arrayBuffer();
+    await self._dbPut(url,buf); return buf; },
+  /* ---- load runtime + models once ---- */
+  load:function(st){ var self=this; if(st) self.status=st; if(self._ready) return self._ready;
+    self._ready=(async function(){ var u=self.urls();
+      if(!window.ort){ self.say(EN9OCRASSET.has("ort.js")?"Starting the built-in OCR engine…":"Downloading ONNX Runtime (open source)…");
+        await en9LoadScript(u.ortScript,"ort.js"); }
+      var ort=window.ort; if(!ort||!ort.InferenceSession) throw new Error("ONNX Runtime did not load");
+      if(EN9OCRASSET.has("ort.wasm")){
+        /* the runtime's own two files, handed over without a fetch: the
+           binary as bytes, the loader as a data: URL because a file:// page
+           may import data: but not blob: */
+        ort.env.wasm.wasmBinary=await EN9OCRASSET.bytes("ort.wasm");
+        ort.env.wasm.wasmPaths={mjs:await EN9OCRASSET.dataUrl("ort.mjs","text/javascript")};
+      } else ort.env.wasm.wasmPaths=u.wasmPaths;
+      ort.env.wasm.numThreads=1; ort.env.wasm.proxy=false; try{ ort.env.logLevel="error"; }catch(e){}
+      var det=await self.fetchFile(u.det,"the PP-OCRv5 detection model","det.onnx");
+      var rec=await self.fetchFile(u.rec,"the PP-OCRv5 recognition model","rec.onnx");
+      var cls=await self.fetchFile(u.cls,"the PP-OCRv5 orientation model","cls.onnx");
+      var dictBuf=await self.fetchFile(u.dict,"the PP-OCRv5 dictionary","dict.txt");
+      var lines=new TextDecoder("utf-8").decode(dictBuf).split(/\r?\n/); if(lines.length&&lines[lines.length-1]==="") lines.pop();
+      self.dict=["blank"].concat(lines,[" "]);
+      self.say("Starting the OCR engine…");
+      var opt={executionProviders:["wasm"], graphOptimizationLevel:"all"};
+      self.sessions={det:await ort.InferenceSession.create(new Uint8Array(det),opt), rec:await ort.InferenceSession.create(new Uint8Array(rec),opt), cls:await ort.InferenceSession.create(new Uint8Array(cls),opt)};
+      self.error=null; return true; })();
+    self._ready.catch(function(e){ self.error=String(e&&e.message||e); self._ready=null; });
+    return self._ready; },
+  /* ---- geometry: the DB post-processing without OpenCV ---- */
+  hull:function(pts){ pts=pts.slice().sort(function(a,b){ return a[0]-b[0]||a[1]-b[1]; }); if(pts.length<3) return pts;
+    function cross(o,a,b){ return (a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]); }
+    var lo=[], up=[], i;
+    for(i=0;i<pts.length;i++){ while(lo.length>=2&&cross(lo[lo.length-2],lo[lo.length-1],pts[i])<=0) lo.pop(); lo.push(pts[i]); }
+    for(i=pts.length-1;i>=0;i--){ while(up.length>=2&&cross(up[up.length-2],up[up.length-1],pts[i])<=0) up.pop(); up.push(pts[i]); }
+    lo.pop(); up.pop(); return lo.concat(up); },
+  /* minimum-area rectangle of a point set: {cx,cy,w,h,angle} (angle in radians of the w axis) */
+  minAreaRect:function(pts){ var h=this.hull(pts); if(h.length===1) return {cx:h[0][0],cy:h[0][1],w:0,h:0,angle:0};
+    if(h.length===2){ var dx=h[1][0]-h[0][0], dy=h[1][1]-h[0][1]; return {cx:(h[0][0]+h[1][0])/2,cy:(h[0][1]+h[1][1])/2,w:Math.hypot(dx,dy),h:0,angle:Math.atan2(dy,dx)}; }
+    var best=null;
+    for(var i=0;i<h.length;i++){ var a=h[i], b=h[(i+1)%h.length], ex=b[0]-a[0], ey=b[1]-a[1], len=Math.hypot(ex,ey); if(!len) continue; ex/=len; ey/=len;
+      var minU=Infinity,maxU=-Infinity,minV=Infinity,maxV=-Infinity;
+      for(var j=0;j<h.length;j++){ var u=h[j][0]*ex+h[j][1]*ey, v=-h[j][0]*ey+h[j][1]*ex; if(u<minU)minU=u; if(u>maxU)maxU=u; if(v<minV)minV=v; if(v>maxV)maxV=v; }
+      var area=(maxU-minU)*(maxV-minV);
+      if(!best||area<best.area){ var cu=(minU+maxU)/2, cv=(minV+maxV)/2; best={area:area,w:maxU-minU,h:maxV-minV,angle:Math.atan2(ey,ex),cx:cu*ex-cv*ey,cy:cu*ey+cv*ex}; } }
+    return best; },
+  /* the four corners, ordered like PaddleOCR's get_mini_boxes: sorted by x, then top/bottom within each pair */
+  rectPoints:function(r,grow){ grow=grow||0; var hw=r.w/2+grow, hh=r.h/2+grow, c=Math.cos(r.angle), s=Math.sin(r.angle);
+    var p=[[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].map(function(q){ return [r.cx+q[0]*c-q[1]*s, r.cy+q[0]*s+q[1]*c]; });
+    p.sort(function(a,b){ return a[0]-b[0]; });
+    var i1=p[1][1]>p[0][1]?0:1, i4=p[1][1]>p[0][1]?1:0, i2=p[3][1]>p[2][1]?2:3, i3=p[3][1]>p[2][1]?3:2;
+    return [p[i1],p[i2],p[i3],p[i4]]; },
+  /* mean probability inside a quadrilateral (box_score_fast) */
+  boxScore:function(prob,W,H,quad){ var xs=quad.map(function(p){return p[0];}), ys=quad.map(function(p){return p[1];});
+    var xmin=Math.max(0,Math.floor(Math.min.apply(null,xs))), xmax=Math.min(W-1,Math.ceil(Math.max.apply(null,xs))), ymin=Math.max(0,Math.floor(Math.min.apply(null,ys))), ymax=Math.min(H-1,Math.ceil(Math.max.apply(null,ys)));
+    var sum=0, n=0;
+    for(var y=ymin;y<=ymax;y++) for(var x=xmin;x<=xmax;x++){ var inside=false;
+      for(var i=0,j=3;i<4;j=i++){ var xi=quad[i][0],yi=quad[i][1],xj=quad[j][0],yj=quad[j][1];
+        if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside; }
+      if(inside){ sum+=prob[y*W+x]; n++; } }
+    return n?sum/n:0; },
+  /* boxes from the probability map: [[x,y]×4] in map pixels, with scores */
+  boxesFromMap:function(prob,W,H){ var P=this.params, self=this, mask=new Uint8Array(W*H), i;
+    for(i=0;i<W*H;i++) mask[i]=prob[i]>P.detThresh?1:0;
+    var labels=new Int32Array(W*H), stack=new Int32Array(W*H), out=[], comp=0;
+    for(var start=0;start<W*H;start++){ if(!mask[start]||labels[start]) continue; comp++;
+      var sp=0, pts=[]; stack[sp++]=start; labels[start]=comp;
+      while(sp){ var idx=stack[--sp], x=idx%W, y=(idx-x)/W; pts.push([x,y]);
+        for(var dy=-1;dy<=1;dy++){ var yy=y+dy; if(yy<0||yy>=H) continue; for(var dx=-1;dx<=1;dx++){ var xx=x+dx; if(xx<0||xx>=W) continue; var k=yy*W+xx; if(mask[k]&&!labels[k]){ labels[k]=comp; stack[sp++]=k; } } } }
+      if(out.length>=1000) continue;
+      var r=self.minAreaRect(pts); if(Math.min(r.w,r.h)<P.minSize) continue;
+      var quad=self.rectPoints(r,0), score=self.boxScore(prob,W,H,quad); if(score<P.boxThresh) continue;
+      /* unclip: offset the rectangle by area·ratio/perimeter — for a rectangle
+         the rounded offset's minimum-area rectangle is the rectangle grown by
+         that distance on every side */
+      var per=2*(r.w+r.h), d=per?r.w*r.h*P.unclip/per:0;
+      if(Math.min(r.w,r.h)+2*d<P.minSize+2) continue;
+      out.push({quad:self.rectPoints(r,d), score:score}); }
+    return out; },
+  /* order clockwise from top-left, clip to the image, drop slivers, sort top-to-bottom then left-to-right */
+  tidyBoxes:function(boxes,W,H){ var out=[];
+    boxes.forEach(function(b){ var pts=b.quad.map(function(p){ return [Math.min(Math.max(Math.round(p[0]),0),W-1), Math.min(Math.max(Math.round(p[1]),0),H-1)]; });
+      var s=pts.map(function(p){return p[0]+p[1];}), df=pts.map(function(p){return p[1]-p[0];});
+      var iMin=s.indexOf(Math.min.apply(null,s)), iMax=s.indexOf(Math.max.apply(null,s)); var rest=pts.filter(function(_,i){return i!==iMin&&i!==iMax;});
+      var d0=rest[0][1]-rest[0][0], d1=rest[1][1]-rest[1][0]; var tr=d0<d1?rest[0]:rest[1], bl=d0<d1?rest[1]:rest[0];
+      var q=[pts[iMin],tr,pts[iMax],bl]; var w=Math.hypot(q[0][0]-q[1][0],q[0][1]-q[1][1]), h=Math.hypot(q[0][0]-q[3][0],q[0][1]-q[3][1]);
+      if(w<=3||h<=3) return; out.push({quad:q,score:b.score}); });
+    out.sort(function(a,b){ return a.quad[0][1]-b.quad[0][1]||a.quad[0][0]-b.quad[0][0]; });
+    for(var i=0;i<out.length-1;i++) for(var j=i;j>=0;j--){ if(Math.abs(out[j+1].quad[0][1]-out[j].quad[0][1])<10&&out[j+1].quad[0][0]<out[j].quad[0][0]){ var t=out[j]; out[j]=out[j+1]; out[j+1]=t; } else break; }
+    return out; },
+  /* ---- image plumbing ---- */
+  canvas:function(w,h){ var c=document.createElement("canvas"); c.width=Math.max(1,Math.round(w)); c.height=Math.max(1,Math.round(h)); return c; },
+  /* the text line straightened out of the page (get_rotate_crop_image): an affine map of the quad onto w×h, turned upright when tall */
+  crop:function(src,q){ var w=Math.round(Math.max(Math.hypot(q[0][0]-q[1][0],q[0][1]-q[1][1]),Math.hypot(q[2][0]-q[3][0],q[2][1]-q[3][1])));
+    var h=Math.round(Math.max(Math.hypot(q[0][0]-q[3][0],q[0][1]-q[3][1]),Math.hypot(q[1][0]-q[2][0],q[1][1]-q[2][1]))); if(w<1||h<1) return null;
+    var ux=q[1][0]-q[0][0], uy=q[1][1]-q[0][1], vx=q[3][0]-q[0][0], vy=q[3][1]-q[0][1], det=ux*vy-uy*vx; if(!det) return null;
+    /* M maps source→crop: M·u=(w,0), M·v=(0,h) */
+    var a=w*vy/det, c=-w*vx/det, b=-h*uy/det, d=h*ux/det, e=-(a*q[0][0]+c*q[0][1]), f=-(b*q[0][0]+d*q[0][1]);
+    var cv=this.canvas(w,h), ctx=cv.getContext("2d"); ctx.imageSmoothingEnabled=true; try{ ctx.imageSmoothingQuality="high"; }catch(x){}
+    ctx.setTransform(a,b,c,d,e,f); ctx.drawImage(src,0,0); ctx.setTransform(1,0,0,1,0,0);
+    if(h/w>=1.5){ var r=this.canvas(h,w), rc=r.getContext("2d"); rc.translate(0,w); rc.rotate(-Math.PI/2); rc.drawImage(cv,0,0); return r; }
+    return cv; },
+  rotate180:function(cv){ var r=this.canvas(cv.width,cv.height), rc=r.getContext("2d"); rc.translate(cv.width,cv.height); rc.rotate(Math.PI); rc.drawImage(cv,0,0); return r; },
+  /* a crop resized to height H and at most W wide, normalised ((x/255-0.5)/0.5, BGR) into `dst` at batch slot `slot`; returns the width used */
+  putNormalised:function(cv,H,W,dst,slot){ var ratio=cv.width/cv.height, rw=Math.min(W,Math.ceil(H*ratio)); var tmp=this.canvas(rw,H), tc=tmp.getContext("2d"); tc.imageSmoothingEnabled=true; tc.drawImage(cv,0,0,rw,H);
+    var d=tc.getImageData(0,0,rw,H).data, base=slot*3*H*W, plane=H*W;
+    for(var y=0;y<H;y++) for(var x=0;x<rw;x++){ var i=(y*rw+x)*4, o=base+y*W+x; dst[o]=d[i+2]/127.5-1; dst[o+plane]=d[i+1]/127.5-1; dst[o+2*plane]=d[i]/127.5-1; }
+    return rw; },
+  /* ---- the three models ---- */
+  detect:async function(src){ var P=this.params, ort=window.ort, W0=src.width, H0=src.height;
+    var ratio=Math.max(W0,H0)>P.detSide?P.detSide/Math.max(W0,H0):1;
+    var rw=Math.max(32,Math.round(W0*ratio/32)*32), rh=Math.max(32,Math.round(H0*ratio/32)*32);
+    var cv=this.canvas(rw,rh), ctx=cv.getContext("2d"); ctx.imageSmoothingEnabled=true; try{ ctx.imageSmoothingQuality="high"; }catch(x){} ctx.drawImage(src,0,0,rw,rh);
+    var d=ctx.getImageData(0,0,rw,rh).data, n=rw*rh, t=new Float32Array(3*n);
+    /* NormalizeImage mean/std as PaddleOCR applies them to a BGR array */
+    for(var i=0;i<n;i++){ var j=i*4; t[i]=(d[j+2]/255-0.485)/0.229; t[i+n]=(d[j+1]/255-0.456)/0.224; t[i+2*n]=(d[j]/255-0.406)/0.225; }
+    var out=await this.sessions.det.run({x:new ort.Tensor("float32",t,[1,3,rh,rw])});
+    var prob=out[Object.keys(out)[0]].data;
+    var boxes=this.boxesFromMap(prob,rw,rh).map(function(b){ return {quad:b.quad.map(function(p){ return [p[0]/rw*W0, p[1]/rh*H0]; }), score:b.score}; });
+    return this.tidyBoxes(boxes,W0,H0); },
+  classify:async function(crops){ var P=this.params, ort=window.ort, out=new Array(crops.length), self=this;
+    for(var s=0;s<crops.length;s+=P.recBatch){ var batch=crops.slice(s,s+P.recBatch), t=new Float32Array(batch.length*3*P.clsH*P.clsW);
+      batch.forEach(function(cv,k){ self.putNormalised(cv,P.clsH,P.clsW,t,k); });
+      var r=await self.sessions.cls.run({x:new ort.Tensor("float32",t,[batch.length,3,P.clsH,P.clsW])}); var p=r[Object.keys(r)[0]].data;
+      for(var k=0;k<batch.length;k++){ var p0=p[k*2], p1=p[k*2+1]; out[s+k]=(p1>p0&&p1>=P.clsThresh)?180:0; } }
+    return out; },
+  recognise:async function(crops){ var P=this.params, ort=window.ort, self=this, res=new Array(crops.length);
+    var order=crops.map(function(c,i){ return i; }).sort(function(a,b){ return crops[a].width/crops[a].height-crops[b].width/crops[b].height; });
+    for(var s=0;s<order.length;s+=P.recBatch){ var idx=order.slice(s,s+P.recBatch), maxRatio=P.recW/P.recH;
+      idx.forEach(function(i){ maxRatio=Math.max(maxRatio,crops[i].width/crops[i].height); });
+      var W=Math.floor(P.recH*maxRatio), t=new Float32Array(idx.length*3*P.recH*W);
+      idx.forEach(function(i,k){ self.putNormalised(crops[i],P.recH,W,t,k); });
+      var r=await self.sessions.rec.run({x:new ort.Tensor("float32",t,[idx.length,3,P.recH,W])}); var o=r[Object.keys(r)[0]], data=o.data, T=o.dims[1], C=o.dims[2];
+      for(var k=0;k<idx.length;k++){ var text="", confs=[], prev=-1;
+        for(var ti=0;ti<T;ti++){ var base=(k*T+ti)*C, bi=0, bv=data[base];
+          for(var ci=1;ci<C;ci++){ var v=data[base+ci]; if(v>bv){ bv=v; bi=ci; } }
+          if(bi!==0&&bi!==prev){ text+=self.dict[bi]||""; confs.push(bv); } prev=bi; }
+        res[idx[k]]={text:text, conf:confs.length?confs.reduce(function(a,b){return a+b;},0)/confs.length:0}; }
+      await new Promise(function(r2){ setTimeout(r2,0); }); }
+    return res; },
+  /* the page turned by `deg` (clockwise, canvas convention) about its centre; ±90 swaps the sides, small angles keep them */
+  rotateCanvas:function(src,deg){ var quarter=Math.abs(Math.abs(deg)-90)<1e-6, out=this.canvas(quarter?src.height:src.width,quarter?src.width:src.height), ctx=out.getContext("2d");
+    ctx.fillStyle="#fff"; ctx.fillRect(0,0,out.width,out.height); ctx.imageSmoothingEnabled=true; try{ ctx.imageSmoothingQuality="high"; }catch(x){}
+    ctx.translate(out.width/2,out.height/2); ctx.rotate(deg*Math.PI/180); ctx.drawImage(src,-src.width/2,-src.height/2); return out; },
+  /* ---- one page: canvas in → words in canvas pixels (Tesseract.js shape) ----
+     A turned page (most lines tall) is put upright and a skewed one (the
+     median line angle ≥ 0.5°) straightened before the lines are read, the
+     way the service does, so captions and their amounts share a baseline;
+     `page` then carries the corrected image for the searchable copy. */
+  page:async function(src){ var P=this.params, self=this, work=src, fix={};
+    await self.load();
+    self.say("Detecting text lines…");
+    var boxes=await self.detect(work); if(!boxes.length) return {words:[], lines:[], page:null};
+    function tall(b){ var q=b.quad; return Math.hypot(q[0][0]-q[3][0],q[0][1]-q[3][1])>=1.5*Math.hypot(q[0][0]-q[1][0],q[0][1]-q[1][1]); }
+    if(boxes.length>=3&&boxes.filter(tall).length>=0.6*boxes.length){
+      /* tall lines: the page is on its side. The crops come out turned
+         anticlockwise; the orientation model says whether that reads right
+         (page turned anticlockwise, so turn it clockwise) or upside down. */
+      var sample=boxes.filter(tall).slice(0,12).map(function(b){ return self.crop(work,b.quad); }).filter(Boolean);
+      var votes=await self.classify(sample), n180=votes.filter(function(a){return a===180;}).length;
+      fix.orientation=n180>votes.length/2?-90:90; self.say("Turning the page upright…");
+      work=self.rotateCanvas(work,fix.orientation); boxes=await self.detect(work); }
+    var angs=boxes.filter(function(b){ var q=b.quad; return Math.hypot(q[0][0]-q[1][0],q[0][1]-q[1][1])>=3*Math.hypot(q[0][0]-q[3][0],q[0][1]-q[3][1]); })
+      .map(function(b){ var q=b.quad; return Math.atan2(q[1][1]-q[0][1],q[1][0]-q[0][0])*180/Math.PI; }).sort(function(a,b){return a-b;});
+    if(angs.length>=3){ var med=angs[Math.floor(angs.length/2)];
+      if(Math.abs(med)>=0.5&&Math.abs(med)<=15){ fix.deskew=+med.toFixed(2); self.say("Straightening the page ("+fix.deskew+"°)…");
+        work=self.rotateCanvas(work,-med); boxes=await self.detect(work); } }
+    var crops=[], kept=[];
+    boxes.forEach(function(b){ var c=self.crop(work,b.quad); if(c){ crops.push(c); kept.push(b); } });
+    self.say("Checking the orientation of "+crops.length+" line(s)…");
+    var angles=await self.classify(crops);
+    if(crops.length>=3&&angles.filter(function(a){return a===180;}).length>crops.length/2){
+      /* the whole page is upside down: turn it, not every line */
+      fix.orientation=((fix.orientation||0)+180)%360; self.say("Turning the page the right way up…");
+      work=self.rotateCanvas(work,180); boxes=await self.detect(work); crops=[]; kept=[];
+      boxes.forEach(function(b){ var c=self.crop(work,b.quad); if(c){ crops.push(c); kept.push(b); } });
+      angles=await self.classify(crops); }
+    crops=crops.map(function(c,i){ return angles[i]===180?self.rotate180(c):c; });
+    self.say("Reading "+crops.length+" line(s)…");
+    var read=await self.recognise(crops), words=[], lines=[];
+    read.forEach(function(r,i){ if(!r||!r.text||r.conf<P.dropScore) return; var q=kept[i].quad;
+      var x0=Math.min(q[0][0],q[3][0]), x1=Math.max(q[1][0],q[2][0]), y0=Math.min(q[0][1],q[1][1]), y1=Math.max(q[2][1],q[3][1]);
+      lines.push({text:r.text, conf:r.conf, bbox:{x0:x0,y0:y0,x1:x1,y1:y1}, quad:q});
+      var toks=r.text.trim().split(/\s+/).filter(Boolean); if(!toks.length) return;
+      if(toks.length===1){ words.push({text:toks[0], bbox:{x0:x0,y0:y0,x1:x1,y1:y1}, confidence:r.conf*100}); return; }
+      var units=toks.reduce(function(a,t){return a+t.length;},0)+0.5*(toks.length-1), per=(x1-x0)/Math.max(units,1e-6), cur=x0;
+      toks.forEach(function(t){ var w=t.length*per; words.push({text:t, bbox:{x0:cur,y0:y0,x1:cur+w,y1:y1}, confidence:r.conf*100}); cur+=w+0.5*per; }); });
+    return {words:words, lines:lines, page:work!==src?work:null, fix:fix}; }
+};
+try{ window.EN9PPOCR=EN9PPOCR; }catch(e){}
+
+/* ---- in-browser engines: PaddleOCR (above) first, Tesseract.js last ---- */
 EN9OCR.realIO={
+  /* pdf.js and pdf-lib always; then PaddleOCR in the browser, and only when
+     its runtime or models cannot be fetched, Tesseract.js. Which one is
+     loaded is recorded on EN9OCR.browserEngine for the sidecar. */
   loadEngines:function(st){
     var chain=Promise.resolve();
+    /* The app bundles pdf.js already (worker inlined, main thread), so the
+       renderer is normally here before OCR asks; the download is only for a
+       page that somehow lacks it. */
     if(!window.pdfjsLib){ st("Downloading PDF renderer…");
       chain=chain.then(function(){return en9LoadScript("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js")})
         .then(function(){ window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js"; }); }
-    if(!window.Tesseract){ chain=chain.then(function(){ st("Downloading Tesseract OCR engine (open source)…");
-      return en9LoadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"); }); }
-    if(!window.PDFLib){ chain=chain.then(function(){ st("Downloading PDF writer…");
-      return en9LoadScript("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"); }); }
+    if(!window.PDFLib){ chain=chain.then(function(){ st(EN9OCRASSET.has("pdflib.js")?"Starting the built-in PDF writer…":"Downloading PDF writer…");
+      return en9LoadScript("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js","pdflib.js"); }); }
+    chain=chain.then(function(){ if(EN9OCR.forceTesseract) throw new Error("Tesseract.js requested");
+      return EN9PPOCR.load(st).then(function(){ EN9OCR.browserEngine="ppocr"; }); })
+      .catch(function(e){ EN9OCR.browserEngine="tesseract.js"; EN9OCR.browserReason=String(e&&e.message||e);
+        try{ console.warn("[OCR] PaddleOCR in the browser unavailable: "+EN9OCR.browserReason); }catch(x){}
+        if(!window.Tesseract){ st("PaddleOCR could not be loaded in this browser ("+EN9OCR.browserReason+") — downloading Tesseract OCR engine (open source)…");
+          return en9LoadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"); } });
     return chain;
   },
   openPdf:function(buf){ return window.pdfjsLib.getDocument({data:buf}).promise; },
@@ -2231,15 +2561,20 @@ EN9OCR.realIO={
     var cv=document.createElement("canvas"); cv.width=Math.ceil(vp.width); cv.height=Math.ceil(vp.height);
     return page.render({canvasContext:cv.getContext("2d"),viewport:vp}).promise.then(function(){
       return {png:cv.toDataURL("image/png"), canvas:cv, scale:sc, w:v1.width, h:v1.height}; }); }); },
-  makeWorker:function(langs,st){ return window.Tesseract.createWorker(langs,1,{logger:function(m){
+  makeWorker:function(langs,st){
+    if(EN9OCR.browserEngine==="ppocr"){ EN9PPOCR.status=st; return Promise.resolve({ppocr:true, terminate:function(){}}); }
+    return window.Tesseract.createWorker(langs,1,{logger:function(m){
       if(m.status==="recognizing text") st("Reading text… "+Math.round((m.progress||0)*100)+"%"); }}); },
-  recognize:function(worker,pageimg){ return worker.recognize(pageimg.canvas).then(function(r){return r.data;}); },
+  recognize:function(worker,pageimg){
+    if(worker&&worker.ppocr) return EN9PPOCR.page(pageimg.canvas);
+    return worker.recognize(pageimg.canvas).then(function(r){return r.data;}); },
   /* pages: [{n, copy:true}] keep the original page (its text layer intact);
      [{n, png, w, h, words}] embed the image with an invisible text layer. */
   buildPdf:function(pages,srcBuf){ var PL=window.PDFLib;
     return PL.PDFDocument.create().then(function(doc){
       var srcP=srcBuf&&pages.some(function(p){return p.copy;})?PL.PDFDocument.load(srcBuf):Promise.resolve(null);
-      return srcP.then(function(src){
+      var fontP=doc.embedFont(PL.StandardFonts.Helvetica).catch(function(){ return null; });
+      return Promise.all([srcP,fontP]).then(function(got){ var src=got[0], font=got[1];
         return pages.reduce(function(p,pg){ return p.then(function(){
           if(pg.copy&&src) return doc.copyPages(src,[pg.n-1]).then(function(cp){ doc.addPage(cp[0]); });
           return doc.embedPng(pg.png).then(function(img){
@@ -2247,9 +2582,14 @@ EN9OCR.realIO={
             page.drawImage(img,{x:0,y:0,width:pg.w,height:pg.h});
             (pg.words||[]).forEach(function(wd){
               if(!wd.text||!wd.bbox) return;
-              var x=wd.bbox.x0/pg.scale, y1=wd.bbox.y1/pg.scale, hh=(wd.bbox.y1-wd.bbox.y0)/pg.scale;
+              var x=wd.bbox.x0/pg.scale, y1=wd.bbox.y1/pg.scale, hh=(wd.bbox.y1-wd.bbox.y0)/pg.scale, ww=(wd.bbox.x1-wd.bbox.x0)/pg.scale;
               var size=Math.max(4,Math.min(40,hh*0.92));
-              try{ page.drawText(wd.text,{x:x,y:pg.h-y1,size:size,opacity:0}); }catch(e){} });
+              /* sized to the box height, then shrunk to its width — a long
+                 caption must not run into the next word's box, or the text
+                 extractor reads the two as one */
+              if(font&&ww>0){ try{ var tw=font.widthOfTextAtSize(wd.text,size); if(tw>ww) size=Math.max(2.5,size*ww/tw); }catch(e){} }
+              var opts={x:x,y:pg.h-y1,size:size,opacity:0}; if(font) opts.font=font;
+              try{ page.drawText(wd.text,opts); }catch(e){ try{ page.drawText(wd.text.replace(/[^\x20-\x7e]/g,"?"),opts); }catch(e2){} } });
           }); }); }, Promise.resolve()).then(function(){ return doc.save(); });
       });
     }); }
@@ -2275,17 +2615,36 @@ function EN9ocrSidecarFromService(resp,mode){ var d=resp.doc||{}, pages=resp.pag
 function EN9ocrLooksNumeric(t){ t=String(t||"").trim(); if(!/\d/.test(t)) return false; if(/^\d{1,2}[,.]$|^\d{4}[,.;:]?$/.test(t)) return false;
   var core=t.replace(/^\(?[-+−–]?\s?(?:[$€£¥₹]|USD|EUR|GBP|CHF|KYD)?\s?|\s?(?:%|USD|EUR|GBP|CHF|KYD|CR|DR)?\s?\)?[-+−–]?$/gi,"").trim();
   return !!core&&core.split(/\s+/).every(function(p){ return /^[\d()\[\],.\-+−–'OoIlSsB|]+$/.test(p); }); }
+/* The grammar checks the service applies, for the in-browser engines: a
+   well-formed amount (the grouping separator decides the decimal one), a
+   date, and a digit run with a letter OCR swaps for a digit. */
+var EN9ocrCUR="(?:[$€£¥₹]|USD|EUR|GBP|CHF|KYD|CAD|AUD|JPY|CNY|HKD|SGD|MXN|BRL|INR)";
+var EN9ocrAMOUNT=new RegExp("^\\(?[-+−–]?\\s?"+EN9ocrCUR+"?\\s?[-+−–]?\\s?(?:\\d{1,3}(?:,\\d{3})+(?:\\.\\d{1,4})?|\\d{1,3}(?:\\.\\d{3})+(?:,\\d{1,2})?|\\d{1,3}(?:[ \\u00a0\\u202f']\\d{3})+(?:[.,]\\d{1,2})?|\\d+(?:\\.\\d{1,4}|,\\d{1,2})?)\\s?(?:%|"+EN9ocrCUR+"|CR|DR)?\\s?\\)?[-+−–]?$","i");
+var EN9ocrDATE=/^(?:\d{1,2}[/.\-]\d{1,2}[/.\-](?:\d{2}|\d{4})|\d{4}[/.\-]\d{1,2}[/.\-]\d{1,2}|(?:\d{1,2}\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?,?\s+(?:\d{1,2},?\s+)?\d{2,4})$/i;
+var EN9ocrSWAPS={"O":"0","o":"0","I":"1","l":"1","|":"1","S":"5","s":"5","B":"8","Z":"2","z":"2"};
+function EN9ocrGlyphFix(t){ t=String(t||"").trim(); if(!/\d/.test(t)) return null; var f=t.replace(/[OoIl|SsBZz]/g,function(ch){ return EN9ocrSWAPS[ch]||ch; });
+  return f!==t&&EN9ocrAMOUNT.test(f)?f:null; }
+function EN9ocrLocalFlags(page,text,bb,c,eng){ var flags=[], t=String(text).trim();
+  if(!EN9ocrLooksNumeric(t)) return flags;
+  var fix=EN9ocrGlyphFix(t);
+  if(fix) flags.push({page:page,kind:"suspicious-glyph",level:"warn",text:t,bbox:bb,conf:c,engine:eng,message:"'"+t+"' mixes letters into a figure — probably '"+fix+"'. Verify against the scan.",alt:fix,alt_engine:"grammar",alt_conf:null});
+  else if(!EN9ocrAMOUNT.test(t)&&!EN9ocrDATE.test(t)) flags.push({page:page,kind:"numeric-grammar",level:"warn",text:t,bbox:bb,conf:c,engine:eng,message:"'"+t+"' is not a well-formed amount or date (separators or decimals do not add up) — verify against the scan.",alt:null,alt_engine:null,alt_conf:null});
+  if(c<0.9) flags.push({page:page,kind:"low-confidence",level:"warn",text:t,bbox:bb,conf:c,engine:eng,message:"'"+t+"' was read at "+Math.round(c*100)+"% confidence, below the 90% floor for figures — verify against the scan.",alt:null,alt_engine:null,alt_conf:null});
+  return flags; }
 function EN9ocrSidecarFromLocal(pages,targets,mode,langs){ var out=[];
+  var pp=EN9OCR.browserEngine==="ppocr", eng=pp?"paddle":"tesseract.js";
+  var backend=pp?EN9PPOCR.backend:"Tesseract.js 5 in this browser (fallback — "+(EN9OCR.browserReason?"PaddleOCR could not load: "+EN9OCR.browserReason:"no OCR service")+")";
   pages.forEach(function(pg){ if(pg.copy){ out.push({page:pg.n,status:"digital",engine:null,confMean:null,words:[],flags:[]}); return; }
     var words=[], confs=[], flags=[];
     (pg.words||[]).forEach(function(wd){ if(!wd.text||!wd.bbox) return; var c=(wd.confidence||0)/100; confs.push(c);
       var bb=[wd.bbox.x0/pg.scale,wd.bbox.y0/pg.scale,wd.bbox.x1/pg.scale,wd.bbox.y1/pg.scale];
-      words.push({text:wd.text,bbox:bb,conf:c,engine:"tesseract.js"});
-      if(EN9ocrLooksNumeric(wd.text)&&c<0.9) flags.push({page:pg.n,kind:"low-confidence",level:"warn",text:wd.text,bbox:bb,conf:c,engine:"tesseract.js",message:"'"+wd.text+"' was read at "+Math.round(c*100)+"% confidence, below the 90% floor for figures — verify against the scan.",alt:null,alt_engine:null,alt_conf:null}); });
+      words.push({text:wd.text,bbox:bb,conf:c,engine:eng});
+      flags.push.apply(flags,EN9ocrLocalFlags(pg.n,wd.text,bb,c,eng)); });
     var mean=confs.length?confs.reduce(function(a,b){return a+b;},0)/confs.length:null;
-    out.push({page:pg.n,status:words.length?"ocr":"failed",engine:"tesseract.js",confMean:mean,words:words,flags:words.length?flags:[{page:pg.n,kind:"page-failed",level:"block",text:"",bbox:[0,0,pg.w,pg.h],conf:0,engine:"tesseract.js",message:"Page "+pg.n+" could not be read by the in-browser engine. Nothing on it should be trusted without checking the scan.",alt:null,alt_engine:null,alt_conf:null}]}); });
-  return {engine:"tesseract.js", backend:"Tesseract.js 5 in this browser (fallback — OCR service not reachable)", verifyEngine:null, chain:["tesseract.js"], mode:mode, source:"browser",
+    out.push({page:pg.n,status:words.length?"ocr":"failed",engine:eng,confMean:mean,words:words,flags:words.length?flags:[{page:pg.n,kind:"page-failed",level:"block",text:"",bbox:[0,0,pg.w,pg.h],conf:0,engine:eng,message:"Page "+pg.n+" could not be read by the in-browser engine. Nothing on it should be trusted without checking the scan.",alt:null,alt_engine:null,alt_conf:null}]}); });
+  return {engine:eng, backend:backend, verifyEngine:null, chain:[eng], mode:mode, source:"browser",
     at:new Date().toISOString(), verdict:targets.length===pages.length?"scanned":"mixed", ocrPages:targets.slice(), pages:out, stats:{langs:langs}}; }
+EN9OCR.localFlags=EN9ocrLocalFlags; EN9OCR.sidecarFromLocal=EN9ocrSidecarFromLocal;
 
 /*EN9AUTOOCR-BEGIN*/
 /* A scan that the tool cannot read used to end the story: the file was
@@ -2449,7 +2808,7 @@ function EN9ocrRunAny(blob, entityId, opts, st) {
         return { file: f, sidecar: sc };
       });
     }
-    st("OCR service not reachable (" + (h.error || "no engine") + ") — falling back to Tesseract.js in this browser.");
+    st(EN9OCR.service.off() ? "OCR service turned off — reading with PaddleOCR in this browser." : "No OCR service found (" + (h.error || "no engine") + ") — reading with PaddleOCR in this browser instead.");
     return new Promise(function (resolve) {
       en9OcrRun(blob, entityId, opts.langs || "eng", st, function (res) { resolve(res); }, { pages: opts.pages, force: opts.force, mode: opts.mode, name: name });
     });
@@ -2488,7 +2847,11 @@ function en9OcrRun(file,entityId,langs,st,done,opts){
             return io.renderPage(pdf,n2).then(function(pg){
               st("Recognizing page "+n2+" of "+total+"…");
               return io.recognize(worker,pg).then(function(data){
-                pg.n=n2; pg.words=(data&&data.words)||[]; pg.canvas=null; pages.push(pg); }); }); });
+                pg.n=n2; pg.words=(data&&data.words)||[];
+                /* the engine turned or straightened the page: the copy shows
+                   that upright image, and the words are in its frame */
+                if(data&&data.page&&data.page.toDataURL){ pg.png=data.page.toDataURL("image/png"); pg.w=data.page.width/pg.scale; pg.h=data.page.height/pg.scale; pg.fix=data.fix||null; }
+                pg.canvas=null; pages.push(pg); }); }); });
         })(n);
         return chain.then(function(){ pages.sort(function(a,b){return a.n-b.n;}); return pages; });
       });
@@ -2547,11 +2910,23 @@ function enhanceOcrPanel(){
     var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); old.EN9_fillSrc&&old.EN9_fillSrc(); old.EN9_engine&&old.EN9_engine(); return; }
   var card=el("section","panel en9-ocr");
   card.appendChild(el("strong",null,"OCR a scanned PDF — automatic at upload, manual here"));
-  card.appendChild(el("p","en9-ocr-sub","Every PDF you add is checked for pages without a text layer. Those pages are read automatically — by the PaddleOCR service when it is running, otherwise by Tesseract.js in this browser — and “Process entity” waits until the recognised text is in place. With the in-browser engine the document never leaves this browser; with the service it goes only to your own server. Use this card to run OCR by hand: on a file the check did not catch, on specific pages, or again with another language. Every figure from an OCR’d document is flagged for verification against the original scan."));
+  card.appendChild(el("p","en9-ocr-sub","Every PDF you add is checked for pages without a text layer. Those pages are read automatically — by the PaddleOCR service when one is running, otherwise by PaddleOCR (PP-OCRv5) running inside this browser, with Tesseract.js as the last resort — and “Process entity” waits until the recognised text is in place. With the in-browser engines the document never leaves this browser; with the service it goes only to your own server. Use this card to run OCR by hand: on a file the check did not catch, on specific pages, or again with another language. Every figure from an OCR’d document is flagged for verification against the original scan."));
   var eng=el("div","en9-ocr-engine","Checking for the OCR service…"); card.appendChild(eng);
-  function showEngine(){ EN9OCR.service.health().then(function(h){ var d=EN9OCR.service.describe();
-    eng.textContent=d?"OCR service online — "+d.text+". Figures are cross-checked by the second engine; disagreements are flagged, never auto-corrected.":
-      "OCR service not reachable"+(h&&h.error?" ("+h.error+")":"")+" — Tesseract.js in this browser will be used (engine downloads from cdn.jsdelivr.net on first use; the document itself never leaves this browser). Start ocr-service/ for PaddleOCR."; }); }
+  /* where the service is: found automatically, or typed here */
+  var urow=el("div","en9-ocr-url");
+  var ul=el("label",null,"Service address "); var ui=document.createElement("input"); ui.type="text"; ui.setAttribute("data-en9","");
+  ui.placeholder="auto (this server, then http://127.0.0.1:"+EN9OCR.service.DEFAULT_PORT+") · off = read in this browser"; ui.value=EN9OCR.service.userUrl(); ul.appendChild(ui);
+  var ub=el("button","button en9-ocr-check","Check"); ub.type="button";
+  urow.appendChild(ul); urow.appendChild(ub); card.appendChild(urow);
+  var checking=false;
+  function showEngine(force){ if(checking&&!force) return;
+    checking=true; eng.className="en9-ocr-engine"; if(force) eng.textContent="Checking for the OCR service…";
+    EN9OCR.service.health(force).then(function(h){ checking=false;
+      eng.textContent=EN9OCR.service.statusText(); eng.className="en9-ocr-engine"+(h&&h.available?"":" offline");
+      try{ var hint=document.querySelector(".en9-ocrset"); if(hint&&hint.EN9_refresh) hint.EN9_refresh(); }catch(e){} },
+      function(){ checking=false; }); }
+  ub.addEventListener("click",function(){ EN9OCR.service.setUserUrl(ui.value); ui.value=EN9OCR.service.userUrl(); showEngine(true); });
+  ui.addEventListener("keydown",function(ev){ if(ev.key==="Enter"){ ev.preventDefault(); ub.click(); } });
   card.EN9_engine=showEngine; showEngine();
   var row=el("div","en9-ocr-row");
   var sel=document.createElement("select"); sel.setAttribute("data-en9",""); en9OcrFillEntities(sel);
@@ -2650,14 +3025,20 @@ function enhanceOcrSettings(){
   card.appendChild(el("strong",null,"OCR engines — PaddleOCR first, Surya second, Tesseract last"));
   /* engine facts */
   var h=EN9OCR.service._health, d=EN9OCR.service.describe();
+  card.EN9_refresh=enhanceOcrSettings;
   var facts=el("div","en9-os-grid");
-  [["Service",d?"online — "+d.text:(h?"not reachable"+(h.error?" ("+h.error+")":""):"not checked yet")+" — start ocr-service/ (python -m ocr_service) beside the app server"],
+  [["Service",d?"online at "+(d.base==="/api/ocr"?"this server (/api/ocr)":d.base)+" — "+d.text:
+      (h?"not found — looked at "+(h.tried||[]).map(function(t){ return t.base==="/api/ocr"?"this server":t.base; }).join(", "):"not checked yet")+". Start ocr-service/ (python -m ocr_service) on this computer, or enter its address on the OCR card of the Documents tab"],
+   ["Address",EN9OCR.service.userUrl()?EN9OCR.service.userUrl()+" (set on the OCR card)":"automatic — this server’s /api/ocr, then http://127.0.0.1:"+EN9OCR.service.DEFAULT_PORT+" and http://localhost:"+EN9OCR.service.DEFAULT_PORT],
    ["Primary","PaddleOCR 3.x — PP-OCRv6 (or PP-OCRv5) text detection and recognition, PP-StructureV3 for table pages; PP-OCRv5 through ONNX Runtime on hosts with no model download"],
    ["Second reading","Surya when installed; otherwise Tesseract re-reads every numeric token. A disagreement is flagged with both readings — the primary’s is kept, nothing is auto-corrected"],
-   ["Final fallback","Tesseract.js v5 in this browser (Apache-2.0, free forever, no key), used only when no service answers — engine ~a few MB from cdn.jsdelivr.net on first use"],
+   ["In this browser","PaddleOCR PP-OCRv5 through ONNX Runtime Web (Apache-2.0, no key) when no service answers — "+(EN9OCRASSET.has("rec.onnx")
+     ? "the runtime and the det/rec/cls models are built into this file (offline build), so nothing is downloaded and no internet is needed"
+     : "the runtime (~14 MB, cdn.jsdelivr.net) and the det/rec/cls models (~22 MB, the OnnxOCR project's GitHub, pinned commit "+EN9PPOCR.MODEL_COMMIT.slice(0,7)+") download once and stay in this browser's IndexedDB")+"; type “off” as the service address to always read here"],
+   ["Final fallback","Tesseract.js v5 in this browser (Apache-2.0, free forever, no key), used only when neither a service nor the in-browser PaddleOCR can be loaded — engine ~a few MB from cdn.jsdelivr.net on first use"],
    ["Preprocessing","300 dpi render · orientation · deskew · denoise when grainy · contrast (CLAHE)"],
    ["Validation","amount/date/percentage/currency grammar, thousands and decimal separators, negatives in parentheses, letter-for-digit swaps (O/0, l/1, S/5), confidence floor 90% on figures"],
-   ["Privacy","documents go to the OCR service on your own server (same origin, /api/ocr/*), never to a third party; the in-browser fallback never uploads anything"]
+   ["Privacy","documents go to the OCR service on your own server or computer (this server’s /api/ocr/*, or the address you entered), never to a third party; the in-browser fallback never uploads anything"]
   ].forEach(function(p){ var r=el("div","en9-os-row");
     r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); facts.appendChild(r); });
   card.appendChild(facts);

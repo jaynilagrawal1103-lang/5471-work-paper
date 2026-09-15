@@ -16,3 +16,5 @@ dist-bundle/
 ocr-service/.venv/
 __pycache__/
 .pytest_cache/
+.cache/
+dist/index.offline.html

@@ -89,9 +89,17 @@ streams, text inside Form XObjects, and Identity-H CID fonts with no ToUnicode m
 
 Scanned PDFs have no text layer. Every uploaded PDF is probed page by page, and
 pages without text are OCR'd **before** the entity is processed: by the
-PaddleOCR service in `ocr-service/` when it is running (PP-OCRv6/PP-OCRv5 with a
-second engine cross-checking every figure; see `ocr-service/README.md`), or by
-Tesseract.js in the browser as the final fallback. The scan is replaced in intake
+PaddleOCR service in `ocr-service/` when one is running (PP-OCRv6/PP-OCRv5 with a
+second engine cross-checking every figure; see `ocr-service/README.md`), otherwise
+by **PaddleOCR PP-OCRv5 inside the browser** (ONNX Runtime Web — nothing to
+install), with Tesseract.js as the last resort. `npm run build:standalone`
+writes `dist/index.offline.html`, which carries the engine and the models
+inside the page: a downloaded copy OCRs scans **with no network at all**. The
+ordinary `dist/index.html` downloads them once (about 36 MB, cdn.jsdelivr.net
+and github.com) and keeps them in the browser instead.
+The service is found on its own (`/api/ocr` on the app's server, then
+`http://127.0.0.1:8472`) or entered on the OCR card; `off` there always reads in
+the browser. The scan is replaced in intake
 by a searchable `… (OCR).pdf` copy carrying a sidecar of engine, confidence and
 position for every word; disputed readings become review exceptions and the
 Provenance sheet cites the engine for each OCR'd figure. The OCR card on Document

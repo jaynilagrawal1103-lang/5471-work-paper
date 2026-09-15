@@ -2,8 +2,17 @@
 
 A small Python service that reads scanned pages for the app. **PaddleOCR 3.x
 is the primary engine**, **Surya** the second reading, **Tesseract** the last
-fallback. The app talks to it through its own server (`/api/ocr/*`), so the
-service can stay bound to localhost and the browser needs no second address.
+fallback. The app finds it on its own: through the app's own server first
+(`/api/ocr/*`), then directly at `http://127.0.0.1:8472` — so a page opened
+from disk or from a static host still uses a service started on the same
+computer (the service answers cross-origin; `OCR_CORS_ORIGINS` narrows it).
+A service elsewhere is entered in the **Service address** box of the OCR
+card (kept in the browser's localStorage as `en9OcrUrl`). Without any
+service the app still runs PP-OCRv5 — the same `onnxocr` weights, through
+ONNX Runtime Web inside the browser (no second reading, no table model), and
+the offline build (`npm run build:standalone`) packs those weights into the
+page so no download is needed either; the service is the faster,
+cross-checked path.
 
 ```
 Upload → auto-detect (per page) → OCR → Process entity → mapping → work paper
@@ -22,10 +31,11 @@ pip install -r requirements.txt
 python -m ocr_service              # http://127.0.0.1:8472
 ```
 
-Then start the app server as usual (`npm run start:local`, or the Fastify
-server). Both proxy `/api/ocr/*` to `OCR_SERVICE_URL` (default
-`http://127.0.0.1:8472`). Check `GET /api/ocr/health` in the browser: it
-names the engines that loaded.
+Then open the app — from disk, a static host, or the app server
+(`npm run start:local`, or the Fastify server; both proxy `/api/ocr/*` to
+`OCR_SERVICE_URL`, default `http://127.0.0.1:8472`). The OCR card on the
+Documents tab reports "OCR service online at …" once it has found the
+service; `GET http://127.0.0.1:8472/health` names the engines that loaded.
 
 Tesseract needs its binary: `apt install tesseract-ocr` (plus
 `tesseract-ocr-<lang>` for other languages). Surya is optional and heavy

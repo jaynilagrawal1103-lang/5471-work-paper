@@ -75,6 +75,36 @@ Node 18 or newer. Verified on Node 22.
   unread bytes, the original stays attached. The dist patches are the
   `EN9OCR*` sentinels plus the `EN9RDPATH` block; the layer is re-injected
   with `npm run inject:layer`.
+- The service is discovered, not assumed: `EN9OCR.service.health()` tries the
+  typed address (localStorage `en9OcrUrl`) → `/api/ocr` (http/https pages
+  only) → `http://127.0.0.1:8472` → `http://localhost:8472` → the page's host
+  on 8472, and posts to the first that answered with an engine. A page opened
+  from disk or a static host therefore still reaches a local
+  `python -m ocr_service`. The OCR card has a Service address box + Check;
+  offline is worded as a status with the next step, never as a fetch error.
+- No service → PaddleOCR runs INSIDE the browser (`EN9PPOCR` in the layer):
+  PP-OCRv5 det/rec/cls from the `onnxocr` 3.1.0 wheel, fetched from the
+  OnnxOCR GitHub LFS store at a pinned commit (sha256 pinned in the layer),
+  run by onnxruntime-web 1.29.0 from cdn.jsdelivr.net, cached in IndexedDB.
+  Turned/skewed pages are corrected from detection results and the copy
+  carries the upright image. Tesseract.js is only the last resort. `off` as
+  the service address forces the browser path. Tests: `test:ocrbrowser`
+  (jsdom, in test:all) and `test:e2e-ocr-browser` (Chromium from file://,
+  CDN/GitHub answered from node_modules and `.cache/`).
+- `npm run build:standalone` → `dist/index.offline.html` (gitignored, ~32 MB):
+  the same page plus one `<script id="en9-ocr-assets">` of gzipped base64
+  holding ONNX Runtime (loader, .wasm, .mjs), pdf-lib and the PP-OCRv5 files.
+  `EN9OCRASSET` unpacks it; `EN9PPOCR` asks it before the network, so
+  `dist/index.html` is unchanged in behaviour. On a `file://` page the wasm
+  goes in via `ort.env.wasm.wasmBinary` and the .mjs via a **data:** URL —
+  a `blob:` URL cannot be imported from an opaque origin. Proof:
+  `npm run test:e2e-ocr-offline` (every non-file request aborted, 91 checks).
+- int8 quantisation of the models was tried and rejected — it loses whole
+  lines and mangles figures. Ship fp32.
+- The app depends on pdfjs-dist 4.x; never install pdfjs-dist 3.x into
+  node_modules (the fallback path's 3.11.174 build lives in `.cache/`).
+  pdf.js is never packed into the offline build: the app already bundles it
+  with the worker inlined, so the OCR path's CDN branch is dead code.
 - A page the service had to turn or straighten is rebuilt upright in the
   searchable copy (cleaned image + words in that frame); text written back
   onto a sideways page scrambles the parser's baseline grouping.
@@ -114,6 +144,15 @@ On 2026-09-14 the OCR path was rebuilt around a PaddleOCR service with
 auto-detection at upload and a processing gate; see the 2026-09-14 section of
 `PROJECT-NOTES.md`. `test:all` is 56 suites / 1,367 assertions; the Python
 service has 25 pytest tests that run the engines loadable on the host.
+Same day, a follow-up: the card had shown "OCR service not reachable (Failed
+to fetch)" when the page was opened from disk, because the client knew only
+`/api/ocr`; the service is now discovered (local 8472 fallback, typed
+address). The owner then chose "OCR without installing anything", so
+PP-OCRv5 now also runs inside the browser through ONNX Runtime Web, and the
+offline build packs the engine into the page so a downloaded file OCRs with
+no network at all (see the 2026-09-14 follow-ups in `PROJECT-NOTES.md`).
+`test:all` is 58 suites / 1,378 assertions; the Python service 25. All of
+this is uncommitted at the owner's request, pending their word to commit.
 
 ## Rule catalogue upgrades
 
