@@ -103,6 +103,25 @@ t("subtotals are still skipped, so nothing double-counts", () => {
   }
 });
 
+t("Chilean suffix totals are skipped before the broad income and expense rules", () => {
+  for (const label of ["INGRESOS TOTALES", "GASTOS TOTALES", "TOTAL ACTIVOS", "TOTAL PASIVOS"]) {
+    assert.strictEqual(ENG.matchRule(label, ENG.DEFAULT_RULES), "SKIP", label);
+  }
+});
+
+t("a Chilean single-dot amount is read as a thousands group only in statement context", () => {
+  const doc = {
+    rows: [
+      { page: 1, y: 800, cells: [{ text: "ESTADO DE RESULTADOS", x0: 10, x1: 180 }] },
+      { page: 1, y: 760, cells: [{ text: "GASTOS", x0: 10, x1: 80 }] },
+      { page: 1, y: 720, cells: [{ text: "Reajuste Art 72 LIR", x0: 10, x1: 170 }, { text: "-79.242", x0: 400, x1: 450 }] },
+    ], pageCount: 1, approxWidths: false,
+  };
+  const rows = ENG.extractPositionedRows(doc, [], { pages: new Set([1]) });
+  assert.strictEqual(rows[0].values[0], -79242);
+  assert.strictEqual(ENG.numeric("79.242"), 79.242, "global decimal parsing must remain unchanged");
+});
+
 t("a translated caption matches when the raw one cannot", () => {
   // The mapping fallback: raw label first, then the stored translation.
   const raw = "SERVICIOS PUBLICOS";
@@ -143,6 +162,21 @@ t("a Colombian balance sheet is recognised as a balance sheet", () => {
     "A C T I V O S",
     "CAJA GENERAL | 0",
     "BANCOS NACIONALES | 18,178",
+  ]);
+  assert.strictEqual(CLS.classifyPages(doc)[0].kind, "fs-balance-sheet");
+});
+
+t("a Chilean BALANCE page with the two statement sides is recognised", () => {
+  const doc = mkDoc([
+    "BALANCE INVERSIONES PARNASA LIMITADA",
+    "ACTIVOS",
+    "Caja | 2.520.242",
+    "Inversiones | 21.339.931",
+    "PASIVOS",
+    "Prestamos | 360.304.399",
+    "Patrimonio | 122.345.381",
+    "TOTAL ACTIVOS | 994.706.401",
+    "TOTAL PASIVOS | 994.706.191",
   ]);
   assert.strictEqual(CLS.classifyPages(doc)[0].kind, "fs-balance-sheet");
 });

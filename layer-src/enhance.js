@@ -1349,7 +1349,10 @@ function EN9ocrIntakeTick() {
   try {
     if (!window.__WPGET || !window.__WPACT || !window.__WPACT.EN9_probePdf || !window.__WPACT.EN9_replaceFile) return;
     var st = window.__WPGET(); if (!st) return;
-    (st.entities || []).forEach(function (ent) {
+    /* OCR detection is deliberately scoped to the entity the preparer is
+       currently working on.  The old all-entity sweep could surface another
+       client's file/progress after switching clients. */
+    (st.entities || []).filter(function (ent) { return ent.id === st.activeEntityId; }).forEach(function (ent) {
       (ent.files || []).forEach(function (f) {
         if (!f || EN9ocrProbed[f.id] || !f.blob || !/\.pdf$/i.test(f.name || "") || f.ocr || /\(OCR\)\.pdf$/i.test(f.name || "")) return;
         EN9ocrProbed[f.id] = 1;
@@ -1425,14 +1428,14 @@ function EN9ocrStart(entityId, fileId, opts) {
   if (!att || !att.blob) return Promise.resolve(null);
   EN9autoOcrTried[fileId] = 1;
   var gateP = EN9OCRGATE.mark(entityId, fileId);
-  var job = EN9OCR.jobs[fileId] = { entityId: entityId, fileId: fileId, name: att.name, status: "running", mode: opts.mode || "manual", message: "queued", startedAt: Date.now() };
+  var job = EN9OCR.jobs[fileId] = { entityId: entityId, fileId: fileId, name: att.name, status: "running", mode: opts.mode || "manual", message: "Processing", startedAt: Date.now(), completedAt: null };
   var say = function (m) { EN9ocrSay(m, fileId); };
   job.p = EN9ocrRunAny(att.blob, entityId, { pages: opts.pages || "auto", langs: opts.langs || EN9ocrLangsFor(ent), force: !!opts.force, mode: opts.mode || "manual", name: att.name }, say)
     .then(function (res) {
       if (!res || !res.file) throw new Error(job.error || "no result");
       return Promise.resolve(window.__WPACT.EN9_replaceFile(entityId, fileId, res.file, res.sidecar)).then(function (newId) {
         if (!newId) throw new Error("the document is no longer attached");
-        job.status = "done"; job.newId = newId; job.engine = res.sidecar.backend || res.sidecar.engine;
+        job.status = "done"; job.completedAt = Date.now(); job.newId = newId; job.engine = res.sidecar.backend || res.sidecar.engine;
         var flags = res.sidecar.pages.reduce(function (n, p) { return n + (p.flags || []).filter(function (x) { return x.level !== "info"; }).length; }, 0);
         say("“" + att.name + "” read by " + (res.sidecar.backend || res.sidecar.engine) + (res.sidecar.verifyEngine ? " (cross-checked by " + res.sidecar.verifyEngine + ")" : "") +
           " — " + res.sidecar.ocrPages.length + " page(s)" + (flags ? ", " + flags + " reading(s) flagged for review" : "") + ". Every figure from it is OCR-derived and must be checked against the scan.");
@@ -1442,7 +1445,7 @@ function EN9ocrStart(entityId, fileId, opts) {
       });
     })
     .catch(function (e) {
-      job.status = "failed"; job.error = String(e && e.message || e);
+      job.status = "failed"; job.completedAt = Date.now(); job.error = String(e && e.message || e);
       say("OCR could not read “" + att.name + "”: " + en9OcrFriendly(e) + " The original file stays attached and unread — supply a clearer scan, a text PDF or the source spreadsheet.");
       EN9OCRGATE.done(entityId, fileId, new Error("OCR of “" + att.name + "” failed: " + en9OcrFriendly(e)));
       return null;
@@ -1545,9 +1548,13 @@ function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
 /* Running / finished jobs, shown on the OCR card and beside the Process button. */
 function EN9ocrRenderJobs(){
   var host=document.getElementById("en9-ocr-jobs"); if(host){ while(host.firstChild) host.removeChild(host.firstChild);
-    var jobs=Object.keys(EN9OCR.jobs).map(function(k){return EN9OCR.jobs[k];}).sort(function(a,b){return b.startedAt-a.startedAt;}).slice(0,8);
+    var s0=st(), activeId=s0&&s0.activeEntityId;
+    /* Jobs are data owned by their entity.  Never show a previous client's
+       filename, status or elapsed time in the active client's panel. */
+    var jobs=Object.keys(EN9OCR.jobs).map(function(k){return EN9OCR.jobs[k];}).filter(function(j){return j.entityId===activeId;}).sort(function(a,b){return b.startedAt-a.startedAt;}).slice(0,8);
     jobs.forEach(function(j){ var row=el("div","en9-ocr-job "+j.status);
-      row.appendChild(el("span","en9-ocr-jobname",j.name)); row.appendChild(el("span","en9-ocr-jobstate",j.status==="running"?"running":j.status==="done"?"done · "+(j.engine||""):"failed"));
+      var ended=j.completedAt||Date.now(), elapsed=Math.max(0,ended-j.startedAt), secs=Math.floor(elapsed/1000), clock=(secs<60?secs+"s":Math.floor(secs/60)+"m "+String(secs%60).padStart(2,"0")+"s");
+      row.appendChild(el("span","en9-ocr-jobname",j.name)); row.appendChild(el("span","en9-ocr-jobstate",j.status==="detecting"?"Detection":j.status==="required"?"OCR required":j.status==="running"?"Processing · "+clock:j.status==="done"?"Completed · "+clock+(j.engine?" · "+j.engine:""):j.status==="not-required"?"OCR not required":"Failed · "+clock));
       row.appendChild(el("span","en9-ocr-jobmsg",j.message||"")); host.appendChild(row); }); }
   /* the run panel: say why Process entity is waiting */
   try{ var s=st(), active=s&&s.activeEntityId;
@@ -1569,7 +1576,10 @@ function enhanceOcrPanel(){
        so the full OCR panel can never linger on Shareholders/Dividends. */
     if(old.parentElement!==dz.parentElement||old.previousElementSibling!==dz)
       dz.parentElement.insertBefore(old, dz.nextSibling);
-    var sel0=old.querySelector("select"); en9OcrFillEntities(sel0); old.EN9_fillSrc&&old.EN9_fillSrc(); old.EN9_engine&&old.EN9_engine(); return; }
+    var sel0=old.querySelector("select"); en9OcrFillEntities(sel0);
+    var activeNow=st()&&st().activeEntityId;
+    if(old.getAttribute("data-en9-active")!==String(activeNow||"")){ old.setAttribute("data-en9-active",String(activeNow||"")); old.EN9_reset&&old.EN9_reset(); }
+    old.EN9_fillSrc&&old.EN9_fillSrc(); old.EN9_engine&&old.EN9_engine(); return; }
   var card=el("section","panel en9-ocr");
   card.appendChild(el("strong",null,"OCR a scanned PDF — automatic at upload, manual here"));
   card.appendChild(el("p","en9-ocr-sub","Every PDF you add is checked for pages without a text layer. Those pages are read automatically — by the PaddleOCR service when one is running, otherwise by PaddleOCR (PP-OCRv5) running inside this browser, with Tesseract.js as the last resort — and “Process entity” waits until the recognised text is in place. With the in-browser engines the document never leaves this browser; with the service it goes only to your own server. Use this card to run OCR by hand: on a file the check did not catch, on specific pages, or again with another language. Every figure from an OCR’d document is flagged for verification against the original scan."));
@@ -1590,6 +1600,7 @@ function enhanceOcrPanel(){
   ub.addEventListener("click",function(){ EN9OCR.service.setUserUrl(ui.value); ui.value=EN9OCR.service.userUrl(); showEngine(true); });
   ui.addEventListener("keydown",function(ev){ if(ev.key==="Enter"){ ev.preventDefault(); ub.click(); } });
   card.EN9_engine=showEngine; showEngine();
+  card.setAttribute("data-en9-active",String((st()&&st().activeEntityId)||""));
   var row=el("div","en9-ocr-row");
   var sel=document.createElement("select"); sel.setAttribute("data-en9",""); en9OcrFillEntities(sel);
   var src=document.createElement("select"); src.setAttribute("data-en9",""); src.className="en9-ocr-src";
@@ -1602,7 +1613,12 @@ function enhanceOcrPanel(){
     if([...src.options].some(function(o){return o.value===cur;})) src.value=cur;
     fi.style.display=src.value?"none":""; }
   src.addEventListener("change",fillSrc);
-  sel.addEventListener("change",fillSrc);
+  sel.addEventListener("change",function(){
+    /* The picker changes the actual active entity, rather than becoming a
+       second, unsynchronised OCR context. */
+    if(window.__WPACT&&window.__WPACT.setActiveEntity) window.__WPACT.setActiveEntity(sel.value);
+    fillSrc();
+  });
   card.EN9_fillSrc=fillSrc;
   var pgl=el("label","en9-ocr-pages"); pgl.appendChild(document.createTextNode("Pages "));
   var pg=document.createElement("input"); pg.type="text"; pg.placeholder="auto (pages without text) · all · 2,4-6"; pg.setAttribute("data-en9",""); pgl.appendChild(pg);
@@ -1613,7 +1629,31 @@ function enhanceOcrPanel(){
   var btn=el("button","button en9-ocr-btn","Run OCR now"); btn.type="button";
   row.appendChild(sel); row.appendChild(src); row.appendChild(fi); row.appendChild(pgl); row.appendChild(lg); row.appendChild(btn);
   fillSrc();
-  card.appendChild(row); card.appendChild(fl);
+  card.appendChild(row);
+  var upload=el("div","en9-ocr-upload"); upload.tabIndex=0;
+  upload.innerHTML='<strong>Drop a PDF here</strong><span>or choose a file from this computer</span><small class="en9-ocr-selected">No file selected</small>';
+  function setLocalFile(file){
+    if(!file) return; var transfer=new DataTransfer(); transfer.items.add(file); fi.files=transfer.files;
+    var name=upload.querySelector(".en9-ocr-selected"); if(name) name.textContent=file.name;
+    var eid=sel.value, job={entityId:eid,fileId:"manual:"+eid+":"+file.name+":"+file.lastModified,name:file.name,status:"detecting",message:"Detection in progress",startedAt:Date.now(),completedAt:null};
+    EN9OCR.jobs[job.fileId]=job; stat.textContent="Detection — checking whether OCR is required for “"+file.name+"”…"; EN9ocrRenderJobs();
+    EN9ocrProbe(file).then(function(probe){
+      /* A selection can finish probing after a client switch. Keep its data
+         private to its owner and do not change the newly active panel. */
+      if(!EN9OCR.jobs[job.fileId]) return;
+      job.completedAt=Date.now();
+      if(probe&&probe.scanPages&&probe.scanPages.length){ job.status="required"; job.message="OCR required for "+probe.scanPages.length+" of "+probe.pageCount+" page(s)"; }
+      else { job.status="not-required"; job.message="Text layer found — OCR is not required"; }
+      if((st()&&st().activeEntityId)===eid) stat.textContent=job.message; EN9ocrRenderJobs();
+    }).catch(function(){ job.completedAt=Date.now(); job.status="failed"; job.message="Detection failed — OCR can still be run manually."; if((st()&&st().activeEntityId)===eid) stat.textContent=job.message; EN9ocrRenderJobs(); });
+  }
+  fi.addEventListener("change",function(){ setLocalFile(fi.files&&fi.files[0]); });
+  upload.addEventListener("click",function(){ fi.click(); });
+  upload.addEventListener("keydown",function(ev){ if(ev.key==="Enter"||ev.key===" "){ ev.preventDefault(); fi.click(); } });
+  upload.addEventListener("dragover",function(ev){ ev.preventDefault(); upload.classList.add("is-dragging"); });
+  upload.addEventListener("dragleave",function(){ upload.classList.remove("is-dragging"); });
+  upload.addEventListener("drop",function(ev){ ev.preventDefault(); upload.classList.remove("is-dragging"); setLocalFile(ev.dataTransfer&&ev.dataTransfer.files&&ev.dataTransfer.files[0]); });
+  card.appendChild(upload); card.appendChild(fl);
   if(en9IsSandbox()) card.appendChild(el("div","en9-ocr-sandbox","⚠ You are viewing this inside the claude.ai preview, which blocks the background workers the in-browser engine needs. Everything else works here — but run OCR on your deployed site (or open the downloaded HTML directly in your browser)."));
   var stat=el("div","en9-ocr-status"); stat.id="en9-ocr-status"; card.appendChild(stat);
   var jobs=el("div","en9-ocr-jobs"); jobs.id="en9-ocr-jobs"; card.appendChild(jobs);
@@ -1621,6 +1661,10 @@ function enhanceOcrPanel(){
   var addb=el("button","button primary","Add to intake"); addb.type="button";
   var dlb=el("button","button","Download searchable PDF"); dlb.type="button";
   acts.appendChild(addb); acts.appendChild(dlb); card.appendChild(acts);
+  /* Reset only this presentation state on a client switch.  Stored files and
+     OCR sidecars remain with their actual entity; no old transient result can
+     bleed into the next client's screen. */
+  card.EN9_reset=function(){ src.value=""; fi.value=""; pg.value=""; fc.checked=false; cb.checked=false; acts.style.display="none"; stat.textContent="Ready to detect this client's selected document."; };
   card.appendChild(el("div","en9-ocr-note","Documents read by OCR are named “… (OCR).pdf” so every caption’s source chip shows OCR provenance; the Provenance sheet of the work paper lists the engine, confidence and page position of every figure they contribute. Treat all extracted figures as unverified until checked."));
   btn.addEventListener("click",function(){
     if(!sel.value){ stat.textContent="Choose the entity this document belongs to."; return; }
@@ -1652,10 +1696,73 @@ function enhanceOcrPanel(){
     a.href=u; a.download=r.file.name; a.click(); setTimeout(function(){URL.revokeObjectURL(u)},4000);
   });
   /* rebuilt after a tab switch: surface a still-pending OCR result */
-  if(EN9OCR.result){ stat.textContent="Done — previous OCR result is ready to add to intake."; acts.style.display=""; }
+  if(EN9OCR.result&&EN9OCR.result.entityId===sel.value){ stat.textContent="Completed — this client's OCR result is ready to add to intake."; acts.style.display=""; }
   dz.parentElement.insertBefore(card, dz.nextSibling);
   EN9ocrRenderJobs();
 }
+
+/* The shipped bundle predates the Exception Centre sign-off action in the
+   source tree.  This control intentionally delegates to the existing React
+   navigation button instead of rewriting URLs or duplicating navigation
+   state: click → the app's own onNavigate("signoff") handler → sign-off view. */
+function enhanceExceptionSignoff(){
+  var heads=document.querySelectorAll(".section-header"), head=null;
+  for(var i=0;i<heads.length;i++){ var h=heads[i].querySelector("h1"); if(h&&h.textContent.trim()==="Exception center"){ head=heads[i]; break; } }
+  var prior=document.querySelector(".en9-exception-signoff"); if(!head){ if(prior) prior.remove(); return; }
+  if(prior&&prior.parentElement!==head) prior.remove();
+  if(prior) return;
+  var actions=head.querySelector(".signoff-actions")||el("div","signoff-actions");
+  if(!actions.parentElement) head.appendChild(actions);
+  var button=el("button","button primary en9-exception-signoff","Review and sign off"); button.type="button";
+  button.addEventListener("click",function(){
+    var nav=document.querySelectorAll(".nav-item");
+    for(var n=0;n<nav.length;n++) if(/review\s*&\s*sign-off/i.test(nav[n].textContent||"")){ nav[n].click(); return; }
+    button.textContent="Sign-off navigation unavailable";
+  });
+  actions.appendChild(button);
+}
+
+/* Blocking exceptions have always required an audit note, but the React
+   handlers used window.prompt().  On embedded/local browser surfaces that
+   prompt can be hidden, making both actions appear inert.  Capture only those
+   controls, collect the same required note in-page, then let the original
+   handler perform the existing dismiss/sign-off action. */
+function EN9exceptionNoteDialog(button){
+  var prior=document.querySelector(".en9-signoff-dialog"); if(prior) prior.remove();
+  var shade=el("div","en9-signoff-dialog"), box=el("section","en9-signoff-box");
+  box.setAttribute("role","dialog"); box.setAttribute("aria-modal","true");
+  box.appendChild(el("strong",null,"Document the sign-off"));
+  box.appendChild(el("p",null,"This is a blocking exception. Add the preparer’s reason before it is acknowledged and unblocked."));
+  var note=document.createElement("textarea"); note.placeholder="Reason for acknowledging this exception"; note.setAttribute("data-en9",""); box.appendChild(note);
+  var actions=el("div","en9-signoff-dialog-actions"), cancel=el("button","button","Cancel"), confirm=el("button","button primary","Acknowledge & unblock"); cancel.type=confirm.type="button";
+  cancel.addEventListener("click",function(){ shade.remove(); });
+  confirm.addEventListener("click",function(){ var text=note.value.trim(); if(!text){ note.focus(); return; }
+    shade.remove(); button.setAttribute("data-en9-note",text); button.setAttribute("data-en9-approved","1"); button.click(); });
+  actions.appendChild(cancel); actions.appendChild(confirm); box.appendChild(actions); shade.appendChild(box); document.body.appendChild(shade); note.focus();
+}
+document.addEventListener("click",function(ev){
+  var button=ev.target&&ev.target.closest&&ev.target.closest("button"); if(!button||isOurs(button)) return;
+  var label=(button.textContent||"").trim();
+  if(label!=="Acknowledge & unblock"&& !/^Sign off selected/.test(label)) return;
+  if(button.getAttribute("data-en9-approved")==="1"){
+    var savedPrompt=window.prompt, savedConfirm=window.confirm, note=button.getAttribute("data-en9-note")||"";
+    button.removeAttribute("data-en9-approved"); button.removeAttribute("data-en9-note");
+    window.prompt=function(){ return note; }; window.confirm=function(){ return true; };
+    setTimeout(function(){ window.prompt=savedPrompt; window.confirm=savedConfirm; },0); return;
+  }
+  /* A single block always needs a note.  For a selected batch, inspect the
+     visible selected rows; open the note dialog only when a block is included. */
+  var needsNote=label==="Acknowledge & unblock";
+  if(!needsNote&&/^Sign off selected/.test(label)){
+    /* The React component already exposes this fact in its title.  Prefer it
+       over DOM row inspection: virtualized/paginated tables need not retain
+       every selected row in this panel. */
+    needsNote=/\bblocking\b/i.test(button.title||"");
+    if(!needsNote){ var table=button.closest(".panel")&&button.closest(".panel").querySelector("table");
+      needsNote=!!(table&&Array.prototype.some.call(table.querySelectorAll("tbody tr"),function(row){ var check=row.querySelector('input[type="checkbox"]'); return check&&check.checked&&/\bBLOCK\b/i.test(row.textContent||""); })); }
+  }
+  if(needsNote){ ev.preventDefault(); ev.stopImmediatePropagation(); EN9exceptionNoteDialog(button); }
+},true);
 function en9OcrFillEntities(sel){
   if(!sel) return; var s=st(); if(!s) return;
   var want=(s.entities||[]).map(function(e){return e.id+"|"+e.name;}).join(";");
@@ -1828,6 +1935,7 @@ function rebuildAll(){
     enhanceOcrSettings();
     enhanceTopbarHint();
     enhanceOcrPanel();
+    enhanceExceptionSignoff();
     enhanceOcrBadges();
     enhanceOverviewButton();
     enhancePills();

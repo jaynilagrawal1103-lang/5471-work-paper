@@ -59,7 +59,11 @@ const types = {
 
 createServer(async (req, res) => {
   const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname));
-  if (path.startsWith('/api/ocr/')) return proxyOcr(req, res, path);
+  // `path` is normalized with Windows separators on this platform, while URL
+  // routes always use `/`. Check the original URL pathname for the proxy route
+  // so local OCR requests do not fall through to the SPA shell.
+  const urlPath = new URL(req.url, 'http://x').pathname;
+  if (urlPath.startsWith('/api/ocr/')) return proxyOcr(req, res, urlPath);
   // Single-page app: everything falls back to index.html.
   const file = path === '/' || !path.includes('.') ? 'index.html' : path.replace(/^\/+/, '');
   const ext = file.slice(file.lastIndexOf('.'));

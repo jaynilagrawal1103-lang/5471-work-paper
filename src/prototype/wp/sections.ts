@@ -109,7 +109,7 @@ export function dropFurniture(rows: MapRow[]): MapRow[] {
    lines, printed at the outermost indent beside "NET INCOME". Without them
    in this lexicon, "NET OTHER INCOME" survived to the keyword scan, matched
    "other income" and was booked as a second other-income account. */
-const TOTAL_WORD = /^(total|subtotal|sub-total|sum|net result|net\s+(?:other\s+|operating\s+)?(?:income|earnings|profit|loss)|grand total|totaal|totale|gesamt|合计|總計)\b/i;
+const TOTAL_WORD = /^(total|subtotal|sub-total|sum|net result|net\s+(?:other\s+|operating\s+)?(?:income|earnings|profit|loss)|grand total|totaal|totale|gesamt|合计|總計)\b|\b(?:ingresos|gastos|costos|activos|pasivos|patrimonio)\s+totales?\b/i;
 
 /** The outermost figures within a candidate group. A subtotal covers its
     IMMEDIATE children, so only the shallowest indent that carries numbers
@@ -306,6 +306,20 @@ export const expenseGainFlip = (
   (target === "IS:19" || target === "IS:20") &&
   (section === "costs" || section === "cogs") &&
   typeof printed === "number" && printed > 0;
+
+/** Schedule C deduction rows carry positive magnitudes. Some continental
+    statements print costs as negative figures, but we only normalize them
+    when their own proved subtotal added those negatives. That avoids turning
+    a genuine credit into an expense. */
+export const deductionMagnitudeFlip = (
+  target: string | null | undefined,
+  section: Section | null | undefined,
+  inTotal?: boolean,
+  printed?: number,
+) =>
+  /^IS:(2[6-9]|3\d|4\d|50)$/.test(String(target || "")) &&
+  (section === "costs" || section === "cogs") &&
+  !!inTotal && typeof printed === "number" && printed < 0;
 
 export const contraRevenueFlip = (
   target: string | null | undefined,

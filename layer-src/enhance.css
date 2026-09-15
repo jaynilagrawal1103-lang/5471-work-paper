@@ -155,6 +155,21 @@ main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scrol
 .en9-ocr-jobmsg{color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .en9-ocr-wait{font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 10px;margin-top:8px;flex-basis:100%}
 .en9-ocr-sandbox{font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;margin-top:8px;max-width:78ch}
+.en9-ocr{padding:18px!important;border-left-width:4px!important}
+.en9-ocr-row{display:grid;grid-template-columns:minmax(190px,.8fr) minmax(260px,1.5fr) auto auto;align-items:end;gap:12px;margin-top:12px}
+.en9-ocr-row select,.en9-ocr-row input{min-width:0;width:100%}
+.en9-ocr-row input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.en9-ocr-upload{display:grid;gap:3px;place-items:center;text-align:center;border:1.5px dashed #94a3b8;border-radius:10px;background:#f8fafc;padding:14px 18px;margin:12px 0 4px;cursor:pointer;transition:.15s ease}
+.en9-ocr-upload:hover,.en9-ocr-upload.is-dragging{border-color:#4f46e5;background:#eef2ff;box-shadow:0 0 0 3px #c7d2fe}
+.en9-ocr-upload strong{color:#1e293b;font-size:13px}.en9-ocr-upload span{color:#64748b;font-size:12px}.en9-ocr-selected{display:block;max-width:min(900px,100%);margin-top:4px;padding:4px 8px;color:#334155;background:#fff;border-radius:6px;overflow-wrap:anywhere;word-break:break-word;font-size:12px;line-height:1.45}
+.en9-ocr-job{grid-template-columns:minmax(220px,1fr) minmax(150px,auto) minmax(220px,2fr);padding:8px 10px;align-items:start}
+.en9-ocr-job.required{border-color:#93c5fd;background:#eff6ff}.en9-ocr-job.detecting{border-color:#c7d2fe;background:#eef2ff}.en9-ocr-jobname,.en9-ocr-jobmsg{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;line-height:1.4}
+.en9-ocr-jobstate{font-weight:700;font-variant-numeric:tabular-nums}
+@media (max-width:900px){.en9-ocr-row{grid-template-columns:1fr 1fr}.en9-ocr-job{grid-template-columns:1fr;gap:4px}}
+@media (max-width:640px){.en9-ocr-row{grid-template-columns:1fr}.en9-ocr-upload{padding:16px 12px}}
+.en9-signoff-dialog{position:fixed;inset:0;z-index:120;background:rgba(15,23,42,.42);display:grid;place-items:center;padding:16px}
+.en9-signoff-box{width:min(480px,100%);background:#fff;border-radius:14px;padding:20px;box-shadow:0 18px 50px rgba(15,23,42,.28)}
+.en9-signoff-box strong{display:block;font-size:16px;color:#172554}.en9-signoff-box p{margin:8px 0 12px;color:#475569;font-size:13px;line-height:1.5}.en9-signoff-box textarea{display:block;width:100%;min-height:96px;padding:9px 10px;border:1px solid #cbd5e1;border-radius:8px;resize:vertical}.en9-signoff-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
 
 /* entity status pills (React renders status-idle/processing/ready/error with no styles) */
 .status-pill.status-idle{background:#eef1f6;color:#4b5563}

@@ -127,6 +127,18 @@ function looksLikeStatementPage(doc: PdfDoc, page: number): boolean {
   return titled && amountRowCount(doc, page) >= 5;
 }
 
+/** Chilean client statements often title the page simply "BALANCE" followed
+    by the company name. Require the statement's two sides as well, so a
+    narrative reference to a balance cannot open the financial feed. */
+function looksLikeChileanBalanceSheet(doc: PdfDoc, page: number): boolean {
+  const all = pageText(doc, page, "all");
+  return /(^|\n)\s*balance\b/m.test(all)
+    && /\bactivos?\b/.test(all)
+    && /\bpasivos?\b/.test(all)
+    && /\btotal(?:es)?\b/.test(all)
+    && amountRowCount(doc, page) >= 5;
+}
+
 function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: boolean }): PageInfo {
   const head = pageText(doc, page, "head");
   const foot = pageText(doc, page, "foot");
@@ -179,7 +191,8 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     // a page of label-and-amount rows, is a statement whatever the letterhead
     // omits. The title must start the line: "…which includes the balance sheet
     // and income statement" is prose about one, not one.
-    || looksLikeStatementPage(doc, page);
+    || looksLikeStatementPage(doc, page)
+    || looksLikeChileanBalanceSheet(doc, page);
   if (fsBand) {
     // Cover/administrative pages mention every section name — test them first.
     if (/\bcontents\b|directors'? (statement|report)|accountants'? report|compilation report|independent auditor/.test(head)) return mk("fs-cover", 3);
@@ -189,7 +202,7 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     if (/trading account/.test(head)) return mk("fs-trading", 3);
     // A balance-sheet TITLE wins over equity-movement content: a balance sheet
     // may mention retained profits in a note, but never carries the movement.
-    if (/statement of financial position|balance sheet|balance general|estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o patrimonial|balanco patrimonial|balan\u00e7o|balanco|bilan\b|bilancio|balans|bilanz/.test(head)) return mk("fs-balance-sheet", 3);
+    if (/statement of financial position|balance sheet|balance general|estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o patrimonial|balanco patrimonial|balan\u00e7o|balanco|bilan\b|bilancio|balans|bilanz/.test(head) || looksLikeChileanBalanceSheet(doc, page)) return mk("fs-balance-sheet", 3);
     // Equity movements need the strong anchor — a P&L-titled page carrying the
     // retained-profits roll-forward is the equity statement, not a P&L.
     if (/statement of changes in equity/.test(head) || /opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
