@@ -260,6 +260,10 @@ export const DEFAULT_RULES: MappingRule[] = [
     // "ingresos" income keyword, or an annual total is booked as a line.
     "total de ingresos", "total de egresos", "total del activo", "total del pasivo",
     "total de activos", "total de pasivos", "total ingresos", "total egresos",
+    // Chilean statements also put the total word last ("INGRESOS TOTALES").
+    "ingresos totales", "gastos totales", "costos totales", "activos totales",
+    "pasivos totales", "patrimonio total", "total activos", "total pasivos",
+    "total gastos", "total costos", "resultado antes de impuestos",
     /* A Chilean return states depreciation twice — financiera (book) and
        tributaria (tax). Both matched the depreciation rule and the entity's
        depreciation doubled. The book figure belongs in a book income
@@ -352,7 +356,7 @@ export const DEFAULT_RULES: MappingRule[] = [
          "de los ingresos"], t: "IS:OD" },
   { kw: ["income tax - current", "current tax", "corporation tax", "tax on profit", "tax on ordinary activities", "income tax revenue", "income tax expense", "impot sur les societes"], t: "IS:54" },
   { kw: ["deferred tax"], t: "IS:55" },
-  { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "货币资金", "merchant account", "undeposited funds", "petty cash", "checking account", "savings account"], t: "BS:10" },
+  { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "efectivo", "disponibilidades", "caja y bancos", "货币资金", "merchant account", "undeposited funds", "petty cash", "checking account", "savings account"], t: "BS:10" },
   { kw: ["trade receivable", "accounts receivable", "debtor", "trade debtor", "cr\u00e9ances clients", "deudores", "cuentas por cobrar", "contas a receber", "应收账款"], t: "BS:11" },
   { kw: ["allowance for bad debt", "provision for doubtful"], t: "BS:12" },
 
@@ -400,7 +404,7 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["prepaid", "prepayment", "charges constatées", "accrued management fee", "accrued income", "accrued revenue"], t: "BS:OCA" },
   { kw: ["loan to shareholder", "amounts owed by"], t: "BS:19" },
   { kw: ["investment in subsidiar", "shares in group"], t: "BS:21" },
-  { kw: ["building", "plant and machinery", "fixed asset", "immobilisations corporelles", "maquinaria y equipo", "equipo de oficina", "equipo de computacion", "equipo de computaci\u00f3n", "propiedad planta y equipo", "imobilizado", "固定资产"], t: "BS:28" },
+  { kw: ["building", "plant and machinery", "fixed asset", "immobilisations corporelles", "maquinaria y equipo", "equipo de oficina", "equipo de computacion", "equipo de computaci\u00f3n", "propiedad planta y equipo", "imobilizado", "edificios", "instalaciones", "固定资产"], t: "BS:28" },
   { kw: ["accumulated depreciation", "amortissements cumul\u00e9s", "depr. acumulada", "depreciacion acumulada", "depreciaci\u00f3n acumulada", "deprec. acumulada"], t: "BS:29" },
   { kw: ["land"], t: "BS:32" },
   { kw: ["goodwill", "fonds de commerce"], t: "BS:34" },
@@ -408,19 +412,20 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["patent", "trademark", "intangible", "immobilisations incorporelles"], t: "BS:36" },
   { kw: ["accumulated amortisation", "accumulated amortization"], t: "BS:37" },
   { kw: ["accounts payable", "trade payable", "creditor", "trade creditor", "dettes fournisseurs", "acreedores", "cuentas por pagar", "proveedores", "fornecedores", "应付账款"], t: "BS:46" },
-  { kw: ["vat payable", "sales tax payable", "sundry creditor", "gst", "input tax credit", "taxation", "taxation payable", "income tax payable", "provision for income tax", "superannuation payable", "super payable", "accrued wages", "accrued expense", "payg withholding payable"], t: "BS:OCL" },
+  { kw: ["vat payable", "sales tax payable", "sundry creditor", "gst", "input tax credit", "taxation", "taxation payable", "income tax payable", "provision for income tax", "provision impuesto", "provisi\u00f3n impuesto", "pr\u00e9stamo bancario", "prestamo bancario", "cr\u00e9dito bancario", "credito bancario", "superannuation payable", "super payable", "accrued wages", "accrued expense", "payg withholding payable"], t: "BS:OCL" },
   { kw: ["loan from shareholder", "director loan", "amounts owed to"], t: "BS:52" },
-  { kw: ["bank loan", "borrowing", "emprunt"], t: "BS:OL" },
+  { kw: ["bank loan", "borrowing", "emprunt", "garant\u00eda", "garantia", "other accounts payable", "cuentas por pagar diversas"], t: "BS:OL" },
   { kw: ["obligations under finance lease", "finance lease", "hire purchase"], t: "BS:OL" },
   { kw: ["preferred stock", "preference share"], t: "BS:58" },
-  { kw: ["common stock", "share capital", "called up share", "capital social", "capital suscrito", "capital pagado", "实收资本"], t: "BS:59" },
-  { kw: ["paid-in", "share premium", "capital surplus", "prime d'émission"], t: "BS:60" },
+  { kw: ["common stock", "share capital", "called up share", "capital social", "capital suscrito", "capital pagado", "capital", "实收资本"], t: "BS:59" },
+  { kw: ["paid-in", "share premium", "capital surplus", "prime d'émission", "fondo de capital", "capital fund"], t: "BS:60" },
+  { kw: ["investment", "inversiones", "inversi\u00f3n", "participation account", "cuenta de participaci\u00f3n"], t: "BS:OI" },
   { kw: ["retained earning", "retained profits", "accumulated profit", "profit and loss account", "report \u00e0 nouveau", "utilidades acumuladas", "excedentes acumulados", "resultados acumulados", "lucros acumulados", "未分配利润"], t: "BS:61" },
   { kw: ["treasury stock", "own shares"], t: "BS:62" },
 ];
 
 /* ---------- numeric parsing ---------- */
-export function numeric(v: unknown): number | null {
+export function numeric(v: unknown, opts?: { dotThousands?: boolean }): number | null {
   if (typeof v === "number") return isFinite(v) ? v : null;
   if (v === null || v === undefined || v === "") return null;
   let s = String(v).trim().replace(/[\s\u00A0']/g, "");
@@ -443,6 +448,10 @@ export function numeric(v: unknown): number | null {
        point: "1.234" is genuinely ambiguous and the existing reading of it
        is left alone. */
     s = s.replace(/\./g, "");
+  } else if (opts?.dotThousands && !s.includes(",") && /^-?\d{1,3}\.\d{3}$/.test(s)) {
+    // A single dot is ambiguous in isolation. Callers opt in only after the
+    // surrounding page establishes continental grouping notation.
+    s = s.replace(".", "");
   } else {
     s = s.replace(/,/g, "");
   }
@@ -480,6 +489,9 @@ export function matchRule(label: string, rules: MappingRule[]): string | null {
      Checked before the keywords so that "Total for Assets" cannot fall
      through to the "assets" fragment. */
   if (/^(sub-?)?totals?\s+(for|of)\b/.test(l)) return "SKIP";
+  // Spanish totals can put "total" at either end. Catch them before broad
+  // ingresos/gastos keywords see a second revenue or deduction line.
+  if (/^(?:total(?:es)?\s+(?:de\s+)?)?(?:ingresos|gastos|costos|activos|pasivos|patrimonio)(?:\s+totales?)?$/.test(l)) return "SKIP";
   /* The same total without the "for". QuickBooks closes a group by repeating
      the group's own name: "Bank Accounts" … "Total Bank Accounts". Anything
      the banner lexicon recognises as a group name is a group name here too,
@@ -600,7 +612,7 @@ export function detectLineNoColumnByStats(rows: string[][]): number | null {
    suffixes like "1,234 CR" must still count as numbers. Exported: the
    carry-forward form reader must never book a digit residue of prose like
    "(combine lines 7 through 13)" as a money value. */
-export const numericCell = (cell: string): number | null => {
+export const numericCell = (cell: string, opts?: { dotThousands?: boolean }): number | null => {
   const s = String(cell).trim();
   if (!s) return null;
   /* A slash or colon between digits is a page count ("1/1"), a fraction, a
@@ -608,9 +620,9 @@ export const numericCell = (cell: string): number | null => {
      without this "1/1" read as eleven and "09:58" as 958, and a report footer
      became a line item worth 11. */
   if (/\d\s*[/:]\s*\d/.test(s)) return null;
-  if (/^\(?\s*-?[\d.,\s ']+\s*\)?\s*(?:CR|DR)?\s*\/?\s*$/i.test(s) && /\d/.test(s)) return numeric(s);
+  if (/^\(?\s*-?[\d.,\s ']+\s*\)?\s*(?:CR|DR)?\s*\/?\s*$/i.test(s) && /\d/.test(s)) return numeric(s, opts);
   const textual = /[A-Za-z\u00C0-\u024F\u0600-\u06FF\u4E00-\u9FFF]/.test(s);
-  const n = numeric(s);
+  const n = numeric(s, opts);
   return n !== null && !textual ? n : null;
 };
 
@@ -842,9 +854,16 @@ export function extractPositionedRows(
     let label: string | null = null;
     let labelIdx = -1;
     const nums: { v: number; x0: number; x1: number; idx: number }[] = [];
+    /* Chilean statements use dots as thousands separators, including a
+       single group (79.242). Establish that convention from the page, never
+       from one ambiguous token, so ordinary decimal statements are unchanged. */
+    const statementText = doc.rows.filter((r) => r.page === row.page)
+      .map((r) => r.cells.map((c) => c.text).join(" ")).join(" ").toLowerCase();
+    const chileanStyle = /\b(balance|estado de resultados|ingresos|gastos|activos|pasivos|patrimonio)\b/.test(statementText)
+      && /\b\d{1,3}\.\d{3}\b/.test(statementText);
     for (let i = 0; i < row.cells.length; i++) {
       const c = row.cells[i];
-      const n = numericCell(c.text);
+      const n = numericCell(c.text, { dotThousands: chileanStyle });
       if (n !== null) nums.push({ v: n, x0: c.x0, x1: c.x1, idx: i });
       else if (label === null && textualCell(c.text) && c.text.trim().length > 2) {
         label = c.text.trim();

@@ -10,7 +10,7 @@ import { r2, r2add, sanitize } from "./hygiene";
 import { pdfToDoc } from "./pdfText";
 import { parseQuestionnaire, type Questionnaire } from "./questionnaire";
 import { irsCountryCode } from "./countryCodes";
-import { collapsedRoute, collapsedSections, contraRevenueFlip, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
+import { collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
   AI_BATCH, TPM_BUDGET, aiMode, askResume, classifyFailure, estTokens, maxTokensFor,
@@ -461,7 +461,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 4;
+export const RULE_CATALOGUE_VERSION = 6;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -470,6 +470,8 @@ export const RULE_CATALOGUE_VERSION = 4;
 const SKIP_ADDED_SINCE: Record<number, string[]> = {
   // v3 (2026-09-10): QuickBooks/Xero/Sage closing lines booked as deductions.
   2: ["net earnings", "net earnings for the year", "net profit for the period", "net loss for the year", "net loss"],
+  // v5 (2026-09-15): Chilean statement totals may end in "totales".
+  4: ["ingresos totales", "gastos totales", "costos totales", "activos totales", "pasivos totales", "patrimonio total", "total activos", "total pasivos", "total gastos", "total costos", "resultado antes de impuestos"],
 };
 
 /** target → first keyword, for each group added at version 2. Identified by
@@ -484,6 +486,8 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
   // changed group is enough: upgradeRules appends the whole group it belongs to.
   3: ["discount given", "freight", "taxes and licenses", "merchant account",
       "payroll expense", "owner investment", "owner draw"],
+  // v6 (2026-09-15): Chilean balance-sheet caption coverage.
+  5: ["edificios", "provisi\u00f3n impuesto", "garant\u00eda", "fondo de capital", "inversiones", "capital"],
 };
 
 /** Groups the saved catalogue is missing purely because it predates them.
@@ -2160,6 +2164,11 @@ export const actions = {
           if (m.skipReason || m.row.isBanner) continue;
           const matched = matchWithTranslation(m.row.label);
           let target = matched.target;
+          /* A caption's accounting meaning depends on the statement it is
+             printed in.  A P&L charge called "Patentes" is an expense, not
+             an intangible asset merely because its English translation shares
+             the word "patent" with Schedule F line 12c. */
+          if (m.feed === "is" && /\bpatentes?\b/i.test(m.row.label)) target = "IS:OD";
           if (target === "SKIP") {
             // "Net income" in an equity section is closing equity, not a
             // P&L subtotal — the one SKIP that depends on which statement
@@ -2255,6 +2264,16 @@ export const actions = {
               level: "info", category: "mapping", sourceLabel: m.row.label,
               message: `"${m.row.label}" is printed under the statement's expense heading, so the ${asPrinted.toLocaleString()} it reports is a loss. It was booked to Schedule C as ${r2(-asPrinted).toLocaleString()}.`,
               target: `${SHEET.is}!F${target === "IS:19" ? 19 : 20}`, source: m.docName,
+            });
+          }
+          if (Array.isArray(routed) && deductionMagnitudeFlip(target, m.section, m.inTotal, routed[0]?.value)) {
+            const asPrinted = routed[0]?.value ?? 0;
+            routed = routed.map((r) => ({ ...r, value: -r.value }));
+            rv({
+              id: `deduction-magnitude-${target}-${norm(m.row.label)}`,
+              level: "info", category: "mapping", sourceLabel: m.row.label,
+              message: `"${m.row.label}" is a negative amount inside the statement's proved expense total, so it was booked to Schedule C deduction line ${target} as the positive magnitude ${r2(-asPrinted).toLocaleString()}.`,
+              target: `${SHEET.is}!F${target.split(":")[1]}`, source: m.docName,
             });
           }
           if (routed === "ambiguous") {
@@ -3365,13 +3384,13 @@ export function openingRateFor(
   pyRate: number | null,
   priorRate?: number | null,
 ): { rate: number; why: string } | null {
-  if (typeof priorRate === "number" && priorRate > 0) {
-    return { rate: priorRate, why: `the rate the prior return printed (${priorRate})` };
-  }
   const peg = peggedRate(currency || "");
   if (peg) return { rate: peg.rate, why: peg.note };
   if (typeof pyRate === "number" && pyRate > 0) {
-    return { rate: pyRate, why: `the prior year-end rate in use (${pyRate})` };
+    return { rate: pyRate, why: `the approved prior year-end rate (${pyRate})` };
+  }
+  if (typeof priorRate === "number" && priorRate > 0) {
+    return { rate: priorRate, why: `the prior return printed (${priorRate}); no approved year-end rate was available` };
   }
   return null;
 }
@@ -4029,9 +4048,9 @@ export async function materializeCaseWrites(
       const cy = cyRate && Math.abs(cyRate - stated) / stated > 0.005 ? ` The current year-end rate ${cyRate} differs from it in the same way.` : "";
       rv({
         id: "fx-prior-rate", level: "warn", category: "fx",
-        message: `The prior filing states an exchange rate of ${stated} (${cfSource} p.${cf.priorRate.page}); the rate table gives ${pyRate} for the prior year end, and that is what the opening column uses. Re-translated at ${pyRate} instead of ${stated}: ${
+        message: `The prior filing states an exchange rate of ${stated} (${cfSource} p.${cf.priorRate.page}); the rate table gives ${pyRate} for the prior year end. The opening column uses the prior filing's stated rate so it continues that filing consistently. Re-translated at the table rate ${pyRate} instead: ${
           fx.lines.map((l) => `${l.label} ${l.atPrior.toLocaleString()} → ${l.atTable.toLocaleString()} (${l.diff > 0 ? "+" : ""}${l.diff.toLocaleString()})`).join("; ")
-        }; net current assets ${fx.net.atPrior.toLocaleString()} → ${fx.net.atTable.toLocaleString()} (${fx.net.diff > 0 ? "+" : ""}${fx.net.diff.toLocaleString()}). The column ties to the prior filing in USD either way; in functional currency it does not, by that amount.${cy} To carry the prior filing's rate instead, enter ${stated} on Basic Information C61.`,
+        }; net current assets ${fx.net.atPrior.toLocaleString()} → ${fx.net.atTable.toLocaleString()} (${fx.net.diff > 0 ? "+" : ""}${fx.net.diff.toLocaleString()}). The column ties to the prior filing in USD either way; at the table rate, functional-currency opening figures move by that amount.${cy} Use the table rate only when the preparer explicitly elects it in Basic Information C61.`,
         target: `${SHEET.basic}!C61`, source: cfSource, suggestedValue: stated,
       });
     }
@@ -4483,7 +4502,11 @@ export async function materializeCaseWrites(
        Row 16 gets the local tax; S16/U16/U21 are template formulas, and
        Schedule I & I-1's D45 reads Sch E&E-1!U21 — the tested-taxes flow
        happens in the template itself, no I-1 writes needed (RAT-003). */
-    if (ent.profile.legalName) w({ sheet: SHEET.schE, ref: "B16", value: ent.profile.legalName, source: "current-year tax row" });
+    /* A P&L tax charge establishes expense, not that the tax was paid or
+       accrued for Schedule E.  Keep the row as a deliberate zero placeholder
+       until a tax return, assessment, or preparer assignment supplies that
+       evidence. */
+    if (ent.profile.legalName) w({ sheet: SHEET.schE, ref: "B16", value: ent.profile.legalName, source: "unconfirmed tax row" });
     const refId = cf?.referenceIds[0] || ent.profile.refId;
     if (refId) w({ sheet: SHEET.schE, ref: "E16", value: refId, source: "reference ID" });
     if (ent.profile.countryInc) w({ sheet: SHEET.schE, ref: "G16", value: ent.profile.countryInc, source: "country" });
@@ -4491,11 +4514,11 @@ export async function materializeCaseWrites(
       w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
     }
-    w({ sheet: SHEET.schE, ref: "O16", value: taxAbs, source: "P&L income tax expense", reviewId: "sch-e-current-tax" });
+    w({ sheet: SHEET.schE, ref: "O16", value: 0, source: "placeholder — P&L tax expense is not payment/accrual evidence", reviewId: "sch-e-current-tax" });
     if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, dp: 6, source: "average rate" });
     rv({
-      id: "sch-e-current-tax", level: "warn", category: "consistency", applied: true,
-      message: `Schedule E row 16 carries the ${taxAbs.toLocaleString()} income tax expense from the P&L. Confirm whether it was PAID or ACCRUED in the year (Schedule E wants taxes paid or accrued — an accrual-only figure may need the accrued column treatment). The USD amount and the Schedule I-1 tested-taxes flow compute in the template's own formulas.`,
+      id: "sch-e-current-tax", level: "block", category: "consistency",
+      message: `The P&L books ${taxAbs.toLocaleString()} of income-tax expense, but that is not proof it was paid or accrued for Schedule E. Schedule E remains zero until a tax return, assessment, payment record, or preparer assignment confirms the amount.`,
       target: `${SHEET.schE}!O16`, source: "income statement", suggestedValue: taxAbs,
     });
   }

@@ -12,14 +12,20 @@ let fails = 0;
 const a = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); fails++; } else console.log("ok:", msg); };
 
 // --- 0. snapshot sync guards ---------------------------------------------
-src.distChunks.forEach((c, i) => a(dist.includes(c), `snapshot chunk ${i} is byte-identical to dist`));
+// q1 now has a page-context Chilean number parser directly ahead of it. Keep
+// the compact historical snapshot and derive that one expected wrapper here,
+// so the executable test continues to pin the complete shipped function.
+const chunks = src.distChunks.map((c, i) => i !== src.distChunks.length - 1 ? c : c
+  .replace("function q1", `/*EN9CLNUM-BEGIN*/function EN9clNum(t,e,i){var s=String(i||"").trim();if(!/^-?\\d{1,3}\\.\\d{3}$/.test(s))return Oa(i);var n=t.rows.filter(function(a){return a.page===e}).map(function(a){return a.cells.map(function(A){return A.text}).join(" ")}).join(" ").toLowerCase();return /\\b(balance|estado de resultados|ingresos|gastos|activos|pasivos|patrimonio)\\b/.test(n)&&/\\b\\d{1,3}\\.\\d{3}\\b/.test(n)?Oa(s.replace(".","")):Oa(i)}/*EN9CLNUM-END*/function q1`)
+  .replace("I=Oa(C.text)", "I=EN9clNum(t,A.page,C.text)"));
+chunks.forEach((c, i) => a(dist.includes(c), `snapshot chunk ${i} is byte-identical to dist`));
 fs.readFileSync(path.join(__dirname, "vf_test_src.js"), "utf8").split("\n").map(l => l.trim()).filter(Boolean)
   .forEach((l, i) => a(dist.includes(l), `vf_test_src.js line ${i + 1} is byte-identical to dist (vF untouched)`));
 a(dist.includes("EN9-boy-gap-"), "boy-gap review item present in dist");
 a(dist.includes("inheritRulerFrom:EN9_INH("), "ruler inheritance wired at the call sites");
 
 // --- eval the shipped code ------------------------------------------------
-eval(src.local + src.distChunks.join(";"));
+eval(src.local + chunks.join(";"));
 
 // --- 1. EN9_HY accept/refuse table ---------------------------------------
 const HY_OK = [["2024", 2024], ["31 Dec 2024", 2024], ["31.12.2024", 2024], ["December 31, 2024", 2024],

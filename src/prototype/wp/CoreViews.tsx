@@ -593,7 +593,12 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
         kicker="Open items"
         title="Exception center"
         description="Everything standing between the loaded documents and a clean work paper, across all entities."
-        action={<button type="button" className="button" onClick={() => onNavigate("entities")}>Open workspace</button>}
+        action={
+          <div className="signoff-actions">
+            <button type="button" className="button" onClick={() => onNavigate("entities")}>Open workspace</button>
+            <button type="button" className="button primary" onClick={() => onNavigate("signoff")}>Review and sign off</button>
+          </div>
+        }
       />
       <div className="metric-grid">
         <div className="metric-card warn"><strong>{open.filter((b) => b.level === "block").length}</strong><span>Blocking</span><em>output refused</em></div>

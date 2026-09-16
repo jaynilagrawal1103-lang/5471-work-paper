@@ -89,10 +89,10 @@ t("the FX view keeps showing what the tables published", () => {
 
 /* ---- the opening rate: one answer, every cell ---- */
 
-t("the prior return's own printed rate outranks everything", () => {
+t("the approved prior-year end rate outranks a prior return's printed rate", () => {
   const r = STORE.openingRateFor("KYD", 0.82, 0.833);
-  assert.strictEqual(r.rate, 0.833);
-  assert.ok(/prior return printed/.test(r.why));
+  assert.strictEqual(r.rate, 0.82);
+  assert.ok(/approved prior year-end rate/.test(r.why));
 });
 
 t("the peg is next, ahead of the published prior year-end rate", () => {
@@ -101,10 +101,10 @@ t("the peg is next, ahead of the published prior year-end rate", () => {
   assert.ok(/peg/i.test(r.why));
 });
 
-t("an unpegged currency with no stated rate uses the rate in use", () => {
+t("an unpegged currency with no stated rate uses the approved rate", () => {
   const r = STORE.openingRateFor("EUR", 0.905, null);
   assert.strictEqual(r.rate, 0.905);
-  assert.ok(/prior year-end rate in use/.test(r.why));
+  assert.ok(/approved prior year-end rate/.test(r.why));
 });
 
 t("no usable rate at all is null, not a guess", () => {
