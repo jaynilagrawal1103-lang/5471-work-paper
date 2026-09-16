@@ -12,9 +12,10 @@ required to use the app.
 This repository is `jaynilagrawal1103-lang/5471-work-paper`, the original. A
 mirror lives at `squadai90-dot/Linkedin-Post-Automation`; the two client
 reconciliations were carried out there and ported back here on 2026-09-12.
-All of that work, and the 2026-09-14 OCR rebuild, is now merged: `main` is at
-`b5d4d0c`. Work branch: `claude/inspiring-bardeen-k08w1q`, which as of
-2026-09-15 is level with `origin/main`.
+All of that work, and the 2026-09-14 OCR rebuild, is merged. `main` is at
+`985ce6b` (2026-09-15, the local UX pass and Parnasa remediation). Work branch:
+`claude/inspiring-bardeen-k08w1q`, which carries `origin/main` merged in on
+2026-09-16 plus this file's corrections.
 
 ## Layout
 
@@ -132,7 +133,7 @@ Bundle and single-file delivery verified: the unzipped bundle serves the full
 page on HTTP 200, and deep links fall back correctly.
 
 On 2026-09-15 the shipped single file was re-verified end to end for local
-delivery: `dist/index.html` (3,368,495 bytes) has zero external `src`/`href`
+delivery: `dist/index.html` (3,383,443 bytes as of `985ce6b`) has zero external `src`/`href`
 URLs, `node scripts/serve-local.mjs <port>` returns HTTP 200 with the whole
 file at `/` and at an unknown deep path, and headless Chromium boots the page
 — all 16 workspace sections render (~16 KB of text) with no console errors.
@@ -140,7 +141,9 @@ The page reports "Backend unreachable - working locally", which is the
 expected no-backend state, not a fault. Serving it over HTTP is what makes the
 in-page OCR service discovery reach `/api/ocr`; opening the file directly from
 disk also works, and then OCR falls back to the local 8472 probe or the
-in-browser engine.
+in-browser engine. Re-verified on 2026-09-16 after merging `985ce6b`: 51/51
+EN9 sentinel pairs intact, HTTP 200 at `/` and at a deep path, page boots with
+no console errors.
 
 A second client reconciliation (SHORI CORPORATION 2024) on 2026-09-11 found
 three more defects and fixed them: QuickBooks group totals printed at the
@@ -168,6 +171,18 @@ is committed and merged — it is `main` at `b5d4d0c`, not a pending branch.
 (These suite counts are carried over from the sessions that ran them; they were
 not re-run on 2026-09-15, which had no `node_modules` installed.)
 
+On 2026-09-15 the owner landed a local UX pass and the Parnasa reconciliation remediation, committed as `985ce6b` and merged into this branch on 2026-09-16. Those entries had been filed under Open issues and labelled uncommitted; the commit contains exactly the files they describe, so they are recorded here as done:
+
+- 2026-09-15 local UX pass: `layer-src/enhance.js` now scopes OCR detection, visible jobs, manual results and transient selection state to `activeEntityId`; the OCR panel has a drop target, full filename wrapping, and detection/processing/completion timing. The local server's Windows OCR proxy route was corrected in `scripts/serve-local.mjs`. `src/prototype/wp/CoreViews.tsx` now gives Exception Centre a real `onNavigate("signoff")` action; the shipped enhancement layer delegates its matching button to the existing React Review & sign-off navigation control until the dist source is rebuilt. Verified service health and a real scanned-PDF OCR run. A temporary `Entity 2` was added in the browser solely to verify client switching; remove it after confirmation if no longer needed.
+
+- 2026-09-15 local UX pass: Exception Centre blocking sign-off actions now show an in-page mandatory audit-note dialog rather than a browser `prompt`, which can be suppressed in the embedded browser and had made the controls appear inert. The original dismiss/sign-off handler still does the work after a note is provided. The single-item and selected-batch dialog flows were verified and cancelled without changing any review item.
+
+- 2026-09-15 Parnasa reconciliation remediation: Chilean `BALANCE <entity>` pages with assets, liabilities and totals are now classified as balance sheets; Spanish suffix totals such as `INGRESOS TOTALES` and `GASTOS TOTALES` are skipped before broad mapping rules; single-dot Chilean amounts are read as thousands only when the page establishes that convention; and negative cost lines inside a proved expense total are booked as Schedule C deduction magnitudes. The mapping catalogue is v5 so saved projects receive the new total controls. The shipped `dist` has matching EN9 safeguards (no rebuild), including an accurate prior-filing FX-rate explanation. Verified with `test:spanish`, `test:sections`, `test:rulesparity`, `test:detect`, `test:srcparity`, `test:fxparity`, `test:layer`, and `test:integrity`; `test:inject` remains blocked on this Windows host because its temporary symlink requires elevated filesystem permission.
+
+- 2026-09-15 Parnasa follow-up remediation: catalogue v6 adds Chilean balance-sheet coverage for cash, investments, buildings, tax provisions, bank loans, guarantees, other payables and capital. A P&L caption `Patentes` is context-routed to Schedule C other deductions instead of Schedule F intangibles. Schedule E now leaves a zero placeholder and blocks generation until a paid/accrued tax source or preparer assignment is supplied; a P&L tax expense alone is not evidence. Opening balances use the approved prior-year end rate in Basic Information before falling back to a prior filing's printed rate. Source and reviewed dist were patched in parity. Verified `typecheck`, `test:spanish`, `test:fx`, `test:ruleup`, `test:rulesparity`, `test:gen`, `test:boot`, and local HTTP 200.
+
+Residue from that pass is in Open issues below.
+
 ## Rule catalogue upgrades
 
 Adding a group to `DEFAULT_RULES` is not enough. `upgradeRules` reaches a saved
@@ -181,15 +196,11 @@ cutting a release.
 
 ## Open issues
 
-- 2026-09-15 local UX pass (uncommitted): `layer-src/enhance.js` now scopes OCR detection, visible jobs, manual results and transient selection state to `activeEntityId`; the OCR panel has a drop target, full filename wrapping, and detection/processing/completion timing. The local server's Windows OCR proxy route was corrected in `scripts/serve-local.mjs`. `src/prototype/wp/CoreViews.tsx` now gives Exception Centre a real `onNavigate("signoff")` action; the shipped enhancement layer delegates its matching button to the existing React Review & sign-off navigation control until the dist source is rebuilt. Verified service health and a real scanned-PDF OCR run. A temporary `Entity 2` was added in the browser solely to verify client switching; remove it after confirmation if no longer needed.
-
-- 2026-09-15 local UX pass (uncommitted): Exception Centre blocking sign-off actions now show an in-page mandatory audit-note dialog rather than a browser `prompt`, which can be suppressed in the embedded browser and had made the controls appear inert. The original dismiss/sign-off handler still does the work after a note is provided. The single-item and selected-batch dialog flows were verified and cancelled without changing any review item.
-
-- 2026-09-15 Parnasa reconciliation remediation (uncommitted): Chilean `BALANCE <entity>` pages with assets, liabilities and totals are now classified as balance sheets; Spanish suffix totals such as `INGRESOS TOTALES` and `GASTOS TOTALES` are skipped before broad mapping rules; single-dot Chilean amounts are read as thousands only when the page establishes that convention; and negative cost lines inside a proved expense total are booked as Schedule C deduction magnitudes. The mapping catalogue is v5 so saved projects receive the new total controls. The shipped `dist` has matching EN9 safeguards (no rebuild), including an accurate prior-filing FX-rate explanation. Verified with `test:spanish`, `test:sections`, `test:rulesparity`, `test:detect`, `test:srcparity`, `test:fxparity`, `test:layer`, and `test:integrity`; `test:inject` remains blocked on this Windows host because its temporary symlink requires elevated filesystem permission.
-
-- 2026-09-15 Parnasa follow-up remediation (uncommitted): catalogue v6 adds Chilean balance-sheet coverage for cash, investments, buildings, tax provisions, bank loans, guarantees, other payables and capital. A P&L caption `Patentes` is context-routed to Schedule C other deductions instead of Schedule F intangibles. Schedule E now leaves a zero placeholder and blocks generation until a paid/accrued tax source or preparer assignment is supplied; a P&L tax expense alone is not evidence. Opening balances use the approved prior-year end rate in Basic Information before falling back to a prior filing's printed rate. Source and reviewed dist were patched in parity. Verified `typecheck`, `test:spanish`, `test:fx`, `test:ruleup`, `test:rulesparity`, `test:gen`, `test:boot`, and local HTTP 200.
-
-
+- A temporary `Entity 2` was created in the browser on 2026-09-15 purely to
+  verify client switching. It lives in browser storage, not in the repo;
+  delete it once switching is confirmed.
+- `test:inject` could not run on the owner's Windows host: its temporary
+  symlink needs elevated filesystem permission. It is not known to be broken.
 - Undecided: `tests/fixtures/shori_rows.json` carries a real client entity name
   and 15 partial bank/card numbers with balances. The Boating fixture beside it
   anonymises its entity name; this one does not. The tests pin figures and
