@@ -183,6 +183,22 @@ On 2026-09-15 the owner landed a local UX pass and the Parnasa reconciliation re
 
 Residue from that pass is in Open issues below.
 
+On 2026-09-16 the OCR path was measured end to end (report:
+`OCR_Workflow_and_Accuracy_Report.xlsx`, delivered to the owner; scripts and
+outputs stayed in the session scratchpad, nothing in the repo changed). Host:
+4 cores, no GPU, PP-OCRv5 via ONNX (weights inside the `onnxocr` wheel, no
+download), Tesseract 5.3.4 eng+spa. Evidence: pytest 25/25; `test:e2e-ocr`
+107/107 against the shipped dist + service; 18 OCR'd pages x 2 engines on the
+same cleaned images; 26 in-app processing runs (digital original vs PaddleOCR
+copy vs Tesseract copy). Results: PaddleOCR figures 98.3% (100% on clean
+scans, 39/42 on hard pages), Tesseract 92.8% (29/42 hard); work-paper
+bookings identical to the digital original from PaddleOCR copies 56/57,
+from Tesseract copies 30/57 - Tesseract's word boxes split captions
+("Accounts", "Deferred", "Trade") so lines land on wrong rows even when the
+digits are right. Keep PaddleOCR primary. Engine time per 300 dpi page with
+no contention: PaddleOCR 0.6-1.1 s, Tesseract 0.4-1.8 s; two Tesseract
+processes on one 4-core host thrash (55-580 s a page).
+
 ## Rule catalogue upgrades
 
 Adding a group to `DEFAULT_RULES` is not enough. `upgradeRules` reaches a saved
@@ -196,6 +212,27 @@ cutting a release.
 
 ## Open issues
 
+- OCR: a figure corrupted to `1:100.000)` (bracketed negative on a grainy
+  Spanish scan) gets no flag - `validate.py looks_numeric` rejects any token
+  with a colon before the grammar checks - and the app's `numericCell` then
+  refuses digit:digit as a time, so the figure is silently absent from the
+  work paper. Only unflagged OCR error that reached the work paper in the
+  2026-09-16 test. Fix: treat >=4 digits with one colon as numeric-like and
+  flag it; raise a review item for a caption row with digits but no value.
+- OCR: a wrong digit that keeps a valid shape (`61,199.37`, `443.711`) passes
+  the grammar check; only the cross-engine comparison catches it, and only
+  when the engines disagree. Fix candidates: always cross-check numeric
+  crops regardless of page confidence; sum-to-printed-total check surfaced
+  as an OCR review item.
+- OCR, minor: em dash read as a middle dot and glued to neighbours
+  (`SHEET·12/31/2024`, 15/18 pages); Spanish words glued
+  (`Préstamobancario`, `Capital.pagado`) - still mapped. Split on dashes and
+  middle dots in `split_line_into_words`.
+- Mapping side, seen while testing OCR (not OCR's fault): from the DIGITAL
+  fixture the rules leave Accounts payable, Deferred revenue and Retained
+  earnings unmatched and route Trade receivables to BS:10 by section
+  fallback; a bare 4-column trial balance and a 5-line German page classify
+  as `unknown`.
 - A temporary `Entity 2` was created in the browser on 2026-09-15 purely to
   verify client switching. It lives in browser storage, not in the repo;
   delete it once switching is confirmed.
