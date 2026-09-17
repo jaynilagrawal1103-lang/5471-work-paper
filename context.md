@@ -304,6 +304,57 @@ synthetic Schedule B page and carries its output through to the cells. Sections
 scanner, so neither would notice the extractor changing what it hands the
 writer; that seam is now covered. `test:usshare` is 34 checks.
 
+## HMC FY2025 reconciliation (2026-09-17) — open defects
+
+A tool-generated FY2025 work paper was reconciled against the client's
+hand-prepared FY2024 work paper, the signed 2025 accounts and the filed 2023
+return. The shareholding block reconciles in full. Schedule C and Schedule F do
+not. Every variance is arithmetically closed; the full workbook lives with the
+owner. Fourteen findings, the first three critical:
+
+1. `tagSections()` treats a REPEATED statement title as a section banner. These
+   accounts print "Statement of Financial Performance" as a running header on
+   the P&L's second page, so the section flips from `costs` back to `income` at
+   the page break and every page-2 caption with no keyword match is booked as
+   gross receipts. Six rows, 326,669 of expenses and donations booked as
+   income. Reproduced against the source, not inferred: see the probe shape in
+   the reconciliation. Fix: let a statement-title pattern set the section only
+   on its first appearance in a document; a repeat is page furniture.
+2. `structRows()` only recognises a subtotal when its components are indented
+   DEEPER than the total row. These accounts print the total at the SAME indent
+   as its components, so "Total Purchases", "Total Donations paid", "Total
+   Shareholders Remuneration" and "Total Term Liabilities" were all booked on
+   top of the detail beneath them. 270,737 double-counted. Fix: add a fourth
+   test — a total-word caption whose value equals the sum of the consecutive
+   rows immediately above it at the SAME indent, keeping the arithmetic proof.
+3. A movement schedule (the accounts' "Shareholder Current Accounts" page:
+   opening balance, funds introduced, drawings, closing balance) was classified
+   as a balance-sheet page, putting 12 non-balances on Schedule F line 16.
+   113,062 of the 111,749 year-end imbalance. Fix: recognise the shape in the
+   page classifier and book only its closing balance, or nothing.
+
+Also open: PPE/intangibles have no keyword rules so they fall to the "other
+assets" pool and the prior-return seeder then fills the empty lines 9a/9b with
+the same asset (34,167 counted twice); the prior-return carry-forward does not
+check that the return's period end matches the work paper's OPENING date, so a
+FY2023 return seeded a FY2025 work paper (Schedule J opened 2,093 light and two
+Schedule F lines carried 31/03/2023 balances); `'Shareholding Details'!N19` —
+the first DIRECT holder — is the shareholder percentage in four template cells
+(`8992!F7`, `Worksheet A!D82`, `Worksheet B!F16`/`F27`) and should be `N16`;
+the master template ships Schedule E `M16`/`O16`/`Q16` empty so the foreign tax
+has no rate and converts to zero; the Retained Earnings sheet's opening cell is
+never written although Schedule F already holds the figure (#VALUE! and a
+119,253 break); a keyword match outranks the section banner across the
+income/deduction divide (Motor Vehicle Contribution deducted, not earned); the
+accounts' Directory page names all three direct shareholders and is not read;
+line 21a is written negative; the other-deductions block has 17 rows where the
+client's own template has 25.
+
+Schedule F did not balance at either end (52,663 and 111,749) — the tool caught
+both and the blockers were acknowledged with the note "test". Consider
+rejecting trivial acknowledgement notes and stamping the imbalance on the
+Schedule F sheet itself, not only on Provenance.
+
 ## Rule catalogue upgrades
 
 Adding a group to `DEFAULT_RULES` is not enough. `upgradeRules` reaches a saved
