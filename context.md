@@ -304,56 +304,79 @@ synthetic Schedule B page and carries its output through to the cells. Sections
 scanner, so neither would notice the extractor changing what it hands the
 writer; that seam is now covered. `test:usshare` is 34 checks.
 
-## HMC FY2025 reconciliation (2026-09-17) — open defects
+## HMC FY2025 reconciliation (2026-09-17)
 
 A tool-generated FY2025 work paper was reconciled against the client's
 hand-prepared FY2024 work paper, the signed 2025 accounts and the filed 2023
-return. The shareholding block reconciles in full. Schedule C and Schedule F do
-not. Every variance is arithmetically closed; the full workbook lives with the
-owner. Fourteen findings, the first three critical:
+return. Shareholding reconciled in full; Schedule C and Schedule F did not.
+Fourteen findings. The first three — all mapping-pipeline defects — are FIXED:
 
-1. `tagSections()` treats a REPEATED statement title as a section banner. These
-   accounts print "Statement of Financial Performance" as a running header on
-   the P&L's second page, so the section flips from `costs` back to `income` at
-   the page break and every page-2 caption with no keyword match is booked as
-   gross receipts. Six rows, 326,669 of expenses and donations booked as
-   income. Reproduced against the source, not inferred: see the probe shape in
-   the reconciliation. Fix: let a statement-title pattern set the section only
-   on its first appearance in a document; a repeat is page furniture.
-2. `structRows()` only recognises a subtotal when its components are indented
-   DEEPER than the total row. These accounts print the total at the SAME indent
-   as its components, so "Total Purchases", "Total Donations paid", "Total
-   Shareholders Remuneration" and "Total Term Liabilities" were all booked on
-   top of the detail beneath them. 270,737 double-counted. Fix: add a fourth
-   test — a total-word caption whose value equals the sum of the consecutive
-   rows immediately above it at the SAME indent, keeping the arithmetic proof.
-3. A movement schedule (the accounts' "Shareholder Current Accounts" page:
-   opening balance, funds introduced, drawings, closing balance) was classified
-   as a balance-sheet page, putting 12 non-balances on Schedule F line 16.
-   113,062 of the 111,749 year-end imbalance. Fix: recognise the shape in the
-   page classifier and book only its closing balance, or nothing.
+1. **A repeated statement title reset the section at every page break.**
+   `tagSections()` ran BEFORE the furniture drop, and a multi-page P&L reprints
+   its own title at the top of each continuation page. That title IS a banner
+   ("Statement of Financial Performance" → income), so the section flipped from
+   `costs` back to `income` and every page-2 caption with no keyword match was
+   booked as gross receipts — six rows, 326,669. Fix: `dropFurniture()` now runs
+   first, in store.ts and behind `EN9FURNFIRST` in dist. `dropFurniture` already
+   knew how to spot a caption repeating across pages; it was simply too late in
+   the order. No new logic.
+2. **A subtotal printed FLUSH with the rows it adds was booked as data.**
+   `structRows()` only walked rows indented DEEPER than the total, so Xero-style
+   groups ("Total Purchases" level with "Contractor Labour Costs") were counted
+   twice — 270,737 across Schedule C and F. New fourth test in `structRows`
+   (`EN9FLUSHTOT` in dist): a total-word caption whose value equals the sum of
+   the consecutive rows immediately above it AT THE SAME indent. The walk stops
+   at a shallower row, at a row already found to be structure, at a caption
+   with no figure, and — the part that took a second pass to get right — at
+   ANOTHER total, proved or not. These accounts print "Total Expenses" as the
+   sum of 27 whole-dollar lines: 642,791 against a printed 642,794, three
+   dollars out, so it stays data; without that stop the next group's total
+   walked past it and summed 29 rows instead of its own one.
+3. **A movement schedule was read as a balance sheet.** The accounts'
+   "Shareholder Current Accounts" page (opening balance, funds introduced,
+   drawings, closing balance) put twelve non-balances on Schedule F line 16 —
+   113,062, the whole year-end imbalance. New `dropMovementSchedules()`
+   (`EN9MOVSCHED`): a page carrying BOTH an opening- and a closing-balance row
+   and NONE of the totals a balance sheet exists to state is a movement
+   schedule, and its rows are marked rather than deleted so the log can say so.
 
-Also open: PPE/intangibles have no keyword rules so they fall to the "other
-assets" pool and the prior-return seeder then fills the empty lines 9a/9b with
-the same asset (34,167 counted twice); the prior-return carry-forward does not
-check that the return's period end matches the work paper's OPENING date, so a
-FY2023 return seeded a FY2025 work paper (Schedule J opened 2,093 light and two
-Schedule F lines carried 31/03/2023 balances); `'Shareholding Details'!N19` —
-the first DIRECT holder — is the shareholder percentage in four template cells
-(`8992!F7`, `Worksheet A!D82`, `Worksheet B!F16`/`F27`) and should be `N16`;
-the master template ships Schedule E `M16`/`O16`/`Q16` empty so the foreign tax
-has no rate and converts to zero; the Retained Earnings sheet's opening cell is
-never written although Schedule F already holds the figure (#VALUE! and a
-119,253 break); a keyword match outranks the section banner across the
-income/deduction divide (Motor Vehicle Contribution deducted, not earned); the
-accounts' Directory page names all three direct shareholders and is not read;
-line 21a is written negative; the other-deductions block has 17 rows where the
-client's own template has 25.
+Proved by re-running the real client documents through the shipped file:
+Schedule C gross receipts 1,044,522, cost of goods sold 152,418, compensation
+707,012, rents 33,800, interest 84, depreciation 15,862 — every one exactly the
+signed accounts. Schedule F liabilities and equity at 31/03/2025 land on
+179,864, the accounts' figure to the dollar, where the supplied file had
+291,614. `test:sections` is 41 checks and both trees are compared on the new
+behaviour; `test:all` 1301, the one failure still `test:peg`.
 
-Schedule F did not balance at either end (52,663 and 111,749) — the tool caught
-both and the blockers were acknowledged with the note "test". Consider
-rejecting trivial acknowledgement notes and stamping the imbalance on the
-Schedule F sheet itself, not only on Provenance.
+One existing test asserted the old behaviour ("at the same indent as its
+siblings it is not a total of them") while its own name said the opposite. It
+was locking in the defect, and is rewritten to require the drop, with the
+no-arithmetic-tie case kept as the guard.
+
+### Still open from that reconciliation
+
+The residual on Schedule C is exactly 21,534 = finding 8, Motor Vehicle
+Contribution booked as a deduction when the accounts show it as Other Income
+(a keyword match outranks the section banner across the income/deduction
+divide; `sectionOk` already does this for the balance sheet and should be
+extended). The residual on the opening balance sheet is findings 4 and 5:
+PPE and intangibles have no keyword rules so they fall to the "other assets"
+pool and the prior-return seeder then fills the empty 9a/9b with the same
+asset (34,167 twice), and the carry-forward does not check that the return's
+period end matches the work paper's OPENING date, so a FY2023 return seeded a
+FY2025 work paper. Also open: `'Shareholding Details'!N19` — the first DIRECT
+holder — is the shareholder percentage in four template cells (`8992!F7`,
+`Worksheet A!D82`, `Worksheet B!F16`/`F27`) and should be `N16`; the master
+template ships Schedule E `M16`/`O16`/`Q16` empty so foreign tax has no rate
+and converts to zero; the Retained Earnings opening cell is never written
+although Schedule F holds the figure; the accounts' Directory page names all
+three direct shareholders and is not read; line 21a is written negative; the
+other-deductions block has 17 rows where the client's own template has 25.
+
+Noted while testing, not investigated: a comparative column printed as "-"
+yields one value, so `amtOf` (the LAST value) takes the CURRENT year's figure
+for that row. It affects only the structural arithmetic, never a booked
+amount, but it is why "Total Other Income" cannot be proved on this file.
 
 ## Rule catalogue upgrades
 

@@ -48,7 +48,8 @@ const SHIPPED = (() => {
     ";exports.indentOf=EN9indentOf;exports.amtOf=EN9amtOf;exports.kidsSum=EN9kidsSum;" +
     "exports.same=EN9same;exports.structRows=EN9structRows;exports.dropFurniture=EN9dropFurniture;" +
     "exports.bsSide=EN9bsSide;exports.sectionOk=EN9sectionOk;exports.sectionRoute=EN9sectionRoute;" +
-    "exports.tagSections=EN9tagSections;exports.SECTB=EN9SECTB;")(sandbox, ENG.BS_LINES);
+    "exports.tagSections=EN9tagSections;exports.SECTB=EN9SECTB;" +
+    "exports.dropMovementSchedules=EN9dropMovement;")(sandbox, ENG.BS_LINES);
   return sandbox;
 })();
 
@@ -187,7 +188,13 @@ t("a heading whose value is the sum of the rows beneath it is a summary", () => 
   assert.ok(out.slice(1).every((m) => !m.skipReason), "its components must survive");
 });
 
-t("a trailing total of the rows above it is skipped", () => {
+t("a trailing total printed flush with the rows it adds is skipped", () => {
+  /* This used to be left as data, on the reasoning that a total level with
+     its siblings is not provably their total. The arithmetic says otherwise:
+     200,000 + 28,705 IS 228,705, and booking the total as well counted the
+     group twice. Xero-style accounts set every group out this way -- on one
+     2025 file it double-counted cost of sales, donations, shareholders'
+     remuneration and the term loan. */
   const rows = [
     R("Cost of goods", null, 40),
     R("Purchases", 200000, 60),
@@ -195,7 +202,62 @@ t("a trailing total of the rows above it is skipped", () => {
     R("Total cost of goods", 228705, 60),
   ];
   const out = SRC.structRows(rows);
-  assert.ok(!out[3].skipReason, "at the same indent as its siblings it is not a total of them");
+  assert.match(out[3].skipReason, /total of the 2 row\(s\) printed flush above it/);
+  assert.ok(out.slice(1, 3).every((m) => !m.skipReason), "its components must survive");
+  assert.ok(out.slice(1, 3).every((m) => m.inTotal), "and are marked as counted by it");
+});
+
+t("a flush total is left as data when the arithmetic does not tie", () => {
+  // Same shape, one dollar out. Without a proof there is no subtotal, and a
+  // line the preparer cannot see is worse than one they can drop.
+  const rows = [
+    R("Cost of goods", null, 40),
+    R("Purchases", 200000, 60),
+    R("Freight", 28705, 60),
+    R("Total cost of goods", 228704, 60),
+  ];
+  assert.ok(!SRC.structRows(rows)[3].skipReason, "no tie, so it stays data");
+});
+
+t("a flush total stops at the group total above it, even one left as data", () => {
+  /* The statement's own rounding: 27 whole-dollar expense lines add to 642,791
+     against a printed 642,794, so "Total Expenses" cannot be proved and stays
+     data. The NEXT total must still stop there -- without this it walked
+     straight past and summed 29 rows instead of its own one, and the
+     shareholders' remuneration was booked twice. */
+  const rows = [
+    R("Expenses", null, 56.7),
+    R("Rent", 12000, 63.8),
+    R("Salaries", 20794, 63.8),
+    R("Total Expenses", 32797, 63.8),          // three dollars out: not provable
+    R("Wages - Heather Claycomb", 216300, 63.8),
+    R("Total Shareholders Remuneration", 216300, 63.8),
+  ];
+  const out = SRC.structRows(rows);
+  assert.ok(!out[3].skipReason, "the rounded total is left as data");
+  assert.match(out[5].skipReason, /total of the 1 row\(s\) printed flush above it/);
+  assert.ok(!out[1].skipReason && !out[2].skipReason, "the expenses are untouched");
+  const theirs = SHIPPED.structRows(rows).map((m) => m.EN9skip || null);
+  assert.deepStrictEqual(out.map((m) => m.skipReason || null), theirs, "both trees agree");
+});
+
+t("a flush total does not reach back past a group that already closed", () => {
+  // Two groups in a row. The second total must add ITS members only, never
+  // the first group's, or the tie is an accident.
+  const rows = [
+    R("Purchases", 200000, 60),
+    R("Total purchases", 200000, 60),
+    R("Rent", 12000, 60),
+    R("Insurance", 3000, 60),
+    R("Total overheads", 15000, 60),
+  ];
+  const out = SRC.structRows(rows);
+  // The first one is caught by the earlier, more specific test: it closes a
+  // group that opened by the same name. Either way it must not survive.
+  assert.ok(out[1].skipReason, "the first total is dropped");
+  // The second adds ITS two members and stops at the closed group above them.
+  assert.match(out[4].skipReason, /total of the 2 row\(s\) printed flush above it/);
+  assert.ok(!out[2].skipReason && !out[3].skipReason, "the overheads survive");
 });
 
 t("a total indented level with its siblings needs the total word at the outermost indent", () => {
@@ -258,6 +320,25 @@ t("structRows matches the shipped implementation on the whole fixture", () => {
   const mine = SRC.structRows(rows).map((m) => [m.row.label, m.skipReason || null]);
   const theirs = SHIPPED.structRows(rows).map((m) => [m.row.label, m.EN9skip || null]);
   assert.deepStrictEqual(mine, theirs);
+});
+
+t("src and the shipped file agree on a total printed flush with its rows", () => {
+  // The fixture above has no flush total, so it cannot tell the two trees
+  // apart on the behaviour that changed. This one can.
+  const rows = [
+    R("Cost of Sales", null, 56.7),
+    R("Purchases", null, 63.8),
+    R("Contractor Labour Costs", 152418, 70.9),
+    R("Total Purchases", 152418, 70.9),
+    R("Donation Paid", 50000, 63.8),
+    R("Total Donations paid", 50000, 63.8),
+    R("Totalisator levy", 4000, 63.8),
+  ];
+  const mine = SRC.structRows(rows).map((m) => [m.row.label, m.skipReason || null]);
+  const theirs = SHIPPED.structRows(rows).map((m) => [m.row.label, m.EN9skip || null]);
+  assert.deepStrictEqual(mine, theirs, "the two trees must drop exactly the same rows");
+  const dropped = mine.filter(([, why]) => why).map(([label]) => label);
+  assert.deepStrictEqual(dropped, ["Total Purchases", "Total Donations paid"]);
 });
 
 /* ---- furniture ---- */
@@ -337,6 +418,96 @@ t("step 3 skips structure, applies the veto AFTER a target is chosen, then the f
 
 t("the section travels onto the unmatched row", () => {
   assert.ok(store.includes("docId: m.docId, docName: m.docName, section: m.section,"));
+});
+
+
+
+/* ---- movement schedules ---- */
+
+const MOVEMENT_PAGE = [
+  R("Shareholder Current Accounts", null, 56.7, 11),
+  R("Opening Balance", 1384, 63.8, 11),
+  R("Funds Introduced", 26000, 63.8, 11),
+  R("Drawings", 15548, 63.8, 11),
+  R("FBT Contribution", 12382, 63.8, 11),
+  R("Closing Balance", -1312, 63.8, 11),
+];
+const BALANCE_PAGE = [
+  R("Current Liabilities", null, 56.7, 9),
+  R("Trade & Other Payables", 40897, 63.8, 9),
+  R("Income Tax Payable", 4508, 63.8, 9),
+  R("Total Current Liabilities", 45405, 63.8, 9),
+  R("Net Assets", 95781, 56.7, 9),
+];
+
+t("a page that reconciles one account's movements is not booked", () => {
+  const out = SRC.dropMovementSchedules(MOVEMENT_PAGE);
+  assert.ok(out.every((m) => m.skipReason), "every row on the page is dropped");
+  assert.match(out[1].skipReason, /reconciles one account's movements/);
+});
+
+t("a real balance-sheet page is left alone", () => {
+  // No opening/closing balance rows, and it states what a balance sheet
+  // exists to state.
+  assert.ok(SRC.dropMovementSchedules(BALANCE_PAGE).every((m) => !m.skipReason));
+});
+
+t("only the movement page is dropped when both are in one list", () => {
+  const out = SRC.dropMovementSchedules([...BALANCE_PAGE, ...MOVEMENT_PAGE]);
+  assert.ok(out.slice(0, BALANCE_PAGE.length).every((m) => !m.skipReason), "page 9 survives");
+  assert.ok(out.slice(BALANCE_PAGE.length).every((m) => m.skipReason), "page 11 does not");
+});
+
+t("a page that DOES state a balance-sheet total is left alone", () => {
+  // The guard: a page stating positions is a balance sheet whatever else it
+  // carries, so the detector must keep its hands off it.
+  const mixed = [...MOVEMENT_PAGE.map((m) => ({ ...m })), R("Total Assets", 179864, 56.7, 11)];
+  assert.ok(SRC.dropMovementSchedules(mixed).every((m) => !m.skipReason));
+});
+
+t("the shipped file drops the same movement page", () => {
+  const both = [...BALANCE_PAGE, ...MOVEMENT_PAGE];
+  const mine = SRC.dropMovementSchedules(both).map((m) => [m.row.label, !!m.skipReason]);
+  const theirs = SHIPPED.dropMovementSchedules(both).map((m) => [m.row.label, !!m.EN9skip]);
+  assert.deepStrictEqual(mine, theirs);
+});
+
+/* ---- the running header ---- */
+
+t("the running header is dropped BEFORE the banners are read", () => {
+  /* The defect this ordering fixes: a multi-page P&L repeats its own title at
+     the top of every continuation page, and that title is itself a banner, so
+     tagging first reset the section to income at each page break and every
+     unmatched expense below it was booked as revenue. */
+  const rows = [
+    R("Statement of Financial Performance", null, 56.7, 6),
+    R("Expenses", null, 56.7, 6),
+    R("Subscriptions", 40686, 63.8, 6),
+    R("Statement of Financial Performance", null, 56.7, 7),
+    R("Team Building", 3016, 63.8, 7),
+  ];
+  const wrong = SRC.tagSections(rows).map((m) => m.section);
+  assert.strictEqual(wrong[wrong.length - 1], "income", "tagging first is what went wrong");
+  for (const [label, tag, furn] of [["src", SRC.tagSections, SRC.dropFurniture],
+                                    ["dist", SHIPPED.tagSections, SHIPPED.dropFurniture]]) {
+    const out = tag(furn(rows));
+    assert.strictEqual(out.length, 3, label + ": both copies of the title are gone");
+    assert.strictEqual(out[out.length - 1].section, "costs",
+      label + ": page 7 stays in the section page 6 left off in");
+  }
+});
+
+t("the pipeline runs the furniture drop before tagging, and the movement drop after", () => {
+  const store = fs.readFileSync(path.join(root, "src/prototype/wp/store.ts"), "utf8");
+  const furn = store.indexOf("pdfIs = dropFurniture(pdfIs)");
+  const tag = store.indexOf("pdfIs = tagSections(pdfIs)");
+  const mov = store.indexOf("pdfBs = dropMovementSchedules(pdfBs)");
+  assert.ok(furn > 0 && tag > furn, "furniture is dropped first");
+  assert.ok(mov > tag, "movement pages are dropped once the rows carry their page");
+  assert.ok(dist.includes("/*EN9FURNFIRST-BEGIN*/"), "the shipped file does it too");
+  assert.ok(dist.includes("/*EN9MOVSCHED-CALL-BEGIN*/"), "and calls the movement drop");
+  assert.ok(dist.indexOf("/*EN9FURNFIRST-BEGIN*/") < dist.indexOf("EN9pi=EN9tagSections(EN9pi)"),
+    "in that order in the shipped file as well");
 });
 
 console.log(pass + " passed, " + fail + " failed");

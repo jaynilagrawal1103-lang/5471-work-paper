@@ -210,11 +210,100 @@ export function structRows(rows: MapRow[]): MapRow[] {
       }
     }
 
+    /* The trailing total printed FLUSH with the rows it adds, which is how
+       Xero-style accounts set out a group:
+
+         Purchases
+             Contractor Labour Costs   152,418
+             Total Purchases           152,418
+
+       Test 2 above cannot see this — it only walks rows indented DEEPER than
+       the total — so both lines were booked and cost of sales came out at
+       double. Four of these on one set of accounts ("Total Purchases", "Total
+       Donations paid", "Total Shareholders Remuneration", "Total Term
+       Liabilities") moved 270,737 across Schedule C and Schedule F.
+
+       The walk stops at the first row that is not a plain sibling: a shallower
+       row ends the group, and a row already found to be structure means this
+       is a total of totals, where the members are counted through them. The
+       arithmetic still has to tie, so a genuine account called "Total Return
+       Fund" is left alone. */
+    if (!m.skipReason && TOTAL_WORD.test(String(m.row.label || "").trim())) {
+      const flush: MapRow[] = [];
+      for (let j = i - 1; j >= 0; j--) {
+        const sib = out[j];
+        if (indentOf(sib) < ind) break;             // a shallower row ends the group
+        if (indentOf(sib) > ind) continue;          // a deeper row belongs to a sibling
+        if (sib.skipReason) break;                  // structure already claimed it
+        /* Another total closes the group above it, whether or not we managed
+           to prove it. These accounts print "Total Expenses" as the sum of 27
+           rounded lines: 642,791 against a printed 642,794, three dollars out,
+           so it stays data. Without this stop the next group's total walked
+           straight past it and added 29 rows instead of its own one. */
+        if (TOTAL_WORD.test(String(sib.row.label || "").trim())) break;
+        if (amtOf(sib) === null) break;             // a caption with no figure opens a new group
+        flush.unshift(sib);
+      }
+      if (flush.length && same(flush.reduce((n, k) => n + (amtOf(k) as number), 0), amt)) {
+        m.skipReason = `total of the ${flush.length} row(s) printed flush above it`;
+        for (const kid of flush) (kid as MapRow).inTotal = true;
+        continue;
+      }
+    }
+
     if (ind === outermost && TOTAL_WORD.test(String(m.row.label || "").trim())) {
       m.skipReason = "a total at the outermost indent of the report";
     }
   }
   return out;
+}
+
+/* ---------- movement schedules ---------- */
+
+/** The captions a movement schedule is built from. A balance sheet never
+    prints any of them: it states positions, not the year's traffic. */
+const OPENING_ROW = /^(opening balance|balance (?:at|as at) (?:the )?(?:start|beginning) of (?:the )?year|brought forward)$/i;
+const CLOSING_ROW = /^(closing balance|balance (?:at|as at) (?:the )?end of (?:the )?year|carried forward)$/i;
+/** What a real balance sheet closes with. Its presence means the page states
+    positions whatever else is on it, so the page is left alone. */
+const BS_ANCHOR = /^(total (?:current |non-?current |term )?(?:assets|liabilities)|net assets|total (?:liabilities and )?(?:equity|capital))$/i;
+
+/** Drop the pages that reconcile ONE account's movements over the year.
+ *
+ * A set of accounts often carries a page like "Shareholder Current Accounts",
+ * laid out as opening balance, funds introduced, drawings, closing balance.
+ * Every row on it reads like a balance-sheet caption and carries a figure, so
+ * the page classifier files it as a balance sheet and all of it is booked.
+ * On one 2025 file that put twelve non-balances onto Schedule F line 16 —
+ * 113,062, the whole of the year-end imbalance — including the closing
+ * balance, which the balance sheet proper had already supplied.
+ *
+ * The test is the shape the layout cannot have by accident: the page opens
+ * with an opening balance AND closes with a closing balance, and states none
+ * of the totals a balance sheet exists to state. The reason is kept on the
+ * row so the log can say what was dropped and the preparer can disagree. */
+export function dropMovementSchedules<T extends MapRow>(rows: T[]): T[] {
+  const byPage = new Map<number, T[]>();
+  for (const m of rows) {
+    const page = Number(m.row && m.row.page);
+    if (!isFinite(page)) continue;
+    if (!byPage.has(page)) byPage.set(page, []);
+    byPage.get(page)!.push(m);
+  }
+  const movement = new Set<number>();
+  for (const [page, list] of byPage) {
+    const label = (m: T) => String((m.row && m.row.label) || "").trim();
+    if (list.some((m) => BS_ANCHOR.test(label(m)))) continue;
+    if (list.some((m) => OPENING_ROW.test(label(m))) && list.some((m) => CLOSING_ROW.test(label(m)))) {
+      movement.add(page);
+    }
+  }
+  if (!movement.size) return rows;
+  return rows.map((m) =>
+    movement.has(Number(m.row && m.row.page)) && !m.skipReason
+      ? { ...m, skipReason: `page ${m.row.page} reconciles one account's movements over the year — it states no balances` }
+      : m,
+  );
 }
 
 /** Caption reduced to the letters and digits that carry meaning, so that

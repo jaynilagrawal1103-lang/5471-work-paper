@@ -10,7 +10,7 @@ import { r2, r2add, sanitize } from "./hygiene";
 import { pdfToDoc } from "./pdfText";
 import { parseQuestionnaire, type Questionnaire } from "./questionnaire";
 import { irsCountryCode } from "./countryCodes";
-import { collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
+import { collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, dropFurniture, dropMovementSchedules, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
   AI_BATCH, TPM_BUDGET, aiMode, askResume, classifyFailure, estTokens, maxTokensFor,
@@ -1953,8 +1953,23 @@ export const actions = {
             for (const row of bsPages.size ? extractPositionedRows(parsed.pdf, rulers, { pages: bsPages }) : []) {
               pdfBs.push({ row, docId: file.id, docName: file.name, feed: "bs", kind: "pdf", x0: row.x0 });
             }
+            /* Page furniture goes FIRST, before anything reads the banners.
+               A multi-page statement repeats its own title at the top of every
+               continuation page, and that title IS a section banner ("Statement
+               of Financial Performance" -> income). Tagging before the drop let
+               the running header reset the section at every page break, so a
+               P&L that ran onto a second page had its remaining expenses booked
+               as income — 326,669 of them on one 2025 file. structRows drops the
+               same rows a few lines below; doing it here as well costs nothing
+               (the second pass finds nothing left to drop) and stops the header
+               being read as structure by anything downstream. */
+            pdfIs = dropFurniture(pdfIs);
+            pdfBs = dropFurniture(pdfBs);
             pdfIs = tagSections(pdfIs);
             pdfBs = tagSections(pdfBs);
+            // A page that reconciles one account's movements is not a balance
+            // sheet, however much its captions read like one.
+            pdfBs = dropMovementSchedules(pdfBs);
             const refed = refeedBySection(pdfIs, pdfBs);
             pdfIs = refed.is;
             pdfBs = refed.bs;
