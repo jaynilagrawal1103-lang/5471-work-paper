@@ -251,9 +251,8 @@ the write list (2026-09-17):
    every number to 2 dp unless the write says otherwise, and a percentage held
    as a fraction needs more; the P writes now carry `dp: 6`.
 
-Proof is an end-to-end generation run in Chromium: build the HMC shape (ARCK
-TRUST 98 direct, two Claycombs 25.5/25.5 at 25.5%), generate, unzip, read the
-sheet. B7 = RODNEY W CLAYCOMB, H7/J7 = 25.5, P7/P8 = 0.255, row 9 empty, B19
+Proof is an end-to-end generation run in Chromium: build the HMC shape (a trust 98 direct, two individuals 25.5/25.5 at 25.5%), generate, unzip, read the
+sheet. B7 = the first U.S. shareholder, H7/J7 = 25.5, P7/P8 = 0.255, row 9 empty, B19
 still the trust with 98. `test:usshare` is 23 checks; `test:all` 1279.
 
 2026-09-17, third pass — the % Ownership denominator. Every percentage in BOTH
@@ -277,7 +276,7 @@ unchanged. Only `xl/worksheets/sheet2.xml` differs; the other 74 parts are
 byte-identical.
 
 Proof, by generating a workbook and recalculating it with LibreOffice: H4/J4 =
-100, Rodney and Heather 25.5 shares at 25.50% each, Subpart F 25.50% each,
+100, both U.S. shareholders 25.5 shares at 25.50% each, Subpart F 25.50% each,
 U.S. totals 51 shares / 51.00%, "% held by U.S. Shareholders" 51.00% (was
 126.02%), the trust 98 shares at 98.00% (was 100%). `test:usshare` is 32
 checks, the end-to-end generation test 13, `test:all` 1288.
@@ -286,6 +285,24 @@ Note on BOY/EOY share counts: they are NOT calculated. They are read verbatim
 from Part I columns (c)/(d), which print 25.500 — 25.5 SHARES. The 25.50% is a
 different column, (e), the pro rata Subpart F share. The two look alike here
 only because 100 shares are outstanding.
+
+Verified against the client's actual return (page 41 of the 2023 filing):
+parsed, generated and recalculated with LibreOffice, every cell matches the
+form. The page itself was NOT kept as a fixture — it carries SSNs and a home
+address, and the parse it proves is already covered by row-level fixtures.
+
+Test data is synthetic. `test_schedule_b.cjs` and `test_us_shareholders.cjs`
+previously carried the real names, street address and SSNs from that return;
+all of it is now replaced (ALAN R SAMPLE / BETH M SAMPLE / TEST TRUST, 1 SAMPLE
+STREET, 111-11-1111 …). The share counts and percentages are unchanged — they
+are what the logic turns on. Narrative comments still name the engagement, the
+way the repo's other fixtures do.
+
+`test_us_shareholders.cjs` also drives the REAL `extractCarryForward` over a
+synthetic Schedule B page and carries its output through to the cells. Sections
+1-5 test the writer in isolation and `test_schedule_b.cjs` tests a COPY of the
+scanner, so neither would notice the extractor changing what it hands the
+writer; that seam is now covered. `test:usshare` is 34 checks.
 
 ## Rule catalogue upgrades
 
@@ -304,11 +321,6 @@ cutting a release.
   return's printed rate" (0.833 vs 0.82). PRE-EXISTING: it fails identically at
   985ce6b, before the 2026-09-17 work. Which rate should win is a business-rule
   decision for the owner, so it was left alone rather than silently changed.
-- The % Ownership columns in BOTH shareholder blocks divide by the DIRECT total
-  (`H27 = SUM(H19:H26)`), so a sole direct holder always reads 100% whatever the
-  real shares outstanding. HMC's return implies 100 shares issued (25.5% for
-  25.5 shares) while the direct rows total 98. A "total shares outstanding"
-  input cell would fix it; that is a template change and needs the owner's call.
 - OCR: a figure corrupted to `1:100.000)` (bracketed negative on a grainy
   Spanish scan) gets no flag - `validate.py looks_numeric` rejects any token
   with a colon before the grammar checks - and the app's `numericCell` then

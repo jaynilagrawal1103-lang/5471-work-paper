@@ -39,8 +39,8 @@ const distWrites = new Function("Ce", m[1] + ";return EN9usShWrites;")({ shareho
 
 const SH = ENG.SHEET.shareholding;
 const PART_I = [
-  { name: "RODNEY W CLAYCOMB", classOfShares: "COMMON", boy: 25.5, eoy: 25.5, pct: 25.5, source: "prior 5471" },
-  { name: "HEATHER M CLAYCOMB", classOfShares: "COMMON", boy: 25.5, eoy: 25.5, pct: 25.5, source: "prior 5471" },
+  { name: "ALAN R SAMPLE", classOfShares: "COMMON", boy: 25.5, eoy: 25.5, pct: 25.5, source: "prior 5471" },
+  { name: "BETH M SAMPLE", classOfShares: "COMMON", boy: 25.5, eoy: 25.5, pct: 25.5, source: "prior 5471" },
 ];
 const at = (rows, ref) => rows.find((w) => w.ref === ref);
 
@@ -69,8 +69,8 @@ t("the direct block below is untouched by the change", () => {
 for (const [label, fn] of [["src", STORE.usShareholderWrites], ["dist", distWrites]]) {
   t(`${label}: both Part I holders land on rows 7 and 8`, () => {
     const rows = fn(PART_I, "prior 5471");
-    assert.strictEqual(at(rows, "B7").value, "RODNEY W CLAYCOMB");
-    assert.strictEqual(at(rows, "B8").value, "HEATHER M CLAYCOMB");
+    assert.strictEqual(at(rows, "B7").value, "ALAN R SAMPLE");
+    assert.strictEqual(at(rows, "B8").value, "BETH M SAMPLE");
     assert.strictEqual(at(rows, "H7").value, 25.5);
     assert.strictEqual(at(rows, "J8").value, 25.5);
     assert.strictEqual(at(rows, "F7").value, "COMMON");
@@ -172,11 +172,11 @@ t("the curated map lets a write replace the template's mirror formula", () => {
   // replace a formula with a plain value unless the caller says the curated
   // map does not claim that ref — which is exactly the case here.
   const XP = load("src/prototype/wp/xlsxPatch.ts");
-  const xml = '<sheetData><row r="7"><c r="B7"><f>B19</f><v>ARCK TRUST</v></c></row></sheetData>';
-  assert.ok(/<f>B19<\/f>/.test(XP.setCell(xml, "B7", "RODNEY W CLAYCOMB")), "protected by default");
-  const opened = XP.setCell(xml, "B7", "RODNEY W CLAYCOMB", true);
+  const xml = '<sheetData><row r="7"><c r="B7"><f>B19</f><v>TEST TRUST</v></c></row></sheetData>';
+  assert.ok(/<f>B19<\/f>/.test(XP.setCell(xml, "B7", "ALAN R SAMPLE")), "protected by default");
+  const opened = XP.setCell(xml, "B7", "ALAN R SAMPLE", true);
   assert.ok(!/<f>/.test(opened), "the mirror formula is gone once allowed");
-  assert.ok(/RODNEY W CLAYCOMB/.test(opened), "the U.S. shareholder's name replaced it");
+  assert.ok(/ALAN R SAMPLE/.test(opened), "the U.S. shareholder's name replaced it");
 });
 t("the shipped file threads the same allowance through its writer", () => {
   assert(dist.includes("/*EN9FMLOVR-BEGIN*/"), "setCell takes the allow flag");
@@ -184,6 +184,78 @@ t("the shipped file threads the same allowance through its writer", () => {
   assert(/EN9FMLARG\*\/\{mayReplaceFormula:/.test(dist), "the caller supplies the allow-list");
   assert(/EN9sh===Ce\.shareholding&&\(?\/\^\[BFHJP\]/.test(dist),
     "and that allow-list is only the U.S. Shareholders block, not every formula");
+});
+
+/* ------ 5b. the whole chain, from a parsed Schedule B to the cells ------
+
+   Sections 1-5 test the writer in isolation and test_schedule_b.cjs tests a
+   COPY of the scanner. Neither notices if the real extractor stops handing the
+   writer what it expects. This drives the shipped extractor over a Schedule B
+   page and carries its output through to the cells, which is the path a return
+   actually takes. Layout is a real filing's; names and identifiers are not. */
+const CF = load("src/prototype/wp/carryForward.ts");
+const SCHEDULE_B_PAGE = [
+  ["Schedule B", "Shareholders of Foreign Corporation"],
+  ["Part I", "U.S. Shareholders of Foreign Corporation (see instructions)"],
+  ["(a) Name, address, and identifying", "(b) Description of each class of stock held by shareholder.",
+   "(c) Number of", "(d) Number of", "(e) Pro rata share"],
+  ["number of shareholder", "description entered in Schedule A, column (a).",
+   "shares held at", "shares held at", "of Subpart F"],
+  ["ALAN R SAMPLE", "COMMON", "25.500", "25.500"],
+  ["1 SAMPLE STREET"],
+  ["SAMPLETON, NEW ZEALAND 3210"],
+  ["111-11-1111", "25.50%"],
+  ["BETH M SAMPLE", "COMMON", "25.500", "25.500"],
+  ["1 SAMPLE STREET"],
+  ["SAMPLETON, NEW ZEALAND 3210"],
+  ["222-22-2222", "25.50%"],
+  ["Part II", "Direct Shareholders of Foreign Corporation (see instructions)"],
+  ["(a) Name, address, and identifying number of", "(b) Description of each class of stock held by shareholder."],
+  ["TEST TRUST (TEST LEGACY TRUS", "COMMON", "98.000 98.000"],
+  ["1 SAMPLE STREET"],
+  ["SAMPLETON, NEW ZEALAND 3210"],
+  ["333-33-3333", "NZ"],
+];
+function parseScheduleB() {
+  const rows = SCHEDULE_B_PAGE.map((cells, i) => ({
+    page: 1, y: 740 - i * 12,
+    cells: cells.map((text, k) => ({ text, x0: 30 + k * 110, x1: 30 + k * 110 + 100 })),
+  }));
+  const cls = { kind: "prior-year-us-return", notes: [], statementYear: 2023,
+                pages: [{ page: 1, kind: "us-5471-schB", score: 1 }] };
+  return CF.extractCarryForward(cls, { kind: "pdf", grid: SCHEDULE_B_PAGE, pdf: { pageCount: 1, rows } });
+}
+
+t("the extractor hands the writer both parts, kept apart", () => {
+  const cf = parseScheduleB();
+  assert.strictEqual(cf.hasScheduleB, true);
+  assert.deepStrictEqual((cf.usHolders || []).map((h) => h.name), ["ALAN R SAMPLE", "BETH M SAMPLE"]);
+  assert.deepStrictEqual((cf.holders || []).map((h) => h.name), ["TEST TRUST (TEST LEGACY TRUS"]);
+  // the pro rata % exists only in Part I and is the denominator's only source
+  assert.deepStrictEqual((cf.usHolders || []).map((h) => h.pct), [25.5, 25.5]);
+});
+
+t("a parsed Schedule B lands on the right cells, in both trees", () => {
+  const cf = parseScheduleB();
+  const list = (cf.usHolders || []).map((h) => ({ ...h, source: `prior 5471 · Sch B Part I p.${h.page}` }));
+  const directs = { boy: cf.holders[0].boy, eoy: cf.holders[0].eoy };
+  assert.strictEqual(STORE.outstandingFromPartI(list, "eoy"), 100,
+    "25.5 shares stated as 25.50% means 100 are issued");
+  for (const [tree, fn] of [["src", STORE.usShareholderWrites], ["dist", distWrites]]) {
+    const rows = fn(list, "prior 5471", directs);
+    const v = (ref) => (at(rows, ref) || {}).value;
+    assert.strictEqual(v("B7"), "ALAN R SAMPLE", tree);
+    assert.strictEqual(v("B8"), "BETH M SAMPLE", tree);
+    assert.strictEqual(v("H7"), 25.5, tree);
+    assert.strictEqual(v("J8"), 25.5, tree);
+    assert.strictEqual(v("P7"), 0.255, `${tree}: Subpart F is the stated 25.50%, not 26%`);
+    assert.strictEqual(v("H4"), 100, `${tree}: the denominator is outstanding, not the direct total`);
+    assert.strictEqual(v("J4"), 100, tree);
+    assert.strictEqual(v("B9"), "", `${tree}: unused rows are cleared, not left mirroring row 19`);
+    // the trust is a DIRECT holder only: it must never appear in the U.S. block
+    assert.ok(!rows.some((w) => typeof w.value === "string" && /TEST TRUST/.test(w.value)),
+      `${tree}: Part II leaked into the U.S. Shareholders block`);
+  }
 });
 
 /* ---------------- 6. the shipped file is actually wired up ---------------- */

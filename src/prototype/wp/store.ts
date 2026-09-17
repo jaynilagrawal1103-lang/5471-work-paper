@@ -3620,8 +3620,8 @@ const US_ROWS = 8;
     rata percentage (column (e)) for the SAME holder, so the denominator the
     preparer worked to is shares ÷ (pct/100). HMC Communications: 25.5 ÷ 0.255
     = 100 shares issued, which makes the trust's 98 direct shares 98% — not the
-    100% you get by dividing by the direct-holder total, and makes each
-    Claycomb 25.50% rather than 26.02%.
+    100% you get by dividing by the direct-holder total, and makes each U.S.
+    shareholder 25.50% rather than 26.02%.
 
     Returns null when Part I states no percentage, or when the holders imply
     different totals. The template then falls back to the direct-holder total,
