@@ -233,6 +233,29 @@ source-badge components). Verified in Chromium: 15 checks covering the card
 rendering, the empty-state warning about the template mirror, and the values
 reaching B7/B8/H7/J8 with P7/P8 = 0.255.
 
+Two follow-on defects, found by generating a real workbook rather than trusting
+the write list (2026-09-17):
+
+1. Row 7 still showed the DIRECT holder while rows 8+ showed the U.S. ones.
+   `xlsxPatch.setCell` has a second, independent guard — a P0 audit fix — that
+   refuses to replace a cell holding a formula with a plain value. B7/H7/J7 are
+   the template's `=B19/=H19/=J19` mirror, so those three writes were silently
+   dropped while the empty rows below took theirs. `applyWrites` now takes
+   `mayReplaceFormula(sheet, ref)`; `REPLACEABLE_FORMULA_REFS` (engine.ts) is
+   the whole allow-list and contains exactly one entry: Shareholding Details
+   B/F/H/J/P rows 7-14. Everything else stays protected, and the injection hole
+   the P0 fix closed stays closed — `buildCell` still cannot emit `<f>`, so no
+   user string can become a live formula. A first attempt keyed the allowance
+   off FORMULA_REFS, which was far too broad and rightly failed `test:gen`.
+2. The Subpart F percentage shipped as 0.26, not 0.255. `buildWrites` rounds
+   every number to 2 dp unless the write says otherwise, and a percentage held
+   as a fraction needs more; the P writes now carry `dp: 6`.
+
+Proof is an end-to-end generation run in Chromium: build the HMC shape (ARCK
+TRUST 98 direct, two Claycombs 25.5/25.5 at 25.5%), generate, unzip, read the
+sheet. B7 = RODNEY W CLAYCOMB, H7/J7 = 25.5, P7/P8 = 0.255, row 9 empty, B19
+still the trust with 98. `test:usshare` is 23 checks; `test:all` 1279.
+
 ## Rule catalogue upgrades
 
 Adding a group to `DEFAULT_RULES` is not enough. `upgradeRules` reaches a saved

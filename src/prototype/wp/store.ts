@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES,
+  BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES, REPLACEABLE_FORMULA_REFS,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
   detectRulers, explainUnreadable, extractPositionedRows, extractRows, matchRule, numeric, readDocument, signForLabel,
   type ExtractedRow, type MappingRule, type ParsedDoc,
@@ -3626,7 +3626,9 @@ export function usShareholderWrites(list: Shareholder[] | undefined, fallbackSou
     add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: h.eoy, source: src });
     // The cell is formatted as a percentage, so 25.5% is stored as 0.255.
     if (typeof h.pct === "number" && isFinite(h.pct)) {
-      add.push({ sheet: SHEET.shareholding, ref: `P${row}`, value: r2(h.pct) / 100, source: `${src} · Sch B Part I col (e)` });
+      /* dp: a percentage stored as a fraction needs more than the default 2 dp -
+         25.5% is 0.255, and rounding to 2 shipped 0.26 (26%). */
+      add.push({ sheet: SHEET.shareholding, ref: `P${row}`, value: r2(h.pct) / 100, dp: 6, source: `${src} · Sch B Part I col (e)` });
     } else {
       /* Part I stated no percentage for this holder. Clear the cell rather
          than leave one behind from an earlier run or from the template. */
@@ -5247,7 +5249,9 @@ export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffe
     });
   }
 
-  const report = await applyWrites(zip, writes);
+  const report = await applyWrites(zip, writes, {
+    mayReplaceFormula: (sheet, ref) => !!REPLACEABLE_FORMULA_REFS[sheet]?.(ref),
+  });
 
   /* AFTER applyWrites, so the provenance describes what was actually written,
      and wrapped so it can never block a download: a work paper without its

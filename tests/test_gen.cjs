@@ -10,9 +10,18 @@ const a = (c, m) => { if (!c) { console.error("FAIL:", m); fails++; } else conso
 // corruption vectors
 a(!dist.includes('n.charAt(0)==="="?`<c r="${t}"${s}><f>'),
   "a8 no longer turns leading-= strings into live formulas");
-a(dist.includes('if(A[2]!=="/>"&&/<f[ >]/.test(A[2]))return A8=!0,t;') &&
+a(dist.includes('if(!EN9ok&&A[2]!=="/>"&&/<f[ >]/.test(A[2]))return A8=!0,t;') &&
   !dist.includes('!(typeof i=="string"&&i.charAt(0)==="=")&&A[2]!=="/>"'),
-  "_J always protects existing template formulas (= bypass removed)");
+  "_J protects existing template formulas (= bypass still removed)");
+/* The one allowance: a plain value may replace a shipped formula ONLY in the
+   U.S. Shareholders block, whose B7/H7/J7 ship as =B19/=H19/=J19 and must be
+   overwritten by Schedule B Part I. It is a fixed cell list in code, not
+   anything a document or a user can influence, and a8 still cannot emit <f>,
+   so no user string can become a live formula. */
+a(/mayReplaceFormula:function\(EN9sh,EN9rf\)\{return EN9sh===Ce\.shareholding&&\/\^\[BFHJP\]/.test(dist),
+  "the only formula-replacement allowance is the U.S. Shareholders block");
+a(!/mayReplaceFormula[^}]*\|\|/.test(dist.slice(dist.indexOf("mayReplaceFormula:function"), dist.indexOf("mayReplaceFormula:function") + 200)),
+  "that allowance names one sheet only");
 a(dist.includes('Enter a number \\u2014 this exception writes into a numeric schedule cell'),
   "exception edits into schedule cells reject non-numeric text");
 

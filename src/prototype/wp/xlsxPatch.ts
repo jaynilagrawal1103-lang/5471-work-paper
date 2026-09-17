@@ -35,7 +35,7 @@ function buildCell(ref: string, value: CellValue, styleAttr: string | null): str
 /** Set by setCell when it refuses to overwrite a formula; read by applyWrites. */
 let lastRefusedFormula = false;
 
-export function setCell(xml: string, ref: string, value: CellValue): string {
+export function setCell(xml: string, ref: string, value: CellValue, allowFormulaOverwrite = false): string {
   const { colNum, row } = splitRef(ref);
   lastRefusedFormula = false;
 
@@ -43,10 +43,15 @@ export function setCell(xml: string, ref: string, value: CellValue): string {
   const cellRe = new RegExp(`<c r="${ref}"(?![0-9])([^>]*?)(/>|>[\\s\\S]*?</c>)`);
   const hit = cellRe.exec(xml);
   if (hit) {
-    // Belt: never destroy an existing formula with a plain value. The curated
-    // cell maps should prevent this; when they don't, refuse and report.
+    /* Belt: never destroy an existing formula with a plain value. The curated
+       cell maps decide; when the caller says this ref is NOT a formula cell,
+       an existing formula is one the template shipped and the write is meant
+       to replace it. Shareholding Details B7/H7/J7 ship as =B19/=H19/=J19, a
+       mirror of the first DIRECT holder, and Schedule B Part I must overwrite
+       it — without this the U.S. block kept showing the direct shareholder on
+       row 7 while rows 8+ took the real U.S. ones. */
     const incomingFormula = typeof value === "string" && value.charAt(0) === "=";
-    if (!incomingFormula && hit[2] !== "/>" && /<f[ >]/.test(hit[2])) {
+    if (!incomingFormula && !allowFormulaOverwrite && hit[2] !== "/>" && /<f[ >]/.test(hit[2])) {
       lastRefusedFormula = true;
       return xml;
     }
@@ -143,7 +148,15 @@ function forceRecalc(wbXml: string): string {
 export type PatchReport = { written: number; skippedSheets: string[]; refusedFormula: string[] };
 export type Writes = Record<string, Record<string, CellValue>>;
 
-export async function applyWrites(zip: any, writes: Writes): Promise<PatchReport> {
+export type ApplyOpts = {
+  /** True only for the handful of cells where a value may replace a formula
+      the template shipped. Supplied by the caller so this module stays
+      dependency-free. Absent means "every existing formula is protected",
+      the original behaviour. */
+  mayReplaceFormula?: (sheet: string, ref: string) => boolean;
+};
+
+export async function applyWrites(zip: any, writes: Writes, opts?: ApplyOpts): Promise<PatchReport> {
   const sheets = await sheetIndex(zip);
   const report: PatchReport = { written: 0, skippedSheets: [], refusedFormula: [] };
 
@@ -152,7 +165,9 @@ export async function applyWrites(zip: any, writes: Writes): Promise<PatchReport
     if (!path || !zip.file(path)) { report.skippedSheets.push(sheetName); continue; }
     let xml: string = await zip.file(path).async("string");
     for (const [ref, value] of Object.entries(cells)) {
-      xml = setCell(xml, ref, value);
+      // Only the explicitly listed cells may replace a shipped formula.
+      const mayReplace = opts?.mayReplaceFormula ? opts.mayReplaceFormula(sheetName, ref) : false;
+      xml = setCell(xml, ref, value, mayReplace);
       if (lastRefusedFormula) report.refusedFormula.push(`${sheetName}!${ref}`);
       else report.written++;
     }

@@ -235,6 +235,21 @@ export const FORMULA_REFS: Record<string, (ref: string) => boolean> = {
 
 /* Leftover captions from the template's demo client; cleared when the run
    leaves their row unused so junk labels never ship in a generated file. */
+/* Cells where a write may REPLACE a formula the template itself shipped.
+   Deliberately tiny. The U.S. Shareholders block ships B7/H7/J7 as
+   =B19/=H19/=J19 — a mirror of the FIRST direct holder — and Schedule B Part I
+   has to overwrite it, or row 7 keeps showing the direct shareholder while
+   rows 8+ show the real U.S. ones. Every other template formula stays
+   protected by FORMULA_REFS and by the belt in xlsxPatch.setCell.
+
+   This does NOT reopen the formula-injection hole closed by the P0 audit:
+   buildCell can no longer emit <f> at all, so no user-supplied string can
+   become a live formula. It only allows a plain VALUE to replace a formula,
+   and only in these cells. */
+export const REPLACEABLE_FORMULA_REFS: Record<string, (ref: string) => boolean> = {
+  [SHEET.shareholding]: (ref) => /^[BFHJP](?:[7-9]|1[0-4])$/.test(ref),
+};
+
 export const DEMO_RELABELS: Record<string, string[]> = {
   [SHEET.is]: ["C34", "C35", "C36", "C37", "C38", "C39", "C40", "C41", "C42", "C43", "C44", "C45", "C46", "C47", "C48", "C49"],
   [SHEET.bs]: ["B48", "B54", "B55"],

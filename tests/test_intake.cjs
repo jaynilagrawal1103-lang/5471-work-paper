@@ -229,7 +229,9 @@ async function docx(bodyXml) {
 
   t("it is written AFTER the writes, and can never block a download", () => {
     const fn = store.slice(store.indexOf("export async function buildWorkbook("));
-    const writes = fn.indexOf("const report = await applyWrites(zip, writes);");
+    // match the call, not its exact argument list: applyWrites also takes an
+    // options argument now, and the point of this test is the ORDER.
+    const writes = fn.indexOf("await applyWrites(zip, writes");
     const prov = fn.indexOf('await addWorksheet(zip, "Provenance"');
     assert.ok(writes > 0 && prov > writes, "provenance must describe what was actually written");
     assert.ok(/try \{\s*await addWorksheet/.test(fn), "an unwrapped failure would refuse the whole work paper");

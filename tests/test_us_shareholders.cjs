@@ -119,7 +119,38 @@ t("src and the shipped file produce identical writes", () => {
   assert.deepStrictEqual(strip(STORE.usShareholderWrites(PART_I, "x")), strip(distWrites(PART_I, "x")));
 });
 
-/* ---------------- 4. the shipped file is actually wired up ---------------- */
+/* ---------------- 4. the percentage survives the write path ---------------- */
+t("the Subpart F percentage is written with enough decimals", () => {
+  // buildWrites rounds numbers to 2 dp unless the write says otherwise, which
+  // shipped 25.5% as 0.26 (26%). A percentage stored as a fraction needs more.
+  for (const fn of [STORE.usShareholderWrites, distWrites]) {
+    const p7 = at(fn(PART_I, "x"), "P7");
+    assert.strictEqual(p7.value, 0.255);
+    assert.ok((p7.dp || 0) >= 4, `P7 must carry a dp of at least 4, got ${p7.dp}`);
+  }
+});
+
+/* ---------------- 5. the template mirror can be overwritten ---------------- */
+t("the curated map lets a write replace the template's mirror formula", () => {
+  // Shareholding Details B7/H7/J7 ship as =B19/=H19/=J19. setCell refuses to
+  // replace a formula with a plain value unless the caller says the curated
+  // map does not claim that ref — which is exactly the case here.
+  const XP = load("src/prototype/wp/xlsxPatch.ts");
+  const xml = '<sheetData><row r="7"><c r="B7"><f>B19</f><v>ARCK TRUST</v></c></row></sheetData>';
+  assert.ok(/<f>B19<\/f>/.test(XP.setCell(xml, "B7", "RODNEY W CLAYCOMB")), "protected by default");
+  const opened = XP.setCell(xml, "B7", "RODNEY W CLAYCOMB", true);
+  assert.ok(!/<f>/.test(opened), "the mirror formula is gone once allowed");
+  assert.ok(/RODNEY W CLAYCOMB/.test(opened), "the U.S. shareholder's name replaced it");
+});
+t("the shipped file threads the same allowance through its writer", () => {
+  assert(dist.includes("/*EN9FMLOVR-BEGIN*/"), "setCell takes the allow flag");
+  assert(dist.includes("/*EN9FMLGUARD-BEGIN*/"), "the guard honours it");
+  assert(/EN9FMLARG\*\/\{mayReplaceFormula:/.test(dist), "the caller supplies the allow-list");
+  assert(/EN9sh===Ce\.shareholding&&\/\^\[BFHJP\]/.test(dist),
+    "and that allow-list is only the U.S. Shareholders block, not every formula");
+});
+
+/* ---------------- 6. the shipped file is actually wired up ---------------- */
 t("the shipped file calls the writer from both save paths", () => {
   assert(/EN9USSHR\*\/EN9usShWrites\(t\.usShareholders\)/.test(dist), "Shareholders-tab edit path");
   assert(/EN9USSHW\*\/EN9usShWrites\(t\.usShareholders,A\)/.test(dist), "processing path");
