@@ -256,6 +256,37 @@ TRUST 98 direct, two Claycombs 25.5/25.5 at 25.5%), generate, unzip, read the
 sheet. B7 = RODNEY W CLAYCOMB, H7/J7 = 25.5, P7/P8 = 0.255, row 9 empty, B19
 still the trust with 98. `test:usshare` is 23 checks; `test:all` 1279.
 
+2026-09-17, third pass — the % Ownership denominator. Every percentage in BOTH
+shareholder blocks divided by `$H$27`/`$J$27`, the DIRECT-holder total, so a
+sole direct holder always read 100% and the U.S. rows read shares ÷ 98 (26.02%)
+rather than the 25.50% the return states. Schedule B Part I gives both a share
+count (columns (c)/(d)) and the pro rata percentage (column (e)) for the SAME
+holder, so the denominator the preparer used is derivable: shares ÷ (pct/100).
+HMC: 25.5 ÷ 0.255 = 100 shares outstanding. `outstandingFromPartI()` returns it
+only when every Part I holder implies the same figure (tolerance: half a share
+or 0.5%), and it is written to new template cells H4 (BOY) / J4 (EOY) — never
+when it would be below what the direct holders already hold.
+
+The master template changed for the first time: `assets/master-template.xlsx`
+and the copy embedded in `dist/index.html` (they are byte-compared by
+`test:boating`, so both were rewritten). B4 carries the label, H4/J4 are the
+inputs, and all seven percentage formulas became
+`IFERROR(H7/IF($H$4>0,$H$4,$H$27),0)` — the entered total when there is one,
+the old direct-holder total when there is not, so an existing file is
+unchanged. Only `xl/worksheets/sheet2.xml` differs; the other 74 parts are
+byte-identical.
+
+Proof, by generating a workbook and recalculating it with LibreOffice: H4/J4 =
+100, Rodney and Heather 25.5 shares at 25.50% each, Subpart F 25.50% each,
+U.S. totals 51 shares / 51.00%, "% held by U.S. Shareholders" 51.00% (was
+126.02%), the trust 98 shares at 98.00% (was 100%). `test:usshare` is 32
+checks, the end-to-end generation test 13, `test:all` 1288.
+
+Note on BOY/EOY share counts: they are NOT calculated. They are read verbatim
+from Part I columns (c)/(d), which print 25.500 — 25.5 SHARES. The 25.50% is a
+different column, (e), the pro rata Subpart F share. The two look alike here
+only because 100 shares are outstanding.
+
 ## Rule catalogue upgrades
 
 Adding a group to `DEFAULT_RULES` is not enough. `upgradeRules` reaches a saved

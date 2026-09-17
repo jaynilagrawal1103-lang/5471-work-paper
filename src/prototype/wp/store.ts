@@ -3613,7 +3613,37 @@ function linesFromContribs(list: Contribution[]): LineValue | null {
    Returns nothing when there is no Part I data: the mirror is then the best
    the file has, and a review item says so rather than blanking the block. */
 const US_ROWS = 8;
-export function usShareholderWrites(list: Shareholder[] | undefined, fallbackSource?: string): CellWrite[] {
+
+/** Total shares outstanding, as the return itself implies it.
+
+    Schedule B Part I states BOTH a share count (columns (c)/(d)) and the pro
+    rata percentage (column (e)) for the SAME holder, so the denominator the
+    preparer worked to is shares ÷ (pct/100). HMC Communications: 25.5 ÷ 0.255
+    = 100 shares issued, which makes the trust's 98 direct shares 98% — not the
+    100% you get by dividing by the direct-holder total, and makes each
+    Claycomb 25.50% rather than 26.02%.
+
+    Returns null when Part I states no percentage, or when the holders imply
+    different totals. The template then falls back to the direct-holder total,
+    which is what it always did. */
+export function outstandingFromPartI(list: Shareholder[] | undefined, field: "boy" | "eoy"): number | null {
+  const implied: number[] = [];
+  for (const h of list || []) {
+    const shares = Number(h[field]);
+    const pct = Number(h.pct);
+    if (!isFinite(shares) || shares <= 0 || !isFinite(pct) || pct <= 0) continue;
+    implied.push(shares / (pct / 100));
+  }
+  if (!implied.length) return null;
+  // Every holder must point at the same denominator, allowing for the rounding
+  // the form prints to (25.50% is stated to 2 dp, so tolerate half a share).
+  const first = implied[0];
+  if (implied.some((v) => Math.abs(v - first) > Math.max(0.5, first * 0.005))) return null;
+  return r2(implied.reduce((n, v) => n + v, 0) / implied.length);
+}
+
+export function usShareholderWrites(list: Shareholder[] | undefined, fallbackSource?: string,
+                                    directTotals?: { boy: number; eoy: number }): CellWrite[] {
   const holders = (list || []).slice(0, US_ROWS);
   if (!holders.length) return [];
   const add: CellWrite[] = [];
@@ -3643,6 +3673,20 @@ export function usShareholderWrites(list: Shareholder[] | undefined, fallbackSou
       add.push({ sheet: SHEET.shareholding, ref: `${col}${row}`, value: "", source: "US shareholder row not used" });
     }
   }
+
+  /* H4/J4 — total shares outstanding, the denominator for every % Ownership
+     cell in BOTH blocks. Written only when Part I implies it consistently AND
+     it is at least what the direct holders already hold; a smaller figure
+     would be nonsense and is left for the preparer, with a review item. */
+  for (const [field, ref] of [["boy", "H4"], ["eoy", "J4"]] as const) {
+    const implied = outstandingFromPartI(holders, field);
+    const held = directTotals ? directTotals[field] : 0;
+    if (implied === null || implied + 0.005 < held) continue;
+    add.push({
+      sheet: SHEET.shareholding, ref, value: implied, dp: 4,
+      source: `${fallbackSource || "Sch B Part I"} · shares ÷ pro rata % from Sch B Part I column (e)`,
+    });
+  }
   return add;
 }
 
@@ -3650,7 +3694,7 @@ export function usShareholderWrites(list: Shareholder[] | undefined, fallbackSou
     the workbook must always reflect the CURRENT list without a re-process. */
 function rebuildShareholderWrites(ent: Entity): CellWrite[] {
   const keep = ent.extraWrites.filter((w) => !(w.sheet === SHEET.shareholding
-    && (/^[BFHJ](19|2[0-6])$/.test(w.ref) || /^[BFHJP](?:[7-9]|1[0-4])$/.test(w.ref))));
+    && (/^[BFHJ](19|2[0-6])$/.test(w.ref) || /^[BFHJP](?:[7-9]|1[0-4])$/.test(w.ref) || w.ref === "H4" || w.ref === "J4")));
   const add: CellWrite[] = [];
   ent.shareholders.slice(0, 8).forEach((h, i) => {
     const row = 19 + i;
@@ -3664,7 +3708,9 @@ function rebuildShareholderWrites(ent: Entity): CellWrite[] {
     add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: "", source: "template demo data cleared" });
     if (row > 19) add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: "", source: "template demo data cleared" });
   }
-  return [...keep, ...add, ...usShareholderWrites(ent.usShareholders)];
+  const dt = { boy: (ent.shareholders || []).reduce((n, h) => n + (Number(h.boy) || 0), 0),
+               eoy: (ent.shareholders || []).reduce((n, h) => n + (Number(h.eoy) || 0), 0) };
+  return [...keep, ...add, ...usShareholderWrites(ent.usShareholders, undefined, dt)];
 }
 
 /** The staleness prune: drop AUTO-derived data whose source document is no
@@ -4007,7 +4053,10 @@ export async function materializeCaseWrites(
   });
   /* U.S. Shareholders block, rows 7-14 — Schedule B Part I. Written from the
      entity's own list so a preparer edit survives a re-generate. */
-  for (const uw of usShareholderWrites(ent.usShareholders, cfSource)) w(uw);
+  for (const uw of usShareholderWrites(ent.usShareholders, cfSource, {
+    boy: holderRows.reduce((n, h) => n + (Number(h.boy) || 0), 0),
+    eoy: holderRows.reduce((n, h) => n + (Number(h.eoy) || 0), 0),
+  })) w(uw);
   if (cf || holderRows.length) {
     for (let row = 19 + Math.min(holderRows.length, 8); row <= 22; row++) {
       for (const col of ["B", "J"]) w({ sheet: SHEET.shareholding, ref: `${col}${row}`, value: "", source: "template demo data cleared" });
@@ -4045,23 +4094,28 @@ export async function materializeCaseWrites(
         }. They were written to the U.S. Shareholders block (rows 7-14); rows 19-26 carry the DIRECT shareholders from Part II. The same person often appears in both, so the two blocks are kept separate rather than added together.`,
         target: `${SHEET.shareholding}!B7`, source: cfSource,
       });
-      /* The two parts count different populations, so their share totals need
-         not agree. But the % columns in the U.S. block divide by the DIRECT
-         total (H27), so when the totals differ those percentages will not match
-         the pro rata % the return itself states. Say so rather than letting the
-         preparer find it. HMC Communications: Part I 51 shares, Part II 98. */
-      const usShares = cf.usHolders.reduce((n, h) => n + (Number(h.eoy) || 0), 0);
-      const dirShares = (cf.holders || []).reduce((n, h) => n + (Number(h.eoy) || 0), 0);
-      if (usShares > 0 && dirShares > 0 && Math.abs(usShares - dirShares) > 0.005) {
-        const stated = cf.usHolders.every((h) => h.pct !== undefined)
-          ? cf.usHolders.reduce((n, h) => n + (h.pct || 0), 0)
-          : null;
+      /* The percentages now divide by total shares outstanding, taken from
+         Part I itself (shares ÷ pro rata %). Two things can still go wrong and
+         both are worth saying out loud rather than leaving in a cell. */
+      const outEoy = outstandingFromPartI(ent.usShareholders, "eoy");
+      const dirEoy = (cf.holders || []).reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+      if (outEoy === null) {
         rv({
           id: "cf-us-holder-base", level: "warn", category: "carry-forward",
-          message: `Schedule B Part I totals ${usShares} share(s) but Part II totals ${dirShares}. The "% Ownership" columns in the U.S. Shareholders block divide by the DIRECT total, so they will read ${
-            ((usShares / dirShares) * 100).toFixed(2)
-          }% combined${stated !== null ? `, not the ${stated.toFixed(2)}% the return states in Part I column (e)` : ""}. The stated percentage was written to the Subpart F column instead. Confirm the total shares outstanding before filing.`,
-          target: `${SHEET.shareholding}!L16`, source: cfSource,
+          message: `Schedule B Part I does not state a usable pro rata percentage for every U.S. shareholder, so total shares outstanding could not be derived. The % Ownership columns fall back to dividing by the DIRECT holders' total (${dirEoy || "0"}), which reads 100% whenever one holder owns all the listed shares. Enter the real total in Shareholding Details H4/J4 if it differs.`,
+          target: `${SHEET.shareholding}!H4`, source: cfSource,
+        });
+      } else if (outEoy + 0.005 < dirEoy) {
+        rv({
+          id: "cf-us-holder-base", level: "warn", category: "carry-forward",
+          message: `Schedule B Part I implies ${outEoy} total shares outstanding (shares ÷ pro rata %), but the direct holders in Part II already hold ${dirEoy}. Outstanding cannot be less than that, so it was NOT written and the percentages fall back to the direct total. Check Part I column (e) and enter the real figure in Shareholding Details H4/J4.`,
+          target: `${SHEET.shareholding}!H4`, source: cfSource,
+        });
+      } else if (Math.abs(outEoy - dirEoy) > 0.005) {
+        rv({
+          id: "cf-us-holder-base", level: "info", category: "carry-forward", applied: true,
+          message: `Total shares outstanding is taken as ${outEoy}, derived from Schedule B Part I (shares ÷ pro rata % in column (e)). The direct holders in Part II hold ${dirEoy} of them, so ${r2(outEoy - dirEoy)} share(s) are held by someone Part II does not list. Every % Ownership cell divides by ${outEoy}; override it in Shareholding Details H4/J4 if that is wrong.`,
+          target: `${SHEET.shareholding}!H4`, source: cfSource,
         });
       }
     } else if (cf && holderRows.length) {

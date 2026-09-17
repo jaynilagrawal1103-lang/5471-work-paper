@@ -247,7 +247,7 @@ export const FORMULA_REFS: Record<string, (ref: string) => boolean> = {
    become a live formula. It only allows a plain VALUE to replace a formula,
    and only in these cells. */
 export const REPLACEABLE_FORMULA_REFS: Record<string, (ref: string) => boolean> = {
-  [SHEET.shareholding]: (ref) => /^[BFHJP](?:[7-9]|1[0-4])$/.test(ref),
+  [SHEET.shareholding]: (ref) => /^[BFHJP](?:[7-9]|1[0-4])$/.test(ref) || ref === "H4" || ref === "J4",
 };
 
 export const DEMO_RELABELS: Record<string, string[]> = {

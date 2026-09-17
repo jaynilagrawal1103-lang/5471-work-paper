@@ -119,6 +119,42 @@ t("src and the shipped file produce identical writes", () => {
   assert.deepStrictEqual(strip(STORE.usShareholderWrites(PART_I, "x")), strip(distWrites(PART_I, "x")));
 });
 
+/* ------ 3b. total shares outstanding, derived from the return itself ------ */
+const distOut = new Function("Ce", m[1] + ";return EN9outstanding;")({ shareholding: SH });
+for (const [label, fn] of [["src", STORE.outstandingFromPartI], ["dist", distOut]]) {
+  t(`${label}: the denominator comes from Part I itself (shares / pro rata %)`, () => {
+    // HMC: 25.5 shares stated as 25.50% means 100 shares are issued. Dividing
+    // by the DIRECT total (98) instead gives 26.02%, which is what shipped.
+    assert.strictEqual(fn(PART_I, "boy"), 100);
+    assert.strictEqual(fn(PART_I, "eoy"), 100);
+  });
+  t(`${label}: no stated percentage means no derived total`, () => {
+    assert.strictEqual(fn([{ name: "X", classOfShares: "C", boy: 10, eoy: 10 }], "eoy"), null);
+  });
+  t(`${label}: holders that disagree are refused rather than averaged`, () => {
+    const mixed = [{ name: "A", classOfShares: "C", boy: 25, eoy: 25, pct: 25 },
+                   { name: "B", classOfShares: "C", boy: 25, eoy: 25, pct: 50 }];
+    assert.strictEqual(fn(mixed, "eoy"), null, "100 vs 50 must not average to 75");
+  });
+  t(`${label}: rounding in the stated percentage is tolerated`, () => {
+    // a third each, printed as 33.33%
+    const thirds = [{ name: "A", classOfShares: "C", boy: 100, eoy: 100, pct: 33.33 },
+                    { name: "B", classOfShares: "C", boy: 100, eoy: 100, pct: 33.33 }];
+    const v = fn(thirds, "eoy");
+    assert.ok(v !== null && Math.abs(v - 300) < 1, `expected about 300, got ${v}`);
+  });
+}
+t("the derived total is written to H4/J4, but never below what the direct holders hold", () => {
+  for (const fn of [STORE.usShareholderWrites, distWrites]) {
+    const ok98 = fn(PART_I, "x", { boy: 98, eoy: 98 });
+    assert.strictEqual(at(ok98, "H4").value, 100, "100 outstanding is above the 98 held directly");
+    assert.strictEqual(at(ok98, "J4").value, 100);
+    // outstanding cannot be less than the shares already held directly
+    const absurd = fn(PART_I, "x", { boy: 500, eoy: 500 });
+    assert.ok(!at(absurd, "H4"), "a total below the direct holdings is refused, not written");
+  }
+});
+
 /* ---------------- 4. the percentage survives the write path ---------------- */
 t("the Subpart F percentage is written with enough decimals", () => {
   // buildWrites rounds numbers to 2 dp unless the write says otherwise, which
@@ -146,14 +182,14 @@ t("the shipped file threads the same allowance through its writer", () => {
   assert(dist.includes("/*EN9FMLOVR-BEGIN*/"), "setCell takes the allow flag");
   assert(dist.includes("/*EN9FMLGUARD-BEGIN*/"), "the guard honours it");
   assert(/EN9FMLARG\*\/\{mayReplaceFormula:/.test(dist), "the caller supplies the allow-list");
-  assert(/EN9sh===Ce\.shareholding&&\/\^\[BFHJP\]/.test(dist),
+  assert(/EN9sh===Ce\.shareholding&&\(?\/\^\[BFHJP\]/.test(dist),
     "and that allow-list is only the U.S. Shareholders block, not every formula");
 });
 
 /* ---------------- 6. the shipped file is actually wired up ---------------- */
 t("the shipped file calls the writer from both save paths", () => {
-  assert(/EN9USSHR\*\/EN9usShWrites\(t\.usShareholders\)/.test(dist), "Shareholders-tab edit path");
-  assert(/EN9USSHW\*\/EN9usShWrites\(t\.usShareholders,A\)/.test(dist), "processing path");
+  assert(/EN9USSHR\*\/EN9usShWrites\(t\.usShareholders\b/.test(dist), "Shareholders-tab edit path");
+  assert(/EN9USSHW\*\/EN9usShWrites\(t\.usShareholders,A\b/.test(dist), "processing path");
   assert(dist.includes("/*EN9USSEED-BEGIN*/"), "Part I is seeded onto the entity");
   assert(dist.includes('id:"cf-us-holders-absent"'), "warns when Part I is missing");
   assert(dist.includes('id:"cf-us-holder-base"'), "warns when the two parts disagree");

@@ -18,10 +18,17 @@ a(dist.includes('if(!EN9ok&&A[2]!=="/>"&&/<f[ >]/.test(A[2]))return A8=!0,t;') &
    overwritten by Schedule B Part I. It is a fixed cell list in code, not
    anything a document or a user can influence, and a8 still cannot emit <f>,
    so no user string can become a live formula. */
-a(/mayReplaceFormula:function\(EN9sh,EN9rf\)\{return EN9sh===Ce\.shareholding&&\/\^\[BFHJP\]/.test(dist),
+a(/mayReplaceFormula:function\(EN9sh,EN9rf\)\{return EN9sh===Ce\.shareholding&&\(?\/\^\[BFHJP\]/.test(dist),
   "the only formula-replacement allowance is the U.S. Shareholders block");
-a(!/mayReplaceFormula[^}]*\|\|/.test(dist.slice(dist.indexOf("mayReplaceFormula:function"), dist.indexOf("mayReplaceFormula:function") + 200)),
-  "that allowance names one sheet only");
+{
+  // the intent: the allowance may name exactly ONE sheet, whatever cell refs
+  // it lists inside. Counting sheet references is the honest check.
+  const i = dist.indexOf("mayReplaceFormula:function");
+  const body = dist.slice(i, dist.indexOf("}", dist.indexOf("return", i)));
+  const sheets = [...new Set(body.match(/Ce\.[A-Za-z]+/g) || [])];
+  a(sheets.length === 1 && sheets[0] === "Ce.shareholding",
+    `that allowance names one sheet only (${sheets.join(", ") || "none"})`);
+}
 a(dist.includes('Enter a number \\u2014 this exception writes into a numeric schedule cell'),
   "exception edits into schedule cells reject non-numeric text");
 
