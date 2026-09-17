@@ -17,9 +17,15 @@ const t = (name, fn) => { try { fn(); console.log("ok:", name); pass++; } catch 
 /* numeric(), lifted from the shipped engine so the test tracks the real code. */
 const src = fs.readFileSync(require.resolve("../src/prototype/wp/engine.ts"), "utf8");
 const body = src.slice(src.indexOf("export function numeric("));
-const fnText = body.slice(body.indexOf("{"), body.indexOf("\n}") + 2)
+/* The body starts at the LAST brace on the signature line, not the first one
+   in the file: `numeric(v, opts?: { dotThousands?: boolean })` puts an options
+   type ahead of it, and taking the first brace lifted that type instead of the
+   function and made this whole suite fail to parse. */
+const head = body.slice(0, body.indexOf("\n"));
+const start = body.lastIndexOf("{", head.length);
+const fnText = body.slice(start, body.indexOf("\n}") + 2)
   .replace(/: unknown|: number \| null|: string/g, "");
-const numeric = new Function("v", fnText.slice(1, -1).replace(/^\s*/, ""));
+const numeric = new Function("v", "opts", fnText.slice(1, -1).replace(/^\s*/, ""));
 
 t("Chilean thousands: total assets", () => assert.strictEqual(numeric("2.555.002.379"), 2555002379));
 t("Chilean thousands: total liabilities", () => assert.strictEqual(numeric("2.349.644.310"), 2349644310));

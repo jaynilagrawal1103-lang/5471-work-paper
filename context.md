@@ -199,6 +199,31 @@ digits are right. Keep PaddleOCR primary. Engine time per 300 dpi page with
 no contention: PaddleOCR 0.6-1.1 s, Tesseract 0.4-1.8 s; two Tesseract
 processes on one 4-core host thrash (55-580 s a page).
 
+On 2026-09-17 the U.S. Shareholders block (Shareholding Details rows 7-14) was
+made reachable. It had never received data: `FORMULA_REFS[shareholding]`
+marked rows 7-16 as formula cells so `buildWrites` refused every write, no
+writer targeted those rows, and the master template ships B7/H7/J7 as
+`=B19/=H19/=J19` — a one-row mirror of the FIRST direct holder. On HMC
+Communications that printed a New Zealand trust as a 100% U.S. shareholder
+while Schedule B Part I's two U.S. shareholders appeared nowhere and the
+Subpart F column stayed blank (Part I column (e) is its only source).
+Schedule B Part I was already parsed into `CarryForward.usHolders`; it simply
+had nowhere to go. Now: rows 7-14 columns B/F/H/J/P are writable (L/N and the
+15-16 totals stay formulas); `Entity.usShareholders` holds Part I, kept apart
+from `shareholders` (Part II) so a person counted both directly and through a
+trust is not double-counted; `usShareholderWrites()` fills rows 7-14, writes
+column (e) into the Subpart F column as a fraction, and clears every row it
+does not use so a stale mirror cannot survive; an empty list writes nothing
+and a warning explains that the mirror is still showing. Both save paths (a
+processing run and a Shareholders-tab edit) write the block. Two review items:
+`cf-us-holders-absent` (warn) when Part I is unreadable, and
+`cf-us-holder-base` (warn) when Part I and Part II share totals disagree — the
+% columns divide by the DIRECT total, so they cannot match the stated pro rata
+% when the two differ (HMC: Part I 51 shares, Part II 98). dist mirrors all of
+it under EN9USSHREF / EN9USSH / EN9USSHR / EN9USSHW / EN9USSHF / EN9USSEED /
+EN9USSHRV. New suite `tests/test_us_shareholders.cjs` (`test:usshare`, 20
+checks, in `test:all`) covers both trees and asserts they agree exactly.
+
 ## Rule catalogue upgrades
 
 Adding a group to `DEFAULT_RULES` is not enough. `upgradeRules` reaches a saved
@@ -212,6 +237,15 @@ cutting a release.
 
 ## Open issues
 
+- `test:peg` fails at "the approved prior-year end rate outranks a prior
+  return's printed rate" (0.833 vs 0.82). PRE-EXISTING: it fails identically at
+  985ce6b, before the 2026-09-17 work. Which rate should win is a business-rule
+  decision for the owner, so it was left alone rather than silently changed.
+- The % Ownership columns in BOTH shareholder blocks divide by the DIRECT total
+  (`H27 = SUM(H19:H26)`), so a sole direct holder always reads 100% whatever the
+  real shares outstanding. HMC's return implies 100 shares issued (25.5% for
+  25.5 shares) while the direct rows total 98. A "total shares outstanding"
+  input cell would fix it; that is a template change and needs the owner's call.
 - OCR: a figure corrupted to `1:100.000)` (bracketed negative on a grainy
   Spanish scan) gets no flag - `validate.py looks_numeric` rejects any token
   with a colon before the grammar checks - and the app's `numericCell` then

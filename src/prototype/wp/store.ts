@@ -3584,7 +3584,7 @@ function linesFromContribs(list: Contribution[]): LineValue | null {
    Returns nothing when there is no Part I data: the mirror is then the best
    the file has, and a review item says so rather than blanking the block. */
 const US_ROWS = 8;
-function usShareholderWrites(list: Shareholder[] | undefined, fallbackSource?: string): CellWrite[] {
+export function usShareholderWrites(list: Shareholder[] | undefined, fallbackSource?: string): CellWrite[] {
   const holders = (list || []).slice(0, US_ROWS);
   if (!holders.length) return [];
   const add: CellWrite[] = [];
@@ -3598,6 +3598,10 @@ function usShareholderWrites(list: Shareholder[] | undefined, fallbackSource?: s
     // The cell is formatted as a percentage, so 25.5% is stored as 0.255.
     if (typeof h.pct === "number" && isFinite(h.pct)) {
       add.push({ sheet: SHEET.shareholding, ref: `P${row}`, value: r2(h.pct) / 100, source: `${src} · Sch B Part I col (e)` });
+    } else {
+      /* Part I stated no percentage for this holder. Clear the cell rather
+         than leave one behind from an earlier run or from the template. */
+      add.push({ sheet: SHEET.shareholding, ref: `P${row}`, value: "", source: `${src} · no pro rata % stated in Part I` });
     }
   });
   /* Clear every row the list does not fill. Row 7 is the only one carrying a
@@ -3996,8 +4000,8 @@ export async function materializeCaseWrites(
       });
     }
     // Part I holders carry the pro rata % and the SSN — neither appears in
-    // Part II. Surface them even when the direct rows came from Part II, so the
-    // combined US ownership (which drives CFC status) is visible.
+    // Part II. They drive rows 7-14 (the U.S. Shareholders block); rows 19-26
+    // stay with the DIRECT holders from Part II.
     if (cf?.usHolders?.length) {
       rv({
         id: "cf-us-holders", level: "info", category: "carry-forward", applied: true,
@@ -4007,8 +4011,37 @@ export async function materializeCaseWrites(
           cf.usHolders.every((h) => h.pct !== undefined)
             ? ` — combined ${cf.usHolders.reduce((n, h) => n + (h.pct || 0), 0).toFixed(2)}%`
             : ""
-        }. Template rows 19-26 carry DIRECT shareholders; Part I names are shown here because the same person is often counted through a trust.`,
-        target: `${SHEET.shareholding}!B19`, source: cfSource,
+        }. They were written to the U.S. Shareholders block (rows 7-14); rows 19-26 carry the DIRECT shareholders from Part II. The same person often appears in both, so the two blocks are kept separate rather than added together.`,
+        target: `${SHEET.shareholding}!B7`, source: cfSource,
+      });
+      /* The two parts count different populations, so their share totals need
+         not agree. But the % columns in the U.S. block divide by the DIRECT
+         total (H27), so when the totals differ those percentages will not match
+         the pro rata % the return itself states. Say so rather than letting the
+         preparer find it. HMC Communications: Part I 51 shares, Part II 98. */
+      const usShares = cf.usHolders.reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+      const dirShares = (cf.holders || []).reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+      if (usShares > 0 && dirShares > 0 && Math.abs(usShares - dirShares) > 0.005) {
+        const stated = cf.usHolders.every((h) => h.pct !== undefined)
+          ? cf.usHolders.reduce((n, h) => n + (h.pct || 0), 0)
+          : null;
+        rv({
+          id: "cf-us-holder-base", level: "warn", category: "carry-forward",
+          message: `Schedule B Part I totals ${usShares} share(s) but Part II totals ${dirShares}. The "% Ownership" columns in the U.S. Shareholders block divide by the DIRECT total, so they will read ${
+            ((usShares / dirShares) * 100).toFixed(2)
+          }% combined${stated !== null ? `, not the ${stated.toFixed(2)}% the return states in Part I column (e)` : ""}. The stated percentage was written to the Subpart F column instead. Confirm the total shares outstanding before filing.`,
+          target: `${SHEET.shareholding}!L16`, source: cfSource,
+        });
+      }
+    } else if (cf && holderRows.length) {
+      /* No Part I to write, so rows 7-14 still show the template's built-in
+         copy of the FIRST direct holder. That is right only when the direct
+         holder is itself the U.S. shareholder — often it is a foreign trust or
+         holding company, and the block then claims 100% U.S. ownership. */
+      rv({
+        id: "cf-us-holders-absent", level: "warn", category: "carry-forward",
+        message: `No Schedule B Part I (U.S. shareholders) could be read from ${cfSource}, so the U.S. Shareholders block still shows the template's built-in copy of the first DIRECT shareholder — "${holderRows[0].name}". That is only correct if that holder is itself a U.S. person. Check it, and type the real U.S. shareholders into rows 7-14 if not.`,
+        target: `${SHEET.shareholding}!B7`, source: cfSource,
       });
     }
   }
