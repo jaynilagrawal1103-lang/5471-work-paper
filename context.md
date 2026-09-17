@@ -223,6 +223,15 @@ processing run and a Shareholders-tab edit) write the block. Two review items:
 it under EN9USSHREF / EN9USSH / EN9USSHR / EN9USSHW / EN9USSHF / EN9USSEED /
 EN9USSHRV. New suite `tests/test_us_shareholders.cjs` (`test:usshare`, 20
 checks, in `test:all`) covers both trees and asserts they agree exactly.
+Same day, the missing half: there was no UI for the block, so nothing changed
+on screen. The Shareholders tab now carries a SECOND card, "U.S. Shareholders
+rows 7-14", with a Subpart F % column and its own add/edit/remove actions
+(`addUsShareholder`, `updateUsShareholder`, `removeUsShareholder`). The direct
+card keeps rows 19-26. dist mirrors both under EN9USSHACT and EN9USSHUI
+(hand-written minified React using the page's own jsx runtime, Callout and
+source-badge components). Verified in Chromium: 15 checks covering the card
+rendering, the empty-state warning about the template mirror, and the values
+reaching B7/B8/H7/J8 with P7/P8 = 0.255.
 
 ## Rule catalogue upgrades
 

@@ -1166,6 +1166,35 @@ export const actions = {
     if (gone?.name) logEvent("Shareholder removed", gone.name, ent.name);
   },
 
+  /* ------------- U.S. shareholders (Shareholding rows 7–14) -------------
+     Schedule B Part I. Separate from the direct holders above because the
+     same person is often in both — directly and again through a trust — and
+     adding the two together would double-count ownership. */
+  addUsShareholder(entityId: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    if ((ent.usShareholders || []).length >= 8) { toast("The template carries at most 8 U.S. shareholder rows (7–14)", "bad"); return; }
+    const usShareholders = [...(ent.usShareholders || []), { id: uid(), name: "", classOfShares: "Common", boy: 0, eoy: 0 }];
+    updateEntity(entityId, { usShareholders, extraWrites: rebuildShareholderWrites({ ...ent, usShareholders }) });
+  },
+
+  updateUsShareholder(entityId: string, id: string, patch: Partial<Shareholder>) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const usShareholders = (ent.usShareholders || []).map((s) => (s.id === id ? { ...s, ...patch, id } : s));
+    updateEntity(entityId, { usShareholders, extraWrites: rebuildShareholderWrites({ ...ent, usShareholders }) });
+  },
+
+  removeUsShareholder(entityId: string, id: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const gone = (ent.usShareholders || []).find((s) => s.id === id);
+    if (gone && typeof window !== "undefined" && window.confirm && !window.confirm(`Remove U.S. shareholder ${gone.name || "(unnamed)"}?`)) return;
+    const usShareholders = (ent.usShareholders || []).filter((s) => s.id !== id);
+    updateEntity(entityId, { usShareholders, extraWrites: rebuildShareholderWrites({ ...ent, usShareholders }) });
+    if (gone?.name) logEvent("U.S. shareholder removed", gone.name, ent.name);
+  },
+
   /** C-01: the preparer confirms an auto-detected functional currency. */
   confirmCurrency(entityId: string) {
     const ent = state.entities.find((e) => e.id === entityId);

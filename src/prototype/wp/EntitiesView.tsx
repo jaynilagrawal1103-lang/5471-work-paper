@@ -388,6 +388,96 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                 </p>
               )}
               <button type="button" className="button" onClick={() => actions.addShareholder(entity.id)}>+ Add shareholder</button>
+
+              {/* Schedule B Part I. A separate block because Part I and Part II
+                  count different people: Part II is whoever legally holds the
+                  shares (often a foreign trust or holding company), Part I is
+                  the U.S. persons behind them. The template has a block for
+                  each, and the same person commonly appears in both. */}
+              <Callout title="U.S. Shareholders rows 7–14" tone="teal">
+                U.S. shareholders — direct <em>and</em> indirect — from the prior 5471&apos;s Schedule B Part I.
+                These decide whether the corporation is a CFC, and Part I column (e) is the only place the pro
+                rata Subpart F percentage appears, so it is carried into the Subpart F column. This block is
+                deliberately <strong>not</strong> added to the direct shareholders above: the same person is
+                often counted in both, once directly and once through a trust.
+              </Callout>
+              {(entity.usShareholders || []).length ? (
+                <div className="wp-table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>U.S. shareholder</th><th style={{ width: 130 }}>Class</th>
+                        <th className="numeric" style={{ width: 110 }}>Shares BOY</th>
+                        <th className="numeric" style={{ width: 110 }}>Shares EOY</th>
+                        <th className="numeric" style={{ width: 110 }}>Subpart F %</th>
+                        <th style={{ width: 80 }} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(entity.usShareholders || []).map((s) => (
+                        <tr key={s.id}>
+                          <td>
+                            <input
+                              className="stake-input"
+                              value={s.name}
+                              placeholder="U.S. shareholder name"
+                              onChange={(e) => actions.updateUsShareholder(entity.id, s.id, { name: e.target.value })}
+                            />
+                            {s.source ? <small style={{ display: "block", color: "var(--muted)" }}>{s.source}</small> : null}
+                          </td>
+                          <td>
+                            <input
+                              className="stake-input"
+                              value={s.classOfShares}
+                              onChange={(e) => actions.updateUsShareholder(entity.id, s.id, { classOfShares: e.target.value })}
+                            />
+                          </td>
+                          <td className="numeric">
+                            <input
+                              type="number"
+                              value={s.boy}
+                              onChange={(e) => actions.updateUsShareholder(entity.id, s.id, { boy: Number(e.target.value) || 0 })}
+                            />
+                          </td>
+                          <td className="numeric">
+                            <input
+                              type="number"
+                              value={s.eoy}
+                              onChange={(e) => actions.updateUsShareholder(entity.id, s.id, { eoy: Number(e.target.value) || 0 })}
+                            />
+                          </td>
+                          <td className="numeric">
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="—"
+                              value={s.pct ?? ""}
+                              onChange={(e) => actions.updateUsShareholder(entity.id, s.id, { pct: e.target.value === "" ? undefined : Number(e.target.value) })}
+                            />
+                          </td>
+                          <td><button type="button" className="button" onClick={() => actions.removeUsShareholder(entity.id, s.id)}>Remove</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td><strong>Total</strong></td><td />
+                        <td className="numeric"><strong>{(entity.usShareholders || []).reduce((n, s) => n + s.boy, 0)}</strong></td>
+                        <td className="numeric"><strong>{(entity.usShareholders || []).reduce((n, s) => n + s.eoy, 0)}</strong></td>
+                        <td className="numeric"><strong>{(entity.usShareholders || []).reduce((n, s) => n + (s.pct || 0), 0).toFixed(2)}%</strong></td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              ) : (
+                <p className="hint">
+                  No U.S. shareholders yet. Process a prior-year 5471 to seed them from Schedule B Part I, or add
+                  them here. While this is empty the template mirrors the first direct shareholder into row 7,
+                  which is only correct if that holder is itself a U.S. person.
+                </p>
+              )}
+              <button type="button" className="button" onClick={() => actions.addUsShareholder(entity.id)}>+ Add U.S. shareholder</button>
             </div>
           ) : null}
 
