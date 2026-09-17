@@ -217,7 +217,14 @@ export const FORMULA_REFS: Record<string, (ref: string) => boolean> = {
     const m = /^([A-Z]+)(\d+)$/.exec(ref);
     if (!m) return false;
     const row = Number(m[2]);
-    if (row >= 7 && row <= 16) return true;               // block 1 mirrors + totals
+    /* Rows 7-14 are the U.S. Shareholders block. The template ships B7/H7/J7
+       as =B19/=H19/=J19 — a one-row mirror of the FIRST direct holder, which
+       is only correct when that holder is itself the sole U.S. shareholder.
+       Schedule B Part I names the real U.S. shareholders and states their pro
+       rata Subpart F percentage, so B/F/H/J and P must be writable here; the
+       % columns (L, N) stay formulas, as do the block totals on 15-16. */
+    if (row >= 7 && row <= 14) return m[1] === "L" || m[1] === "N";
+    if (row === 15 || row === 16) return true;            // block 1 totals
     if (row === 27 || row === 45 || row === 57) return true;
     return m[1] === "L" || m[1] === "N" || m[1] === "P";
   },

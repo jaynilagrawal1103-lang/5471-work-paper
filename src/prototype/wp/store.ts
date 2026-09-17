@@ -249,6 +249,10 @@ export type Shareholder = {
   boy: number;
   eoy: number;
   source?: string;
+  /** Schedule B Part I column (e) — the pro rata share of Subpart F income,
+      as a percentage. Only Part I states it; Part II never does. Used for the
+      U.S. Shareholders block only. */
+  pct?: number;
 };
 
 export type Entity = {
@@ -290,6 +294,12 @@ export type Entity = {
       pageHint routes a PDF's unclassified pages to one statement feed. */
   docKindOverrides: Record<string, DocKindOverride>;
   shareholders: Shareholder[];
+  /** Schedule B Part I — the U.S. shareholders (direct AND indirect), which
+      drive template rows 7-14. Kept separate from `shareholders` (Part II,
+      the direct legal owners, rows 19-26) because the same person often
+      appears in both — directly and through a trust — and merging the two
+      would double-count ownership. */
+  usShareholders: Shareholder[];
   /** Template sheets the preparer excluded in the Review Summary — they
       receive no writes on generation (the sheets themselves remain). */
   excludedSheets: string[];
@@ -438,6 +448,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     docClasses: {},
     docKindOverrides: {},
     shareholders: [],
+    usShareholders: [],
     excludedSheets: [],
     reviewItems: [],
     extraWrites: [],
@@ -2765,6 +2776,30 @@ export const actions = {
             if (merged.length !== (cur.shareholders || []).length) updateEntity(entityId, { shareholders: merged });
           }
         }
+
+        /* Schedule B Part I — the U.S. shareholders, which drive rows 7-14.
+           Seeded into their own list, never merged into the direct holders:
+           the same person commonly appears in both parts (directly and again
+           through a trust) and merging would double-count ownership. */
+        if (cf?.usHolders?.length) {
+          const cur = state.entities.find((e) => e.id === entityId);
+          if (cur) {
+            const merged = [...(cur.usShareholders || [])];
+            for (const h of cf.usHolders) {
+              if (!merged.some((s) => s.name.toLowerCase() === h.name.toLowerCase())) {
+                merged.push({
+                  id: uid(), name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
+                  ...(h.pct !== undefined ? { pct: h.pct } : {}),
+                  source: `${cfSource} · Sch B Part I p.${h.page}${h.single ? " · single printed count taken as BOY = EOY — confirm" : ""}`,
+                });
+              }
+            }
+            if (merged.length !== (cur.usShareholders || []).length) {
+              updateEntity(entityId, { usShareholders: merged });
+              log.push(`${merged.length} U.S. shareholder(s) carried from ${cfSource} Sch B Part I into the U.S. Shareholders block (rows 7-14)`);
+            }
+          }
+        }
         /* The questionnaire lists the filer and the other shareholders with
            their shares. It seeds the Shareholders tab only when nothing else
            has — a prior return's Schedule B outranks it — and records each
@@ -3535,10 +3570,52 @@ function linesFromContribs(list: Contribution[]): LineValue | null {
 
 /** Apply an explicitly assigned row (manual or Groq) with provenance.
     Returns false when the assignment could not be applied safely. */
+/* The U.S. Shareholders block, template rows 7-14.
+
+   Schedule B counts two different populations. Part I is the U.S.
+   shareholders — direct AND indirect — and is the only place the pro rata
+   Subpart F percentage appears. Part II is the direct legal owners. The
+   template has a block for each, but ships rows 7-14 as B7=B19, H7=H19,
+   J7=J19: a one-row mirror of the FIRST direct holder. On HMC Communications
+   that printed a New Zealand trust as a 100% U.S. shareholder, while the two
+   real U.S. shareholders named in Part I appeared nowhere and the Subpart F
+   column stayed blank. Writing the Part I rows replaces the mirror.
+
+   Returns nothing when there is no Part I data: the mirror is then the best
+   the file has, and a review item says so rather than blanking the block. */
+const US_ROWS = 8;
+function usShareholderWrites(list: Shareholder[] | undefined, fallbackSource?: string): CellWrite[] {
+  const holders = (list || []).slice(0, US_ROWS);
+  if (!holders.length) return [];
+  const add: CellWrite[] = [];
+  holders.forEach((h, i) => {
+    const row = 7 + i;
+    const src = h.source || fallbackSource || "US shareholders tab";
+    add.push({ sheet: SHEET.shareholding, ref: `B${row}`, value: h.name, source: src });
+    add.push({ sheet: SHEET.shareholding, ref: `F${row}`, value: h.classOfShares, source: src });
+    add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: h.boy, source: src });
+    add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: h.eoy, source: src });
+    // The cell is formatted as a percentage, so 25.5% is stored as 0.255.
+    if (typeof h.pct === "number" && isFinite(h.pct)) {
+      add.push({ sheet: SHEET.shareholding, ref: `P${row}`, value: r2(h.pct) / 100, source: `${src} · Sch B Part I col (e)` });
+    }
+  });
+  /* Clear every row the list does not fill. Row 7 is the only one carrying a
+     mirror formula, but a shorter list on a re-run must not leave a previous
+     run's holder behind either. */
+  for (let row = 7 + holders.length; row <= 7 + US_ROWS - 1; row++) {
+    for (const col of ["B", "F", "H", "J", "P"]) {
+      add.push({ sheet: SHEET.shareholding, ref: `${col}${row}`, value: "", source: "US shareholder row not used" });
+    }
+  }
+  return add;
+}
+
 /** Regenerate the Shareholding-row writes after a shareholders-tab edit —
     the workbook must always reflect the CURRENT list without a re-process. */
 function rebuildShareholderWrites(ent: Entity): CellWrite[] {
-  const keep = ent.extraWrites.filter((w) => !(w.sheet === SHEET.shareholding && /^[BFHJ](19|2[0-6])$/.test(w.ref)));
+  const keep = ent.extraWrites.filter((w) => !(w.sheet === SHEET.shareholding
+    && (/^[BFHJ](19|2[0-6])$/.test(w.ref) || /^[BFHJP](?:[7-9]|1[0-4])$/.test(w.ref))));
   const add: CellWrite[] = [];
   ent.shareholders.slice(0, 8).forEach((h, i) => {
     const row = 19 + i;
@@ -3552,7 +3629,7 @@ function rebuildShareholderWrites(ent: Entity): CellWrite[] {
     add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: "", source: "template demo data cleared" });
     if (row > 19) add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: "", source: "template demo data cleared" });
   }
-  return [...keep, ...add];
+  return [...keep, ...add, ...usShareholderWrites(ent.usShareholders)];
 }
 
 /** The staleness prune: drop AUTO-derived data whose source document is no
@@ -3893,6 +3970,9 @@ export async function materializeCaseWrites(
     w({ sheet: SHEET.shareholding, ref: `H${row}`, value: h.boy, source: h.source || cfSource || "shareholders tab" });
     w({ sheet: SHEET.shareholding, ref: `J${row}`, value: h.eoy, source: h.source || cfSource || "shareholders tab" });
   });
+  /* U.S. Shareholders block, rows 7-14 — Schedule B Part I. Written from the
+     entity's own list so a preparer edit survives a re-generate. */
+  for (const uw of usShareholderWrites(ent.usShareholders, cfSource)) w(uw);
   if (cf || holderRows.length) {
     for (let row = 19 + Math.min(holderRows.length, 8); row <= 22; row++) {
       for (const col of ["B", "J"]) w({ sheet: SHEET.shareholding, ref: `${col}${row}`, value: "", source: "template demo data cleared" });
