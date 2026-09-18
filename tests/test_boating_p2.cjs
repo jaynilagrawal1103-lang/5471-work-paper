@@ -113,7 +113,7 @@ t("bookNetIncome mirrors the Income Statement tab", () => {
   assert.strictEqual(STORE.bookNetIncome(lines), 12875.74);
   assert.strictEqual(STORE.bookNetIncome({}), null, "nothing booked is null, not zero");
   // Returns (1b) and COGS reduce; a negative tax line (21a) reduces.
-  assert.strictEqual(STORE.bookNetIncome({ "IS:7": { amount: 1000 }, "IS:8": { amount: 100 }, "IS:11": { amount: 300 }, "IS:54": { amount: -50 } }), 550);
+  assert.strictEqual(STORE.bookNetIncome({ "IS:7": { amount: 1000 }, "IS:8": { amount: 100 }, "IS:11": { amount: 300 }, "IS:62": { amount: 50 } }), 550);
 });
 
 /* ---- the rate warning, line by line, exactly as the owner reconciled it ---- */
@@ -239,7 +239,7 @@ t("the flags: officer from Item H, transition No after 2018, corporate from the 
     assert.ok(order.indexOf("Retained Earnings") === order.indexOf("Balance Sheet") + 1, order.join(" | "));
     const xml = await part("Retained Earnings");
     assert.ok(xml.includes("<f>'Balance Sheet'!F61</f>"), "F28 must read Schedule F line 22");
-    assert.ok(xml.includes("<f>'Income Statement'!F56</f>"), "F13 must read net income");
+    assert.ok(xml.includes("<f>'Income Statement'!F64</f>"), "F13 must read net income");
     assert.ok(xml.includes("<f>ROUND(F27-F28,2)</f>"), "F29 must show the difference");
     assert.ok(xml.includes("<f>Dividends!C12</f>"), "F20 must read the dividends");
   });

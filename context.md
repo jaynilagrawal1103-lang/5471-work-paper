@@ -353,30 +353,129 @@ siblings it is not a total of them") while its own name said the opposite. It
 was locking in the defect, and is rewritten to require the drop, with the
 no-arithmetic-tie case kept as the guard.
 
-### Still open from that reconciliation
+### Findings 4-14, fixed 2026-09-18
 
-The residual on Schedule C is exactly 21,534 = finding 8, Motor Vehicle
-Contribution booked as a deduction when the accounts show it as Other Income
-(a keyword match outranks the section banner across the income/deduction
-divide; `sectionOk` already does this for the balance sheet and should be
-extended). The residual on the opening balance sheet is findings 4 and 5:
-PPE and intangibles have no keyword rules so they fall to the "other assets"
-pool and the prior-return seeder then fills the empty 9a/9b with the same
-asset (34,167 twice), and the carry-forward does not check that the return's
-period end matches the work paper's OPENING date, so a FY2023 return seeded a
-FY2025 work paper. Also open: `'Shareholding Details'!N19` — the first DIRECT
-holder — is the shareholder percentage in four template cells (`8992!F7`,
-`Worksheet A!D82`, `Worksheet B!F16`/`F27`) and should be `N16`; the master
-template ships Schedule E `M16`/`O16`/`Q16` empty so foreign tax has no rate
-and converts to zero; the Retained Earnings opening cell is never written
-although Schedule F holds the figure; the accounts' Directory page names all
-three direct shareholders and is not read; line 21a is written negative; the
-other-deductions block has 17 rows where the client's own template has 25.
+All eleven remaining findings are fixed. Schedule C now ties to the signed
+accounts on every line (net income before tax 2,866, per books 2,687) and
+Schedule F reconciles to the hand-prepared work paper line by line at
+31/03/2024 with no classification difference; the only residuals are 1 and -2
+of the statement's own rounding between the fixed-asset note and the face.
 
-Noted while testing, not investigated: a comparative column printed as "-"
-yields one value, so `amtOf` (the LAST value) takes the CURRENT year's figure
-for that row. It affects only the structural arithmetic, never a booked
-amount, but it is why "Total Other Income" cannot be proved on this file.
+**Two more sections, on the pattern the module already used for `cogs`.**
+`otherIncome` (banner `^(total )?other income$`): a caption printed there is a
+receipt, so it may reach lines 4-9 but never gross receipts and never a
+deduction. Motor Vehicle Contribution matched the motor-vehicle EXPENSE
+keyword and was deducted, moving the bottom line by twice itself.
+`termLiabilities` (banner `^(total )?(non-current|long-term|term|deferred)
+liabilit(y|ies)$`, which MUST precede the general liabilities pattern): line 19,
+not line 16. Both vetoes had to admit what prints underneath them — equity
+follows the long-term liabilities and the banner is sticky, so
+`NON_CURRENT_LIABILITY_TARGETS` includes rows 58-62 and the route runs the
+equity tests first. Without that, the boating fixture's retained earnings
+landed on a liability line.
+
+**The notes are read, never booked** (`statementNotes` / `fixedAssetSplit` /
+`noteLookthrough` in engine.ts, `EN9NOTES` in dist). Note headings carry no
+figure so the row reader drops them; a note is read BACKWARDS from its closing
+"Total X" line, stopping at the previous total at the same or a shallower
+indent and at a page break. Two uses, each of which proves its arithmetic
+against the note's own total first: the fixed-asset note supplies cost and
+accumulated depreciation for Schedule F 9a/9b, which the face prints only as a
+net; and a note holding exactly ONE thing renames the face caption to that
+thing ("Other Non Current Assets" is the note's "Intangible Assets", line 12c).
+The split is applied by REWRITING the evidence — the face row becomes the cost
+and a depreciation row is spliced in immediately after it, so the ordinary
+rules book both. Two things that cost a pass each: the face row carries the
+note NUMBER as its first value (`[4, 23353, 28667]`), so the comparison and the
+rewrite use the TRAILING columns; and the spliced row must sit beside its host,
+because appended at the end it fell under the Equity banner and the
+liabilities-side veto threw it away.
+
+**The accounts' own shareholder register** (`directoryShareholders`,
+`EN9DIRSH`) is read from the directory page and outranks the prior return's
+Schedule B Part II, which named one of the three holders. Names are matched on
+a prefix, because the form truncates at the column edge: "ARCK TRUST (ARCK
+LEGACY TRUS" is "ARCK Trust", and counting them separately doubled the trust.
+
+**The prior return must close where the work paper opens.** A FY2023 filing
+does not open FY2025. `cf-year-gap` is now a BLOCK and gates both the
+Schedule F seeding and the Schedule J opening (`cfStale`, `EN9cfStaleG`).
+
+**Template.** Line 21a carries a POSITIVE expense and row 22 subtracts it
+(F52-F54-F55 became F60-F62-F63 after the row shift); `taxBookValue` no longer
+flips the sign and warns only when the statement printed a tax negative.
+Schedule E M16/O16/Q16 carry formulas, so the USD tax computes instead of
+dividing by an empty rate. The Retained Earnings roll-forward opens at
+`'Balance Sheet'!D61` and row 24 COMPUTES the currency translation adjustment
+— the opening balance, the year's income and the closing balance translate at
+three different rates, so without it the US dollar column can never close;
+N() guards make a blank row nought rather than #VALUE!. Schedule F's
+out-of-balance row is labelled and computed in all four columns.
+
+**Line 17 has 25 detail rows, not 17** (this client has 21 captions and five
+were merged into one). Rows 51+ shifted down by eight. What that touches, and
+what caught me: the shared-formula `ref` ranges live on the `<f>` TAG, and a
+shared MASTER also carries its formula in its body, so both need moving; and
+cell refs must be renumbered EITHER by the row rewrite OR by the formula
+rewrite, never both. Code that moved with it: `IS_LINES` rows 51-67,
+`FORMULA_REFS[is]` [9,13,21,25,33,59,60,64,68], `POOLS["IS:OD"]` 34-58,
+`bookNetIncome` (rows 61-63, and it now SUBTRACTS the tax), the tax rules and
+`TAX_TARGETS` (IS:62/IS:63), and three test files.
+
+**Acknowledging a blocker asks only that the preparer says something.** The
+first version of that check demanded fifteen characters and rejected a list of
+filler words. It was wrong twice: it refused real answers for being short
+("Rod confirmed" is thirteen characters, "Client confirmed" is sixteen, and
+that is not a difference worth anything), and it left no way to acknowledge a
+blocker in order to see what the workbook looks like. A reason can be
+anything; the preparer signs the return. What the original defect actually
+needed was for the problem to stay VISIBLE afterwards, which the labelled
+out-of-balance row on Schedule F and the Provenance sheet now do. A thin note
+(`isThinNote`) is recorded, never refused: the Provenance line for that
+blocker gains "NOTE GIVES NO REASON: check this figure before filing".
+
+Also: `property, plant and equipment` added to the line 9a keywords (only the
+Spanish was there), catalogue version 7; an asset-side shareholder current
+account routes to line 6, mirroring the liabilities branch, so it no longer
+needs the AI; an empty
+acknowledgement note is refused, but nothing else is.
+
+**Basic Information, 2026-09-18.** Three defects, one of them a src/dist
+drift the earlier reconciliation never looked at.
+
+The shipped build carried an address splitter (`Ov`) that src did not have at
+all: it sorted the lines into street / city / region and wrote them to address
+lines 1, 2 and 3 by that classification. On a two-line address -- "49 SHRULE
+PLACE" then "HAMILTON 3210 NEW ZEALAND" -- nothing looked like a city, so B14
+was left blank and the country printed on B15 with a hole above it. The three
+template cells sit under one "Entity Address" label: they are LINES, not
+fields. `addressLines()` now fills them in printed order in both trees.
+
+"Does the entity have a 10% corporate shareholder?" answered No although a
+trust holds 98%. `isCorporateName` is anchored on the END of the name, and the
+form truncates at the column edge: "ARCK TRUST (ARCK LEGACY TRUS" does not end
+in "trust". The test now reads the accounts' shareholder register first, where
+the name is whole.
+
+"Is the filer a director or officer?" was left blank: it is proposed from the
+prior return's Item H boxes, which did not resolve. The accounts name their
+directors on the same page as the register, so `directoryDirectors()` reads
+them and `samePerson()` matches the filer past a middle initial ("RODNEY W.
+CLAYCOMB" is "Rodney Claycomb"). First and last name words must both match, so
+a shared surname is not enough.
+
+Left alone deliberately: the filer categories come from the prior return's
+Item B, and that return ticks 1a and 4 only where the hand-prepared work paper
+also ticks 5a. The tool is faithful to the document and warns; which categories
+apply this year is the preparer's determination, not something to infer.
+Likewise `legalName` follows the accounts ("HMC Communications Ltd") where the
+return says "LIMITED", and the books-keeper's name loses its "LP" to the same
+column truncation as the trust.
+
+`tests/test_notes_register.cjs` (`test:notes`, 27 checks) covers the note reader, the
+register, the directors, the address lines and the acknowledgement rule in
+both trees. `test:sections` is 49 and `test:notes` 21. `test:all` 1336,
+the one failure still `test:peg`.
 
 ## Rule catalogue upgrades
 

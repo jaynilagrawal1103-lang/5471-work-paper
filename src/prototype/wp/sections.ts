@@ -461,6 +461,21 @@ export function bsSide(target: string): "assets" | "liabilities" | null {
    sold inside gross income, so the group name cannot be used to tell them
    apart — they are listed here by row instead. */
 const INCOME_TARGETS = new Set(["IS:7", "IS:14", "IS:15", "IS:16", "IS:17", "IS:18", "IS:19", "IS:20", "IS:22", "IS:23", "IS:24", "IS:OI"]);
+/** Where a caption printed under an "Other income" banner may land. Gross
+    receipts is deliberately absent: the statement has already said this is not
+    turnover. Everything else on the income half of Schedule C is fair game. */
+/** Where a caption printed under a non-current / term liabilities banner may
+    land: Schedule F line 19 and its detail rows, the shareholder loan line,
+    and derivatives. Line 16 is deliberately absent. */
+const NON_CURRENT_LIABILITY_TARGETS = new Set([
+  "BS:OL", "BS:51", "BS:52", "BS:54", "BS:55", "BS:56",
+  /* Equity is printed BELOW the long-term liabilities and the banner is
+     sticky, so an equity caption reaches here whenever the statement does not
+     announce its equity section by a name the lexicon knows. Vetoing those
+     would push retained earnings onto a liability line. */
+  "BS:58", "BS:59", "BS:60", "BS:61", "BS:62",
+]);
+const OTHER_INCOME_TARGETS = new Set(["IS:14", "IS:15", "IS:16", "IS:17", "IS:18", "IS:19", "IS:20", "IS:22", "IS:23", "IS:24", "IS:OI"]);
 
 export function sectionOk(section: Section | null | undefined, target: string | null | undefined): boolean {
   if (!section || !target) return true;
@@ -471,6 +486,15 @@ export function sectionOk(section: Section | null | undefined, target: string | 
      receipts and inflate income by their whole amount. Contra-revenue (IS:8)
      and the cost lines themselves are left alone. */
   if (section === "cogs") return !isBs && !INCOME_TARGETS.has(target);
+  /* The mirror of the cogs rule. "Motor Vehicle Contribution" is printed under
+     Other Income and is a receipt, but the keyword scan saw "motor vehicle"
+     and sent it to the motor-vehicle expense line -- so the figure came out of
+     income AND went into deductions, moving the bottom line by twice itself. */
+  if (section === "otherIncome") return !isBs && OTHER_INCOME_TARGETS.has(target);
+  /* A liability the statement filed under "Non-Current Liabilities" belongs on
+     Schedule F line 19, never on line 16. Everything else on the liabilities
+     side stays reachable: a term loan from a shareholder is still line 18. */
+  if (section === "termLiabilities") return isBs && NON_CURRENT_LIABILITY_TARGETS.has(target);
   if (section === "cash") return target === "BS:10";
   if (section === "assets" || section === "liabilities") {
     if (!isBs) return false;
@@ -499,6 +523,25 @@ export function sectionRoute(section: Section | null | undefined, label: string)
      cost of goods sold, and line 2 is where the form puts the ones that are
      neither labour nor purchases. */
   if (section === "cash") return "BS:10";
+  /* The banner already said what the figure is, so the catch-all is safe: an
+     unrecognised caption under "Other income" IS other income. */
+  if (section === "termLiabilities") {
+    // The equity tests first, and in the same order as the liabilities branch
+    // below: the banner is sticky and equity prints underneath it.
+    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
+    if (/reserve|retained earning|accumulated (profit|loss|deficit)|distributable/.test(s)) return "BS:61";
+    if (/current account/.test(s) && !/vat|tax/.test(s)) return "BS:52";
+    if (/shareholder|director|related part/.test(s)) return "BS:52";
+    return "BS:OL";
+  }
+  if (section === "otherIncome") {
+    if (/\b(dividend)/.test(s)) return "IS:14";
+    if (/\b(interest)/.test(s)) return "IS:15";
+    if (/\b(rent)/.test(s)) return "IS:16";
+    if (/\b(royalt|licence fee|license fee)/.test(s)) return "IS:17";
+    if (/\b(gain|loss)\b.*\b(sale|disposal)|\b(sale|disposal)\b.*\b(asset)/.test(s)) return "IS:18";
+    return "IS:OI";
+  }
   if (section === "cogs") {
     if (/\b(labour|labor|wage|salar|payroll|subcontract|sub-contract)/.test(s)) return "IS:10";
     if (/\b(purchase|goods|material|stock|inventor|supplier)/.test(s)) return "IS:11";
@@ -507,6 +550,10 @@ export function sectionRoute(section: Section | null | undefined, label: string)
   if (section === "assets") {
     if (/\b(depreciat|amorti[sz])/.test(s)) return "BS:29";
     if (/\b(receivable|debtor)/.test(s)) return "BS:11";
+    /* The mirror of the liabilities branch below. A shareholder current
+       account swings between the two sides year to year, and the balance
+       sheet says which side it is on THIS year by where it prints it. */
+    if (/current account|\bloan\b/.test(s) && !/vat|tax/.test(s)) return "BS:19";
     if (/\b(vat|tax|gst|prepaid|deposit|accrued income)/.test(s)) return "BS:OCA";
     return null;
   }
@@ -527,7 +574,7 @@ export function sectionRoute(section: Section | null | undefined, label: string)
     if (/\b(depreciat|amorti[sz])/.test(s)) return "IS:30";
     if (/interest/.test(s)) return "IS:29";
     if (/\bfx\b|exchange (gain|loss)|currency (gain|loss)/.test(s)) return "IS:19";
-    if (/\b(income tax|corporat\w* tax|profit tax|vennootschapsbelasting|körperschaftsteuer)/.test(s)) return "IS:54";
+    if (/\b(income tax|corporat\w* tax|profit tax|vennootschapsbelasting|körperschaftsteuer)/.test(s)) return "IS:62";
     if (/\b(tax|belasting)/.test(s)) return "IS:OD";
     return "IS:OD";
   }
@@ -538,8 +585,8 @@ export function sectionRoute(section: Section | null | undefined, label: string)
     page they were read on. Returns the two feeds with those rows exchanged,
     and how many moved — the caller logs the count. */
 export function refeedBySection(isRows: MapRow[], bsRows: MapRow[]): { is: MapRow[]; bs: MapRow[]; moved: number } {
-  const onBs = (m: MapRow) => m.section === "assets" || m.section === "liabilities" || m.section === "cash";
-  const onIs = (m: MapRow) => m.section === "income" || m.section === "costs" || m.section === "cogs";
+  const onBs = (m: MapRow) => m.section === "assets" || m.section === "liabilities" || m.section === "cash" || m.section === "termLiabilities";
+  const onIs = (m: MapRow) => m.section === "income" || m.section === "costs" || m.section === "cogs" || m.section === "otherIncome";
   const toBs = isRows.filter(onBs);
   const toIs = bsRows.filter(onIs);
   if (!toBs.length && !toIs.length) return { is: isRows, bs: bsRows, moved: 0 };
@@ -604,6 +651,8 @@ export function collapsedRoute(label: string, section: Section): string | null {
   if (section === "costs") return "IS:OD";
   if (section === "cash") return "BS:10";
   if (section === "cogs") return "IS:12";
+  if (section === "otherIncome") return "IS:OI";
+  if (section === "termLiabilities") return "BS:OL";
   return null;
 }
 

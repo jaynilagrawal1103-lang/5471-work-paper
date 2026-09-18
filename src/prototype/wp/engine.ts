@@ -115,12 +115,20 @@ export const IS_LINES: LineSpec[] = [
   { row: 48, ref: "17", label: "Other deduction 15", group: "Deductions", relabel: true },
   { row: 49, ref: "17", label: "Other deduction 16", group: "Deductions", relabel: true },
   { row: 50, ref: "17", label: "Other deduction 17", group: "Deductions", relabel: true },
-  { row: 53, ref: "20", label: "Unusual or infrequently occurring items", group: "Net income" },
-  { row: 54, ref: "21a", label: "Income tax expense — current", group: "Net income" },
-  { row: 55, ref: "21b", label: "Income tax expense — deferred", group: "Net income" },
-  { row: 57, ref: "23a", label: "Other comprehensive income — FX translation", group: "OCI" },
-  { row: 58, ref: "23b", label: "Other comprehensive income — other", group: "OCI" },
-  { row: 59, ref: "23c", label: "Tax on other comprehensive income", group: "OCI" },
+  { row: 51, ref: "17", label: "Other deduction 18", group: "Deductions", relabel: true },
+  { row: 52, ref: "17", label: "Other deduction 19", group: "Deductions", relabel: true },
+  { row: 53, ref: "17", label: "Other deduction 20", group: "Deductions", relabel: true },
+  { row: 54, ref: "17", label: "Other deduction 21", group: "Deductions", relabel: true },
+  { row: 55, ref: "17", label: "Other deduction 22", group: "Deductions", relabel: true },
+  { row: 56, ref: "17", label: "Other deduction 23", group: "Deductions", relabel: true },
+  { row: 57, ref: "17", label: "Other deduction 24", group: "Deductions", relabel: true },
+  { row: 58, ref: "17", label: "Other deduction 25", group: "Deductions", relabel: true },
+  { row: 61, ref: "20", label: "Unusual or infrequently occurring items", group: "Net income" },
+  { row: 62, ref: "21a", label: "Income tax expense — current", group: "Net income" },
+  { row: 63, ref: "21b", label: "Income tax expense — deferred", group: "Net income" },
+  { row: 65, ref: "23a", label: "Other comprehensive income — FX translation", group: "OCI" },
+  { row: 66, ref: "23b", label: "Other comprehensive income — other", group: "OCI" },
+  { row: 67, ref: "23c", label: "Tax on other comprehensive income", group: "OCI" },
 ];
 
 /* Column D = beginning of year, column F = end of year, local currency.
@@ -174,7 +182,7 @@ export const BS_LINES: LineSpec[] = [
    document order, and aggregates any overflow into the pool's last row. */
 export const POOLS: Record<string, { sheet: "is" | "bs"; rows: number[] }> = {
   "IS:OI": { sheet: "is", rows: [22, 23, 24] },
-  "IS:OD": { sheet: "is", rows: [34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50] },
+  "IS:OD": { sheet: "is", rows: [34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58] },
   "BS:OCA": { sheet: "bs", rows: [16, 17, 18] },
   "BS:OCL": { sheet: "bs", rows: [48, 49, 50] },
   "BS:OL": { sheet: "bs", rows: [54, 55, 56] },
@@ -187,7 +195,7 @@ export const FORMULA_REFS: Record<string, (ref: string) => boolean> = {
     const m = /^([A-Z]+)(\d+)$/.exec(ref);
     if (!m) return false;
     const row = Number(m[2]);
-    if (m[1] === "F" || m[1] === "H") return [9, 13, 21, 25, 33, 51, 52, 56, 60].includes(row);
+    if (m[1] === "F" || m[1] === "H") return [9, 13, 21, 25, 33, 59, 60, 64, 68].includes(row);
     return m[1] === "J" || m[1] === "L";
   },
   [SHEET.bs]: (ref) => {
@@ -376,8 +384,8 @@ export const DEFAULT_RULES: MappingRule[] = [
          // box names the income it is deducted from, and that lone word
          // "ingresos" was enough to book the expense as revenue.
          "de los ingresos"], t: "IS:OD" },
-  { kw: ["income tax - current", "current tax", "corporation tax", "tax on profit", "tax on ordinary activities", "income tax revenue", "income tax expense", "impot sur les societes"], t: "IS:54" },
-  { kw: ["deferred tax"], t: "IS:55" },
+  { kw: ["income tax - current", "current tax", "corporation tax", "tax on profit", "tax on ordinary activities", "income tax revenue", "income tax expense", "impot sur les societes"], t: "IS:62" },
+  { kw: ["deferred tax"], t: "IS:63" },
   { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "efectivo", "disponibilidades", "caja y bancos", "货币资金", "merchant account", "undeposited funds", "petty cash", "checking account", "savings account"], t: "BS:10" },
   { kw: ["trade receivable", "accounts receivable", "debtor", "trade debtor", "cr\u00e9ances clients", "deudores", "cuentas por cobrar", "contas a receber", "应收账款"], t: "BS:11" },
   { kw: ["allowance for bad debt", "provision for doubtful"], t: "BS:12" },
@@ -426,7 +434,12 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["prepaid", "prepayment", "charges constatées", "accrued management fee", "accrued income", "accrued revenue"], t: "BS:OCA" },
   { kw: ["loan to shareholder", "amounts owed by"], t: "BS:19" },
   { kw: ["investment in subsidiar", "shares in group"], t: "BS:21" },
-  { kw: ["building", "plant and machinery", "fixed asset", "immobilisations corporelles", "maquinaria y equipo", "equipo de oficina", "equipo de computacion", "equipo de computaci\u00f3n", "propiedad planta y equipo", "imobilizado", "edificios", "instalaciones", "固定资产"], t: "BS:28" },
+  { kw: ["building", "plant and machinery", "fixed asset", "immobilisations corporelles", "maquinaria y equipo", "equipo de oficina", "equipo de computacion", "equipo de computaci\u00f3n", "propiedad planta y equipo", "imobilizado", "edificios", "instalaciones", "固定资产",
+    /* The English of "propiedad planta y equipo", which was already here. Its
+       absence sent every English balance sheet's fixed assets into the
+       other-assets pool, where the prior-return carry-forward then filled the
+       empty lines 9a/9b with the SAME asset and counted it twice. */
+    "property, plant and equipment", "property plant and equipment", "plant and equipment"], t: "BS:28" },
   { kw: ["accumulated depreciation", "amortissements cumul\u00e9s", "depr. acumulada", "depreciacion acumulada", "depreciaci\u00f3n acumulada", "deprec. acumulada"], t: "BS:29" },
   { kw: ["land"], t: "BS:32" },
   { kw: ["goodwill", "fonds de commerce"], t: "BS:34" },
@@ -948,6 +961,140 @@ export function extractPositionedRows(
 const unesc = (s: string) =>
   s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+
+/* ---------- notes to the financial statements ----------
+
+   Schedule F wants a fixed asset at COST on line 9a with accumulated
+   depreciation on 9b, but almost every set of accounts prints only the NET
+   figure on the face and puts the split in a note. Read the note.
+
+   The note headings ("4. Property, Plant and Equipment") carry no figure, so
+   the row reader drops them. What survives is the shape the note closes with:
+
+       Cost                                  43,517   21,479
+       Accumulated Depreciation             (29,537)  (6,202)
+       Total Plant and Equipment              13,980   15,277
+       Cost                                  53,838   35,793
+       Accumulated Depreciation             (44,465) (22,404)
+       Total Vehicles                          9,373   13,389
+       Total Property, Plant and Equipment    23,353   28,667
+
+   So a note is read BACKWARDS from its closing total: everything above it,
+   down to the previous total at the same or a shallower indent, belongs to
+   it. Nothing is booked on the strength of the shape alone -- each consumer
+   below has to prove its arithmetic against the note's own total first. */
+
+/** One note, as its closing "Total ..." line and the rows that line adds. */
+export type StatementNote = {
+  /** The closing line's caption with the leading total word removed. */
+  title: string;
+  /** The closing line's own figures, one per printed column. */
+  total: number[];
+  /** Everything the closing line covers, in printed order. */
+  components: ExtractedRow[];
+  page?: number;
+};
+
+const NOTE_TOTAL = /^(?:total|sub-?total)\s+(.+)$/i;
+const indentOfRow = (r: ExtractedRow): number =>
+  typeof r.x0 === "number" ? Math.round(r.x0 * 10) / 10 : 0;
+
+/** Split the rows of the notes pages into notes. */
+export function statementNotes(rows: ExtractedRow[]): StatementNote[] {
+  const out: StatementNote[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const m = NOTE_TOTAL.exec(String(rows[i].label || "").trim());
+    if (!m || !rows[i].values.length) continue;
+    const ind = indentOfRow(rows[i]);
+    const components: ExtractedRow[] = [];
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = rows[j];
+      // the previous note closed here, at this level or outside it
+      if (NOTE_TOTAL.test(String(prev.label || "").trim()) && indentOfRow(prev) <= ind) break;
+      // a note does not run onto another page; without this the walk ran back
+      // through the whole of the previous page once a note opened with a row
+      // that is not itself a total
+      if (prev.page !== rows[i].page) break;
+      if (!prev.values.length) break;
+      components.unshift(prev);
+    }
+    if (components.length) {
+      out.push({ title: m[1].trim(), total: rows[i].values.slice(), components, page: rows[i].page });
+    }
+  }
+  return out;
+}
+
+/** Equal enough for a note: statements round each line, so a total can differ
+    from its own components by up to half a unit per line. */
+const noteTies = (parts: number[], total: number): boolean =>
+  Math.abs(parts.reduce((n, v) => n + v, 0) - total) <= Math.max(0.02, parts.length * 0.5);
+
+const COST_ROW = /^(?:at\s+)?cost(?:\s+price|\s+or\s+valuation)?$/i;
+const DEP_ROW = /^(?:less\s+)?accumulated\s+(?:depreciation|amortisation|amortization)$/i;
+const FIXED_ASSET_NOTE = /^(?:property,?\s*)?plant\s*(?:,|and|&)?\s*(?:and\s+)?equipment$|^property,?\s+plant\s+(?:and|&)\s+equipment$|^fixed\s+assets$|^(?:tangible\s+)?fixed\s+asset\s+(?:summary|schedule)$/i;
+
+/** Cost and accumulated depreciation for Schedule F lines 9a and 9b, per
+    printed column, taken from the fixed-asset note.
+ *
+ * Returns null unless the note proves itself: every class must state both a
+ * cost and an accumulated depreciation, and cost less depreciation must equal
+ * the note's own total in every column. A note that does not tie is a note we
+ * have misread, and a misread fixed asset is worse than a net one. */
+export function fixedAssetSplit(
+  notes: StatementNote[],
+): { cost: number[]; accumDep: number[]; net: number[] } | null {
+  /* "Property, Plant and Equipment" closes over "Plant and Equipment" and
+     "Vehicles", and all three titles match. Take the one that covers the most
+     rows: the classes are inside it, and only the outer note's total is the
+     figure the balance sheet carries. */
+  const note = notes.filter((n) => FIXED_ASSET_NOTE.test(n.title))
+    .sort((a, b) => b.components.length - a.components.length)[0];
+  if (!note) return null;
+  const costs = note.components.filter((r) => COST_ROW.test(String(r.label || "").trim()));
+  const deps = note.components.filter((r) => DEP_ROW.test(String(r.label || "").trim()));
+  if (!costs.length || costs.length !== deps.length) return null;
+  const cols = note.total.length;
+  if (!cols) return null;
+  const cost: number[] = [], accumDep: number[] = [];
+  for (let c = 0; c < cols; c++) {
+    // every class has to state this column, or the note is not comparable
+    if (costs.some((r) => r.values.length <= c) || deps.some((r) => r.values.length <= c)) return null;
+    cost.push(costs.reduce((n, r) => n + r.values[c], 0));
+    accumDep.push(deps.reduce((n, r) => n + Math.abs(r.values[c]), 0));
+    if (!noteTies([cost[c], -accumDep[c]], note.total[c])) return null;
+  }
+  return { cost, accumDep, net: note.total.slice() };
+}
+
+/** Notes that turn out to hold exactly ONE thing.
+ *
+ *   5. Other Non Current Assets
+ *      Intangible Assets                 2,411   2,411
+ *      Total Other Non Current Assets    2,411   2,411
+ *
+ * "Other Non Current Assets" is unmappable and lands in the other-assets pool;
+ * "Intangible Assets" is line 12c. The note says they are the same figure, so
+ * the note's own caption is the better one to map. Only a single component
+ * that equals the total qualifies -- a note listing several things says
+ * nothing about which line the face caption belongs on. */
+export function noteLookthrough(notes: StatementNote[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  for (const n of notes) {
+    if (n.components.length !== 1) continue;
+    const only = n.components[0];
+    const cols = Math.min(n.total.length, only.values.length);
+    if (!cols) continue;
+    let ties = true;
+    for (let c = 0; c < cols; c++) if (!noteTies([only.values[c]], n.total[c])) ties = false;
+    if (!ties) continue;
+    const from = key(n.title), to = String(only.label || "").trim();
+    if (!from || !to || from === key(to)) continue;
+    out.set(from, to);
+  }
+  return out;
+}
 
 /* ---------- worksheet selection ----------
 

@@ -146,24 +146,24 @@ const near = (x, y) => x !== null && y !== null && Math.abs(x - y) < 1.0;
   a(pct >= 85, `financial line accuracy >= 85% (got ${pct}%)`);
 
   /* ---- step 4: the E&P chain -------------------------------------------
-     Income Statement J56 -> Sch-H I10 -> I26 -> Schedule J F23 is entirely
+     Income Statement J64 -> Sch-H I10 -> I26 -> Schedule J F23 is entirely
      formula-driven in the template, so the only thing the tool must supply is
      the tax. Prove the writer fires for a taxpaying entity and stands down for
      a nil-tax one, and that the two sides are tied out. */
   const taxEnt = { profile: { legalName: "ACME GMBH", countryInc: "GERMANY", cyEnd: "12/31/2024" },
-                   lines: { "IS:54": { amount: -12500 } } };
+                   lines: { "IS:62": { amount: 12500 } } };
   const w = []; 
   a(M.EN9schETax(taxEnt, x => w.push(x), 0.924, { referenceIds: ["R1"] }) === true,
     "step 4: a real income tax is written to Schedule E");
   a((w.find(x => x.ref === "O16") || {}).value === 12500,
-    "step 4: the P&L keeps the tax negative, Schedule E receives the magnitude");
+    "step 4: the P&L carries the tax as a positive expense and Schedule E receives its magnitude");
   a(M.EN9schETax({ profile: {}, lines: {} }, () => {}, 0.924, {}) === false,
     "step 4: a nil-tax entity leaves the nil-tax documentation row to run");
-  a(M.EN9tieTax({ "IS:54": { amount: -12500 } }, 9000).length === 1,
+  a(M.EN9tieTax({ "IS:62": { amount: 12500 } }, 9000).length === 1,
     "step 4: a Schedule C / Schedule E tax mismatch is flagged");
-  a(M.EN9tieTax({ "IS:54": { amount: -12500 } }, 12500).length === 0,
+  a(M.EN9tieTax({ "IS:62": { amount: 12500 } }, 12500).length === 0,
     "step 4: agreeing figures raise nothing");
-  a(M.EN9sectionRoute("costs", "Income tax expense") === "IS:54",
+  a(M.EN9sectionRoute("costs", "Income tax expense") === "IS:62",
     "step 4: an income-tax caption lands on Schedule C line 21a");
 
   /* ---- rules 5 and 7 ---------------------------------------------------- */

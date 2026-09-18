@@ -3,7 +3,7 @@
 import {
   BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES, REPLACEABLE_FORMULA_REFS,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
-  detectRulers, explainUnreadable, extractPositionedRows, extractRows, matchRule, numeric, readDocument, signForLabel,
+  detectRulers, explainUnreadable, extractPositionedRows, extractRows, fixedAssetSplit, matchRule, noteLookthrough, numeric, readDocument, signForLabel, statementNotes,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
@@ -23,7 +23,7 @@ import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
   type DocClass, type DocKind,
 } from "./classify";
-import { extractCarryForwards, type CarryForward } from "./carryForward";
+import { addressLines, directoryDirectors, directoryShareholders, extractCarryForwards, samePerson, type CarryForward, type DirectoryHolder } from "./carryForward";
 
 /** One 5471 block's carry-forward, tagged with its origin for selection,
     cross-document dedupe and sibling fan-out. */
@@ -462,6 +462,15 @@ export function makeEntity(name: string, stakeholder: string): Entity {
   };
 }
 
+/** A note that acknowledges a blocker without explaining it. Nothing is
+    refused for being thin -- the preparer may have a good reason to be brief,
+    or may simply be testing -- but the Provenance sheet says so, so a reviewer
+    can tell a considered acknowledgement from a keystroke. */
+export const isThinNote = (note: string): boolean => {
+  const said = String(note || "").trim();
+  return said.length < 12 || /^(test\w*|ok(ay)?|n\/?a|none|nil|x+|\.+|-+|check(ed|ing)?|done|fine|yes|no|asdf\w*|foo|bar)$/i.test(said);
+};
+
 /* ---------------- store ---------------- */
 const initialStakeholder = "New stakeholder";
 
@@ -472,7 +481,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 6;
+export const RULE_CATALOGUE_VERSION = 7;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -499,6 +508,9 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
       "payroll expense", "owner investment", "owner draw"],
   // v6 (2026-09-15): Chilean balance-sheet caption coverage.
   5: ["edificios", "provisi\u00f3n impuesto", "garant\u00eda", "fondo de capital", "inversiones", "capital"],
+  // v7 (2026-09-18): the English of "property, plant and equipment". Without
+  // it the line fell to the other-assets pool on every English balance sheet.
+  6: ["property, plant and equipment"],
 };
 
 /** Groups the saved catalogue is missing purely because it predates them.
@@ -1617,6 +1629,31 @@ export const actions = {
       toast("Answer this one — acknowledging would leave the cell blank", "bad");
       return;
     }
+    /* A blocking exception needs the preparer to SAY something, and that is
+       all this asks. An earlier version of this check also demanded fifteen
+       characters and rejected a list of filler words; it was wrong twice over.
+       It refused real answers for being short -- "Rod confirmed" is thirteen
+       characters and "Client confirmed" is sixteen, which is not a difference
+       worth anything -- and it left no way to acknowledge a blocker in order
+       to see what the workbook looks like. A reason can be anything; the
+       preparer is the one signing the return.
+
+       What the run that prompted this actually needed was for the problem to
+       be VISIBLE afterwards, not for the note to be long: an out-of-balance
+       Schedule F was waved through and the generated workbook said so nowhere
+       on its face. Schedule F now carries a labelled out-of-balance row in all
+       four columns, and a thin note is marked as such on the Provenance sheet,
+       so a reviewer can see both the figure and the fact that nobody explained
+       it. */
+    if (item.level === "block" && !String(note || "").trim()) {
+      logEvent(
+        "Acknowledgement refused",
+        `"${item.message.slice(0, 120)}" — a blocking exception needs a note, even a short one`,
+        ent.name,
+      );
+      toast("Type a reason first — anything, but the workbook records it", "bad");
+      return;
+    }
     const rest = ent.reviewItems.filter((r) => r.id !== id);
     updateEntity(entityId, { reviewItems: [...rest, { ...item, dismissed: true, dismissedNote: note || "" }] });
     logEvent(
@@ -1777,6 +1814,17 @@ export const actions = {
     let ato: AtoFacts = {};
     let cf: CarryForward | null = null;
     let cfSource = "";
+    /* The prior return is only an opening balance if it CLOSES where this work
+       paper OPENS. A FY2023 filing does not open FY2025, and seeding from one
+       silently backdates the whole of column (a) by a year. */
+    let cfStale = false;
+    /* The shareholder register as the CURRENT year's accounts state it. It
+       outranks the prior return's Schedule B Part II, which is a year or more
+       old -- see directoryShareholders. */
+    let directory: DirectoryHolder[] = [];
+    let directorySource = "";
+    /** The directors the accounts name, for Item H. */
+    let directors: string[] = [];
     let nameMismatch: Entity["nameMismatch"] = null;
     // Every 5471 block found across the prior-year documents. Exactly one
     // feeds THIS entity; the remaining named blocks fan out to siblings.
@@ -1952,6 +2000,74 @@ export const actions = {
             }
             for (const row of bsPages.size ? extractPositionedRows(parsed.pdf, rulers, { pages: bsPages }) : []) {
               pdfBs.push({ row, docId: file.id, docName: file.name, feed: "bs", kind: "pdf", x0: row.x0 });
+            }
+            /* The notes are not booked -- they restate what the face already
+               carries -- but they say what the face's captions MEAN. Two uses,
+               both of which have to prove their arithmetic against the note's
+               own total before anything moves: a note holding exactly one
+               thing renames the face caption to that thing, and the fixed
+               asset note supplies the cost and accumulated depreciation that
+               Schedule F lines 9a and 9b need and the face never prints. */
+            if (!directory.length && cls.kind === "cfc-financial-statements") {
+              const found = directoryShareholders(parsed.pdf.rows.map((r) => ({ page: r.page, cells: r.cells.map((c) => c.text) })));
+              if (found.length) { directory = found; directorySource = file.name; }
+              const dirRows = parsed.pdf.rows.map((r) => ({ page: r.page, cells: r.cells.map((c) => c.text) }));
+              if (!directors.length) directors = directoryDirectors(dirRows);
+            }
+            const notePages = new Set((cls.pages || []).filter((p) => p.kind === "fs-notes").map((p) => p.page));
+            const notes = notePages.size
+              ? statementNotes(extractPositionedRows(parsed.pdf, rulers, { pages: notePages }))
+              : [];
+            const lookthrough = notes.length ? noteLookthrough(notes) : new Map<string, string>();
+            if (lookthrough.size) {
+              const key = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+              let renamed = 0;
+              for (const m of pdfBs) {
+                const to = lookthrough.get(key(String(m.row.label || "")));
+                if (!to) continue;
+                m.row = { ...m.row, label: to };
+                renamed++;
+              }
+              if (renamed) {
+                log.push(`${file.name}: ${renamed} balance-sheet caption(s) resolved through their own note (for example "Other Non Current Assets" is the note's "Intangible Assets")`);
+              }
+            }
+            const fixedAssets = notes.length ? fixedAssetSplit(notes) : null;
+            if (fixedAssets) {
+              /* The face carries the fixed asset NET; Schedule F wants cost on
+                 9a and accumulated depreciation on 9b. Rather than plumb the
+                 split past the mapper, rewrite the evidence: the face row
+                 becomes the cost, and the depreciation the face never printed
+                 is added as a row of its own, which the existing
+                 "accumulated depreciation" rule already books to 9b.
+
+                 Only a face row whose OWN figures equal the note's total is
+                 touched. That is the proof the two are the same asset, and
+                 without it a note could overwrite an unrelated line. */
+              /* Compare the LAST columns, not the whole row: a balance sheet
+                 that cross-references its notes prints the note number first,
+                 so the face row reads [4, 23,353, 28,667] and only the tail is
+                 the money. The same slice is what gets rewritten, so the note
+                 reference survives. */
+              const tailSame = (a: number[], b: number[]) =>
+                a.length >= b.length && b.every((v, i) => Math.abs(a[a.length - b.length + i] - v) <= Math.max(0.02, 1));
+              const host = pdfBs.find((m) => tailSame(m.row.values || [], fixedAssets.net));
+              if (host) {
+                const page = host.row.page;
+                const lead = (host.row.values || []).slice(0, (host.row.values || []).length - fixedAssets.net.length);
+                host.row = { ...host.row, values: [...lead, ...fixedAssets.cost] };
+                /* Immediately after its host, not at the end: the row has to
+                   sit under the same section banner as the asset it depreciates.
+                   Appended, it landed below the Equity banner and the
+                   liabilities-side veto threw it away. */
+                pdfBs.splice(pdfBs.indexOf(host) + 1, 0, {
+                  row: { label: "Accumulated depreciation", values: [...lead, ...fixedAssets.accumDep.map((v) => -Math.abs(v))],
+                         page, years: host.row.years ? host.row.years.slice() : undefined, x0: host.row.x0 },
+                  docId: file.id, docName: file.name, feed: "bs", kind: "pdf", x0: host.x0,
+                  section: host.section,
+                });
+                log.push(`${file.name}: the fixed asset note supplied cost ${fixedAssets.cost.join(" / ")} and accumulated depreciation ${fixedAssets.accumDep.join(" / ")}, which the balance sheet prints only as the net ${fixedAssets.net.join(" / ")} — Schedule F lines 9a and 9b need the split`);
+              }
             }
             /* Page furniture goes FIRST, before anything reads the banners.
                A multi-page statement repeats its own title at the top of every
@@ -2141,9 +2257,10 @@ export const actions = {
             // A reference copy OLDER than the immediately prior year: its
             // Schedule J line 14 opens the WRONG year — flag, never adjust.
             if (caseYears.cy && selected.statementYear && selected.statementYear < caseYears.cy - 1) {
+              cfStale = true;
               rv({
-                id: "cf-year-gap", level: "warn", category: "carry-forward",
-                message: `${selected.source} is a FY${selected.statementYear} filing but the case year is ${caseYears.cy} — its Schedule J line 14 is the opening balance of FY${selected.statementYear + 1}, NOT ${caseYears.cy}. Confirm the opening E&P and the prior-filed balances before relying on them.`,
+                id: "cf-year-gap", level: "block", category: "carry-forward",
+                message: `${selected.source} is a FY${selected.statementYear} filing, but this work paper is FY${caseYears.cy}, so its opening column is the close of FY${caseYears.cy - 1}. That return closes at the end of FY${selected.statementYear}, one year earlier, and its Schedule J line 14 opens FY${selected.statementYear + 1}. Nothing has been carried forward from it: a silently backdated opening balance is worse than a blank one. Supply the FY${caseYears.cy - 1} Form 5471, or enter the opening figures yourself.`,
                 source: selected.source,
               });
             }
@@ -2368,11 +2485,11 @@ export const actions = {
               continue;
             }
             const booked = taxBookValue(resolved.target, r.field, r.value);
-            if (booked !== r.value) {
+            if (taxPrintedNegative(resolved.target, r.field, r.value)) {
               rv({
                 id: `tax-sign-${resolved.target}`, level: "warn", category: "mapping", applied: true,
                 sourceLabel: m.row.label,
-                  message: `"${m.row.label}" ${r.value.toLocaleString()} was booked to ${resolved.target === "IS:54" ? "income tax expense — current (row 54)" : "deferred tax (row 55)"} as a NEGATIVE amount: the template's net income (row 56) is a plain SUM of rows 52–55, so a positive tax would increase profit. If this line is genuinely a tax credit, edit the value in the Exception Center.`,
+                  message: `"${m.row.label}" is printed as ${r.value.toLocaleString()} — a NEGATIVE tax. It has been booked as printed to ${resolved.target === "IS:62" ? "income tax expense — current (row 62)" : "deferred tax (row 63)"}, and row 64 subtracts that line, so it will ADD ${Math.abs(r.value).toLocaleString()} to profit. That is right for a genuine tax credit and wrong if the statement simply prints taxes as negatives. Confirm it in the Exception Center.`,
                 target: `${SHEET.is}!F${resolved.target.split(":")[1]}`, source: m.docName,
               });
             }
@@ -2484,9 +2601,10 @@ export const actions = {
           // so a cover page can't claim the address with the accountant's.
           if (cf) {
             propose(profile, "legalName", cf.cfcName || "", `${cfSource} · 5471 face`);
-            propose(profile, "addr1", cf.cfcAddress[0] || "", `${cfSource} · 5471 face`);
-            propose(profile, "addr2", cf.cfcAddress[1] || "", `${cfSource} · 5471 face`);
-            propose(profile, "addr3", cf.cfcAddress[2] || "", `${cfSource} · 5471 face`);
+            const cfAddr = addressLines(cf.cfcAddress);
+            propose(profile, "addr1", cfAddr[0] || "", `${cfSource} · 5471 face`);
+            propose(profile, "addr2", cfAddr[1] || "", `${cfSource} · 5471 face`);
+            propose(profile, "addr3", cfAddr[2] || "", `${cfSource} · 5471 face`);
             propose(profile, "formed", cf.formed || "", `${cfSource} · 5471 face`);
             propose(profile, "countryInc", cf.countryInc || "", `${cfSource} · 5471 face`);
             propose(profile, "activity", cf.activity || "", `${cfSource} · 5471 face`);
@@ -2516,7 +2634,11 @@ export const actions = {
                the old rule answered Yes for any 10% holder, individuals
                included. Yes only when a Schedule B holder is a company. */
             {
-              const holders = [...(cf.holders || []), ...(cf.usHolders || [])];
+              /* The register first. The form truncates a long name at the
+                 column edge -- "ARCK TRUST (ARCK LEGACY TRUS" no longer ENDS
+                 in "trust", so the corporate test failed on it and the answer
+                 came out No although the entity is 98% owned by a trust. */
+              const holders = [...directory, ...(cf.holders || []), ...(cf.usHolders || [])];
               const corporate = holders.filter((h) => isCorporateName(h.name));
               if (corporate.length) {
                 propose(ownership, "tenPct", "Yes", `${cfSource} · Schedule B holder ${corporate.map((h) => h.name).join(", ")}`);
@@ -2533,6 +2655,13 @@ export const actions = {
                 ?? (people.length === 1 ? people[0] : undefined);
               if (mine) {
                 propose(ownership, "isOfficer", mine.isOfficer || mine.isDirector ? "Yes" : "No", `${cfSource} · Item H boxes for ${mine.name}`);
+              }
+              /* Item H could not answer it. The accounts name their directors
+                 on the same page as the shareholder register, and that is the
+                 current year's answer rather than the prior return's. */
+              if (directors.length) {
+                const me = directors.find((n) => !!filer && samePerson(n, filer));
+                if (me) propose(ownership, "isOfficer", "Yes", `${directorySource} · named as a director`);
               }
             }
             // The transition tax (section 965) was a 2017/2018 event.
@@ -2724,7 +2853,7 @@ export const actions = {
           }
         }
 
-        if (cf?.priorClosingUSD) {
+        if (cf?.priorClosingUSD && !cfStale) {
           const cur0 = state.entities.find((e) => e.id === entityId);
           /* WHICH rate turns the prior return's filed USD back into opening
              local currency, in order of authority:
@@ -2805,19 +2934,49 @@ export const actions = {
 
         // Shareholders seed from the prior 5471's Sch B Part II first —
         // merge-by-name, so hand-edited or hand-added rows always survive.
-        if (cf?.holders?.length) {
+        /* Direct holders. The accounts' own directory first when there is
+           one: it is this year's register, where the return's Schedule B Part
+           II is last year's or older. On the filing that prompted this, Part
+           II named only the trust and left two of the three holders out, so
+           the direct total came to 98 of 100 shares. */
+        if (directory.length || cf?.holders?.length) {
           const cur = state.entities.find((e) => e.id === entityId);
           if (cur) {
             const merged = [...(cur.shareholders || [])];
-            for (const h of cf.holders) {
-              if (!merged.some((s) => s.name.toLowerCase() === h.name.toLowerCase())) {
-                merged.push({
-                  id: uid(), name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
-                  source: `${cfSource} · Sch B p.${h.page}${h.single ? " · single printed count taken as BOY = EOY — confirm" : ""}`,
-                });
+            const fromDirectory = directory.map((h) => ({
+              name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
+              source: `${directorySource} p.${h.page} · shareholder register · one holding printed, taken as BOY = EOY — confirm`,
+            }));
+            const fromReturn = (cf?.holders || []).map((h) => ({
+              name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
+              source: `${cfSource} · Sch B p.${h.page}${h.single ? " · single printed count taken as BOY = EOY — confirm" : ""}`,
+            }));
+            /* The form's column width cuts a long name off mid-word, so the
+               return calls the trust "ARCK TRUST (ARCK LEGACY TRUS" while the
+               register calls it "ARCK Trust". An exact comparison treats them
+               as two holders and doubles the share count. One name being the
+               start of the other is the same holder. */
+            const nameKey = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+            const sameHolder = (a: string, b: string) => {
+              const x = nameKey(a), y = nameKey(b);
+              if (!x || !y) return false;
+              const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+              return short.length >= 4 && (long === short || long.startsWith(short + " "));
+            };
+            for (const h of [...fromDirectory, ...fromReturn]) {
+              if (!merged.some((s) => sameHolder(s.name, h.name))) {
+                merged.push({ id: uid(), ...h });
               }
             }
             if (merged.length !== (cur.shareholders || []).length) updateEntity(entityId, { shareholders: merged });
+            if (directory.length) {
+              const missed = fromReturn.filter((r) => !directory.some((d) => sameHolder(d.name, r.name)));
+              log.push(
+                `${directory.length} direct shareholder(s) read from the ${directorySource} shareholder register` +
+                (missed.length ? `; ${missed.length} further holder(s) came from ${cfSource} Schedule B Part II` : "") +
+                ` (the register is this year's; Schedule B Part II is the prior return's)`,
+              );
+            }
           }
         }
 
@@ -2879,7 +3038,7 @@ export const actions = {
         }
         const ent = state.entities.find((e) => e.id === entityId);
         if (!ent) return;   // removed mid-run
-        const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, ledger, questionnaire, salary, rv });
+        const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, cfStale, ledger, questionnaire, salary, rv });
         log.push(`${writes.list.length} schedule cell(s) prepared beyond the core statements`);
         // Sign-offs AND value edits survive re-processing, keyed by stable id.
         const prior = new Map(
@@ -3385,7 +3544,10 @@ export function bookNetIncome(lines: Record<string, LineValue>): number | null {
   const income = grossProfit + [14, 15, 16, 17, 18, 19, 20, 22, 23, 24].reduce((n, r) => n + amt(r), 0);
   const deductions = [26, 27, 28, 29, 30, 31, 32].reduce((n, r) => n + amt(r), 0)
     + POOLS["IS:OD"].rows.reduce((n, r) => n + amt(r), 0);
-  const below = [53, 54, 55].reduce((n, r) => n + amt(r), 0);
+  /* Rows 61-63 mirror the template's line 22: the unusual-items row adds and
+     the two tax rows subtract, because line 21a now carries a POSITIVE
+     expense (it used to be booked negative so a plain SUM came out right). */
+  const below = amt(61) - amt(62) - amt(63);
   return r2(income - deductions + below);
 }
 
@@ -3777,9 +3939,14 @@ function pruneRemovedDocData(ent: Entity): Partial<Entity> | null {
   return { detected, profile, ownership, categories, shareholders, currencyConfirmed, ...fxPatch };
 }
 
-/** Row-56 net income is a plain SUM of rows 52–55 — income tax expense must
-    book NEGATIVE, or a statement-positive tax would INCREASE profit (RAT-003). */
-const TAX_TARGETS = new Set(["IS:54", "IS:55"]);
+/** Schedule C line 21a is an EXPENSE and the form takes it positive, which is
+    what the hand-prepared work papers show. The template used to compute row 56
+    as a plain SUM of rows 52-55, which forced the tax to be booked negative to
+    come out right; row 56 now subtracts rows 54 and 55, so the figure is booked
+    exactly as the statement prints it. A statement that prints the tax negative
+    is stating a credit, and a credit still belongs on the line as a negative —
+    flagged, because the other reading is a presentation artifact. */
+const TAX_TARGETS = new Set(["IS:62", "IS:63"]);
 /** Total deductions (row 51) is SUM(F26:F33) and net income is F25 − F51, so
     every deduction must book POSITIVE. Statements that present financial costs
     as negatives — "86000 Interest paid  −49,00" in the 2Hats accounts, where
@@ -3789,8 +3956,12 @@ const TAX_TARGETS = new Set(["IS:54", "IS:55"]);
 const DEDUCTION_TARGETS = new Set(
   IS_LINES.filter((l) => l.group === "Deductions").map((l) => `IS:${l.row}`),
 );
-const taxBookValue = (target: string, field: "amount" | "eoy" | "boy", value: number): number =>
-  field === "amount" && TAX_TARGETS.has(target) && value > 0 ? -value : value;
+const taxBookValue = (_target: string, _field: "amount" | "eoy" | "boy", value: number): number => value;
+/** A tax line the statement printed as a negative. Row 56 subtracts it, so it
+    will ADD to profit — right for a real credit, wrong for a presentation
+    artifact, and only the preparer can tell which. */
+const taxPrintedNegative = (target: string, field: "amount" | "eoy" | "boy", value: number): boolean =>
+  field === "amount" && TAX_TARGETS.has(target) && value < 0;
 
 /** Correct a deduction line whose AGGREGATED total came out negative.
     This runs after every contribution is summed, never per contribution: a
@@ -3954,6 +4125,9 @@ type CaseFacts = {
   ato: AtoFacts;
   cf: CarryForward | null;
   cfSource: string;
+  /** The prior return does not close where this work paper opens, so nothing
+      may be carried from it. Optional: absent means it lines up. */
+  cfStale?: boolean;
   ledger: LedgerSummary | null;
   questionnaire: Questionnaire | null;
   salary: SalarySchedule | null;
@@ -3967,7 +4141,7 @@ export async function materializeCaseWrites(
   ent: Entity,
   facts: CaseFacts,
 ): Promise<{ list: CellWrite[]; dividends: DividendRec[] }> {
-  const { caseYears, equity, ato, cf, cfSource, ledger, questionnaire, salary, rv } = facts;
+  const { caseYears, equity, ato, cf, cfSource, cfStale, ledger, questionnaire, salary, rv } = facts;
   const list: CellWrite[] = [];
   const dividends: DividendRec[] = [];
   const avgRate = numeric(ent.fx.avgRate);
@@ -4031,7 +4205,7 @@ export async function materializeCaseWrites(
   }
 
   /* ---- carry-forward: opening E&P, shareholding, prior-filed USD ---- */
-  if (cf?.openingEP) {
+  if (cf?.openingEP && !cfStale) {
     w({
       sheet: SHEET.schJ, ref: "F15", value: cf.openingEP.value,
       source: `${cfSource} p.${cf.openingEP.page} · prior Sch J line 14`, reviewId: "cf-opening-ep",
@@ -4662,7 +4836,7 @@ export async function materializeCaseWrites(
      left Schedule E blank — 2Hats 2024 books no tax at all ("Total Taxes –") and
      got no row. Drive the choice off the tax figure itself instead, so it works
      for any country. */
-  const taxBooked = ent.lines["IS:54"]?.amount;
+  const taxBooked = ent.lines["IS:62"]?.amount;
   const taxCur = typeof taxBooked === "number" && isFinite(taxBooked) ? taxBooked : null;
   const taxAbs = taxCur ? Math.abs(taxCur) : 0;
   /* "Booked at zero" and "never found" are not the same fact. Both land in the
@@ -5221,8 +5395,10 @@ function provenanceRows(ent: Entity): CellValue[][] {
   rows.push(["ACKNOWLEDGED BLOCKING EXCEPTIONS — generation proceeded despite these"]);
   if (!acknowledged.length) rows.push(["none"]);
   for (const r of acknowledged) {
+    const said = String(r.dismissedNote || "").trim();
     rows.push(["Acknowledged blocker", r.target || "", "", "", "", "", "",
-               `${r.message}${r.dismissedNote ? ` — preparer's note: "${r.dismissedNote}"` : " — no note left"}`]);
+               `${r.message}${said ? ` — preparer's note: "${said}"` : " — no note left"}` +
+               (said && isThinNote(said) ? " — NOTE GIVES NO REASON: check this figure before filing" : "")]);
   }
   ocrProvenance(rows, ent);
   return rows;

@@ -59,13 +59,13 @@ const R = (label, amt, x0, page = 1) => ({
   docId: "d1", docName: "Accounts.pdf", feed: "is", kind: "pdf", x0,
 });
 
-/* 27 since the bank-accounts, cost-of-sales and other-expenses groups were
+/* 29 since the bank-accounts, cost-of-sales and other-expenses groups were
    added: a QuickBooks sub-account is named after the bank or the supplier, so
    only its heading says what it is, and "8150 Exchange gain or loss" is a LOSS
    only because of the heading it is printed under. */
-t("the two banner lexicons are the same 27 patterns", () => {
+t("the two banner lexicons are the same 29 patterns", () => {
   const BANNERS = load("src/prototype/wp/sectionBanners.ts").SECTION_BANNERS;
-  assert.strictEqual(BANNERS.length, 27);
+  assert.strictEqual(BANNERS.length, 29);
   assert.strictEqual(SHIPPED.SECTB.length, BANNERS.length);
   for (let i = 0; i < BANNERS.length; i++) {
     assert.strictEqual(String(BANNERS[i][0]), String(SHIPPED.SECTB[i][0]), "pattern " + i);
@@ -508,6 +508,104 @@ t("the pipeline runs the furniture drop before tagging, and the movement drop af
   assert.ok(dist.includes("/*EN9MOVSCHED-CALL-BEGIN*/"), "and calls the movement drop");
   assert.ok(dist.indexOf("/*EN9FURNFIRST-BEGIN*/") < dist.indexOf("EN9pi=EN9tagSections(EN9pi)"),
     "in that order in the shipped file as well");
+});
+
+/* ---- "Other income" is its own section ---- */
+
+t("a caption under Other Income cannot reach a deduction line", () => {
+  // "Motor Vehicle Contribution" is a receipt. The keyword scan sees "motor
+  // vehicle" and offers the motor-vehicle EXPENSE line; the banner must veto
+  // it, or the figure leaves income AND enters deductions.
+  assert.strictEqual(SRC.sectionOk("otherIncome", "IS:OD"), false);
+  assert.strictEqual(SRC.sectionOk("otherIncome", "IS:45"), false);
+  assert.strictEqual(SRC.sectionOk("otherIncome", "IS:26"), false);
+  // nor is it turnover: the statement already said it is not
+  assert.strictEqual(SRC.sectionOk("otherIncome", "IS:7"), false);
+  // but every income line the form offers stays open
+  for (const t2 of ["IS:14", "IS:15", "IS:16", "IS:17", "IS:18", "IS:22", "IS:OI"]) {
+    assert.strictEqual(SRC.sectionOk("otherIncome", t2), true, t2);
+  }
+  assert.strictEqual(SRC.sectionOk("otherIncome", "BS:11"), false, "never the balance sheet");
+});
+
+t("an unrecognised caption under Other Income lands on other income", () => {
+  assert.strictEqual(SRC.sectionRoute("otherIncome", "Motor Vehicle Contribution"), "IS:OI");
+  assert.strictEqual(SRC.sectionRoute("otherIncome", "Something nobody has seen"), "IS:OI");
+  // and the ones the form names go to their own line
+  assert.strictEqual(SRC.sectionRoute("otherIncome", "Interest Received"), "IS:15");
+  assert.strictEqual(SRC.sectionRoute("otherIncome", "Dividends received"), "IS:14");
+  assert.strictEqual(SRC.sectionRoute("otherIncome", "Rent received"), "IS:16");
+  assert.strictEqual(SRC.sectionRoute("otherIncome", "Loss on Sale of Fixed Assets"), "IS:18");
+});
+
+t("the Other Income banner is recognised, and plain Income still is not it", () => {
+  const rows = [
+    R("Other Income", null, 56.7),
+    R("Motor Vehicle Contribution", 10767, 63.8),
+    R("Expenses", null, 56.7),
+    R("Motor Vehicle Expenses", 2914, 63.8),
+  ];
+  assert.deepStrictEqual(SRC.tagSections(rows).map((m) => m.section),
+    ["otherIncome", "otherIncome", "costs", "costs"]);
+  assert.deepStrictEqual(SRC.tagSections(rows).map((m) => m.section),
+    SHIPPED.tagSections(rows).map((m) => m.section), "both trees agree");
+});
+
+t("src and the shipped file agree on the Other Income veto and route", () => {
+  for (const t2 of ["IS:7", "IS:OD", "IS:15", "IS:18", "IS:OI", "BS:11", "IS:26"]) {
+    assert.strictEqual(SRC.sectionOk("otherIncome", t2), SHIPPED.sectionOk("otherIncome", t2), t2);
+  }
+  for (const l of ["Motor Vehicle Contribution", "Interest Received", "Dividends received",
+                   "Rent received", "Royalties", "Loss on Sale of Fixed Assets", "Nothing familiar"]) {
+    assert.strictEqual(SRC.sectionRoute("otherIncome", l), SHIPPED.sectionRoute("otherIncome", l), l);
+  }
+});
+
+/* ---- "Non-current / term liabilities" is its own section ---- */
+
+t("a liability under a term-liabilities banner cannot reach line 16", () => {
+  // Schedule F splits current liabilities (line 16) from the rest (line 19).
+  // Without this the Vodafone term loan landed on 16 with the GST and the
+  // income tax payable, and the work paper disagreed with the hand-prepared
+  // one on the line although the totals matched.
+  assert.strictEqual(SRC.sectionOk("termLiabilities", "BS:OCL"), false);
+  assert.strictEqual(SRC.sectionOk("termLiabilities", "BS:50"), false);
+  assert.strictEqual(SRC.sectionOk("termLiabilities", "BS:46"), false, "nor accounts payable");
+  for (const t2 of ["BS:OL", "BS:52", "BS:54", "BS:55", "BS:56"]) {
+    assert.strictEqual(SRC.sectionOk("termLiabilities", t2), true, t2);
+  }
+  assert.strictEqual(SRC.sectionOk("termLiabilities", "IS:26"), false, "never the P&L");
+});
+
+t("an unrecognised term liability lands on Schedule F line 19", () => {
+  assert.strictEqual(SRC.sectionRoute("termLiabilities", "Vodafone - New Phones"), "BS:OL");
+  assert.strictEqual(SRC.sectionRoute("termLiabilities", "Bank loan"), "BS:OL");
+  // ...but a shareholder's long-term loan is still line 18
+  assert.strictEqual(SRC.sectionRoute("termLiabilities", "Shareholder current account"), "BS:52");
+  assert.strictEqual(SRC.sectionRoute("termLiabilities", "Loan from director"), "BS:52");
+});
+
+t("the banner is read, and plain Current Liabilities still is not it", () => {
+  const rows = [
+    R("Current Liabilities", null, 56.7),
+    R("GST Payable", 26379, 63.8),
+    R("Non-Current Liabilities", null, 56.7),
+    R("Term Liabilities", null, 63.8),
+    R("Vodafone - New Phones", 3598, 70.9),
+  ];
+  assert.deepStrictEqual(SRC.tagSections(rows).map((m) => m.section),
+    ["liabilities", "liabilities", "termLiabilities", "termLiabilities", "termLiabilities"]);
+  assert.deepStrictEqual(SRC.tagSections(rows).map((m) => m.section),
+    SHIPPED.tagSections(rows).map((m) => m.section), "both trees agree");
+});
+
+t("src and the shipped file agree on the term-liability veto and route", () => {
+  for (const t2 of ["BS:OCL", "BS:OL", "BS:52", "BS:46", "BS:50", "IS:26"]) {
+    assert.strictEqual(SRC.sectionOk("termLiabilities", t2), SHIPPED.sectionOk("termLiabilities", t2), t2);
+  }
+  for (const l of ["Vodafone - New Phones", "Bank loan", "Shareholder current account", "Loan from director"]) {
+    assert.strictEqual(SRC.sectionRoute("termLiabilities", l), SHIPPED.sectionRoute("termLiabilities", l), l);
+  }
 });
 
 console.log(pass + " passed, " + fail + " failed");

@@ -986,3 +986,99 @@ export function extractCarryForwards(
     return { block, cf };
   });
 }
+
+/** Two renderings of the same person's name. Middle initials come and go
+    between a tax return and a set of accounts -- "RODNEY W. CLAYCOMB" and
+    "Rodney Claycomb" are one man -- so only the first and last name words
+    count, and single letters are dropped as initials. */
+export function samePerson(a: string, b: string): boolean {
+  const parts = (n: string) =>
+    String(n || "").toLowerCase().replace(/[^a-z\s]/g, " ").split(/\s+/).filter((w) => w.length > 1);
+  const x = parts(a), y = parts(b);
+  if (x.length < 2 || y.length < 2) return false;
+  return x[0] === y[0] && x[x.length - 1] === y[y.length - 1];
+}
+
+/** The names under the directory's "Directors" heading.
+ *
+ * Form 5471 Item H asks whether the filer is an officer or a director, and the
+ * prior return's boxes are the usual source. When they cannot be read -- or
+ * when the filer is not the person those boxes describe -- the accounts say it
+ * plainly on the same page as the shareholder register. */
+export function directoryDirectors(rows: { page: number; cells: string[] }[]): string[] {
+  for (let i = 0; i < rows.length; i++) {
+    if (!/^directors?$/i.test(rows[i].cells.join(" ").trim())) continue;
+    const found: string[] = [];
+    for (let j = i + 1; j < Math.min(i + 12, rows.length); j++) {
+      if (rows[j].page !== rows[i].page) break;
+      const line = rows[j].cells.join(" ").trim();
+      // A person's name, and nothing else: no figures, no next heading.
+      if (!/^[A-Za-z][A-Za-z.'\- ]{2,60}$/.test(line)) break;
+      if (/^(shareholders?|company|registered|accountants?|bankers?|auditors?|solicitors?|nature|ird|date)\b/i.test(line)) break;
+      found.push(line);
+    }
+    if (found.length) return found;
+  }
+  return [];
+}
+
+/** The entity's address, as the three consecutive lines the work paper has
+    room for.
+ *
+ * The shipped build used to sort the lines into street / city / region and
+ * write them to address lines 1, 2 and 3 by that classification. On a
+ * two-line address -- "49 SHRULE PLACE" then "HAMILTON 3210 NEW ZEALAND" --
+ * nothing was classified as the city, so line 2 was left blank and the
+ * country line printed on line 3 with a hole above it. The template's three
+ * cells sit under one "Entity Address" label: they are lines, not fields, and
+ * an address reads in the order it was printed. */
+export function addressLines(lines: (string | undefined)[]): string[] {
+  return (lines || []).map((l) => String(l || "").trim()).filter(Boolean).slice(0, 3);
+}
+
+/* ---------- the accounts' own directory ----------
+
+   A set of accounts opens with a directory page that lists the shareholders
+   and what each one holds:
+
+       Shareholders
+       Heather Claycomb      1 Ordinary
+       Rodney Claycomb       1 Ordinary
+       ARCK Trust           98 Ordinary
+
+   This is the CURRENT year's register. The prior return's Schedule B Part II
+   is a year or more old and, on the return that prompted this, named only the
+   trust -- so two of the three holders were missing and the direct total came
+   to 98 of 100 shares. Where the two disagree the accounts win, because they
+   are the more recent statement of the same fact. */
+
+const DIRECTORY_HEADING = /^shareholders?$/i;
+/** "Heather Claycomb 1 Ordinary", "ARCK Trust 98 Ordinary Shares". */
+const DIRECTORY_HOLDER =
+  /^(.+?)\s+([\d,]+(?:\.\d+)?)\s+(ordinary|common|preferred|redeemable|class\s+[A-Za-z0-9]+)(?:\s+shares?)?$/i;
+
+export type DirectoryHolder = { name: string; classOfShares: string; boy: number; eoy: number; page: number };
+
+export function directoryShareholders(rows: { page: number; cells: string[] }[]): DirectoryHolder[] {
+  for (let i = 0; i < rows.length; i++) {
+    if (!DIRECTORY_HEADING.test(rows[i].cells.join(" ").trim())) continue;
+    const found: DirectoryHolder[] = [];
+    for (let j = i + 1; j < Math.min(i + 14, rows.length); j++) {
+      if (rows[j].page !== rows[i].page) break;
+      const m = DIRECTORY_HOLDER.exec(rows[j].cells.join(" ").trim());
+      if (!m) break;                       // the list ends at the first line that is not one
+      const name = m[1].trim();
+      const shares = Number(m[2].replace(/,/g, ""));
+      if (!/[A-Za-z]{2}/.test(name) || !isFinite(shares) || shares <= 0) break;
+      found.push({
+        name, classOfShares: m[3].replace(/\s+/g, " ").trim(),
+        // The directory states one holding, as at the reporting date. It is
+        // taken as both ends of the year and flagged by the caller, exactly
+        // as a single printed count on Schedule B already is.
+        boy: shares, eoy: shares, page: rows[i].page,
+      });
+    }
+    if (found.length) return found;
+  }
+  return [];
+}
