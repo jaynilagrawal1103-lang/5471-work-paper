@@ -11,9 +11,11 @@ required to use the app.
 
 This repository is `jaynilagrawal1103-lang/5471-work-paper`, the original. A
 mirror lives at `squadai90-dot/Linkedin-Post-Automation`; the two client
-reconciliations were carried out there and ported back here on 2026-09-12 as
-`claude/reconciliation-fixes` (10 commits on top of `main` at 24f1f25).
-Work branch: `claude/reconciliation-fixes`.
+reconciliations were carried out there and ported back here on 2026-09-12.
+All of that work, and the 2026-09-14 OCR rebuild, is merged. `main` is at
+`985ce6b` (2026-09-15, the local UX pass and Parnasa remediation). Work branch:
+`claude/inspiring-bardeen-k08w1q`, which carries `origin/main` merged in on
+2026-09-16 plus this file's corrections.
 
 ## Layout
 
@@ -29,7 +31,8 @@ Work branch: `claude/reconciliation-fixes`.
 - `scripts/` — build, bundle, and local-serve scripts (`serve-local.mjs` also
   proxies `/api/ocr/*`).
 - `tests/` — plain `node` `.cjs` tests, one npm script each; `tests/e2e/` holds
-  the Chromium end-to-end OCR run; `tests/fixtures/ocr/` the OCR PDFs.
+  the Chromium end-to-end OCR and AI-agent runs; `tests/fixtures/ocr/` the OCR
+  PDFs.
 
 ## Commands
 
@@ -39,7 +42,8 @@ Work branch: `claude/reconciliation-fixes`.
   server, `start.sh`, `start.cmd`, `README.txt`. `dist-bundle/` is gitignored.
 - `npm run build` — intentionally a no-op that keeps the reviewed `dist/`. Use
   `build:full-DESTRUCTIVE` only after porting fixes to `src/`.
-- `npm run test:all` — the full test chain (56 suites, 1,367 assertions).
+- `npm run test:all` — the full test chain (57 suites). `test:peg` is the one
+  known failure; see Open issues.
   Needs `npm i` first, and `npm run build:server` once (test:aikey reads
   `dist-server/server.cjs`).
 - `npm run start:ocr` (or `python -m ocr_service` inside `ocr-service/`) —
@@ -47,7 +51,9 @@ Work branch: `claude/reconciliation-fixes`.
   Python deps from `ocr-service/requirements.txt`, and Tesseract for the
   fallback engine). `npm run test:e2e-ocr` drives Chromium through
   upload → detect → OCR → process → generate against `serve-local` + the
-  service; not part of `test:all`.
+  service; not part of `test:all`. `npm run test:e2e-agent` drives Chromium
+  through the AI agent in the shipped file (Settings card + a full processing
+  run with the model stubbed at the network boundary); also not in `test:all`.
 
 Node 18 or newer. Verified on Node 22.
 
@@ -130,6 +136,19 @@ against the booted shipped bundle, not only against source.
 Bundle and single-file delivery verified: the unzipped bundle serves the full
 page on HTTP 200, and deep links fall back correctly.
 
+On 2026-09-15 the shipped single file was re-verified end to end for local
+delivery: `dist/index.html` (3,383,443 bytes as of `985ce6b`) has zero external `src`/`href`
+URLs, `node scripts/serve-local.mjs <port>` returns HTTP 200 with the whole
+file at `/` and at an unknown deep path, and headless Chromium boots the page
+— all 16 workspace sections render (~16 KB of text) with no console errors.
+The page reports "Backend unreachable - working locally", which is the
+expected no-backend state, not a fault. Serving it over HTTP is what makes the
+in-page OCR service discovery reach `/api/ocr`; opening the file directly from
+disk also works, and then OCR falls back to the local 8472 probe or the
+in-browser engine. Re-verified on 2026-09-16 after merging `985ce6b`: 51/51
+EN9 sentinel pairs intact, HTTP 200 at `/` and at a deep path, page boots with
+no console errors.
+
 A second client reconciliation (SHORI CORPORATION 2024) on 2026-09-11 found
 three more defects and fixed them: QuickBooks group totals printed at the
 parent account's indent were booked as accounts, a sales return kept the sign
@@ -151,8 +170,527 @@ address). The owner then chose "OCR without installing anything", so
 PP-OCRv5 now also runs inside the browser through ONNX Runtime Web, and the
 offline build packs the engine into the page so a downloaded file OCRs with
 no network at all (see the 2026-09-14 follow-ups in `PROJECT-NOTES.md`).
-`test:all` is 58 suites / 1,378 assertions; the Python service 25. All of
-this is uncommitted at the owner's request, pending their word to commit.
+`test:all` is 58 suites / 1,378 assertions; the Python service 25. That work
+is committed and merged — it is `main` at `b5d4d0c`, not a pending branch.
+(These suite counts are carried over from the sessions that ran them; they were
+not re-run on 2026-09-15, which had no `node_modules` installed.)
+
+On 2026-09-15 the owner landed a local UX pass and the Parnasa reconciliation remediation, committed as `985ce6b` and merged into this branch on 2026-09-16. Those entries had been filed under Open issues and labelled uncommitted; the commit contains exactly the files they describe, so they are recorded here as done:
+
+- 2026-09-15 local UX pass: `layer-src/enhance.js` now scopes OCR detection, visible jobs, manual results and transient selection state to `activeEntityId`; the OCR panel has a drop target, full filename wrapping, and detection/processing/completion timing. The local server's Windows OCR proxy route was corrected in `scripts/serve-local.mjs`. `src/prototype/wp/CoreViews.tsx` now gives Exception Centre a real `onNavigate("signoff")` action; the shipped enhancement layer delegates its matching button to the existing React Review & sign-off navigation control until the dist source is rebuilt. Verified service health and a real scanned-PDF OCR run. A temporary `Entity 2` was added in the browser solely to verify client switching; remove it after confirmation if no longer needed.
+
+- 2026-09-15 local UX pass: Exception Centre blocking sign-off actions now show an in-page mandatory audit-note dialog rather than a browser `prompt`, which can be suppressed in the embedded browser and had made the controls appear inert. The original dismiss/sign-off handler still does the work after a note is provided. The single-item and selected-batch dialog flows were verified and cancelled without changing any review item.
+
+- 2026-09-15 Parnasa reconciliation remediation: Chilean `BALANCE <entity>` pages with assets, liabilities and totals are now classified as balance sheets; Spanish suffix totals such as `INGRESOS TOTALES` and `GASTOS TOTALES` are skipped before broad mapping rules; single-dot Chilean amounts are read as thousands only when the page establishes that convention; and negative cost lines inside a proved expense total are booked as Schedule C deduction magnitudes. The mapping catalogue is v5 so saved projects receive the new total controls. The shipped `dist` has matching EN9 safeguards (no rebuild), including an accurate prior-filing FX-rate explanation. Verified with `test:spanish`, `test:sections`, `test:rulesparity`, `test:detect`, `test:srcparity`, `test:fxparity`, `test:layer`, and `test:integrity`; `test:inject` remains blocked on this Windows host because its temporary symlink requires elevated filesystem permission.
+
+- 2026-09-15 Parnasa follow-up remediation: catalogue v6 adds Chilean balance-sheet coverage for cash, investments, buildings, tax provisions, bank loans, guarantees, other payables and capital. A P&L caption `Patentes` is context-routed to Schedule C other deductions instead of Schedule F intangibles. Schedule E now leaves a zero placeholder and blocks generation until a paid/accrued tax source or preparer assignment is supplied; a P&L tax expense alone is not evidence. Opening balances use the approved prior-year end rate in Basic Information before falling back to a prior filing's printed rate. Source and reviewed dist were patched in parity. Verified `typecheck`, `test:spanish`, `test:fx`, `test:ruleup`, `test:rulesparity`, `test:gen`, `test:boot`, and local HTTP 200.
+
+Residue from that pass is in Open issues below.
+
+On 2026-09-16 the OCR path was measured end to end (report:
+`OCR_Workflow_and_Accuracy_Report.xlsx`, delivered to the owner; scripts and
+outputs stayed in the session scratchpad, nothing in the repo changed). Host:
+4 cores, no GPU, PP-OCRv5 via ONNX (weights inside the `onnxocr` wheel, no
+download), Tesseract 5.3.4 eng+spa. Evidence: pytest 25/25; `test:e2e-ocr`
+107/107 against the shipped dist + service; 18 OCR'd pages x 2 engines on the
+same cleaned images; 26 in-app processing runs (digital original vs PaddleOCR
+copy vs Tesseract copy). Results: PaddleOCR figures 98.3% (100% on clean
+scans, 39/42 on hard pages), Tesseract 92.8% (29/42 hard); work-paper
+bookings identical to the digital original from PaddleOCR copies 56/57,
+from Tesseract copies 30/57 - Tesseract's word boxes split captions
+("Accounts", "Deferred", "Trade") so lines land on wrong rows even when the
+digits are right. Keep PaddleOCR primary. Engine time per 300 dpi page with
+no contention: PaddleOCR 0.6-1.1 s, Tesseract 0.4-1.8 s; two Tesseract
+processes on one 4-core host thrash (55-580 s a page).
+
+On 2026-09-17 the U.S. Shareholders block (Shareholding Details rows 7-14) was
+made reachable. It had never received data: `FORMULA_REFS[shareholding]`
+marked rows 7-16 as formula cells so `buildWrites` refused every write, no
+writer targeted those rows, and the master template ships B7/H7/J7 as
+`=B19/=H19/=J19` — a one-row mirror of the FIRST direct holder. On HMC
+Communications that printed a New Zealand trust as a 100% U.S. shareholder
+while Schedule B Part I's two U.S. shareholders appeared nowhere and the
+Subpart F column stayed blank (Part I column (e) is its only source).
+Schedule B Part I was already parsed into `CarryForward.usHolders`; it simply
+had nowhere to go. Now: rows 7-14 columns B/F/H/J/P are writable (L/N and the
+15-16 totals stay formulas); `Entity.usShareholders` holds Part I, kept apart
+from `shareholders` (Part II) so a person counted both directly and through a
+trust is not double-counted; `usShareholderWrites()` fills rows 7-14, writes
+column (e) into the Subpart F column as a fraction, and clears every row it
+does not use so a stale mirror cannot survive; an empty list writes nothing
+and a warning explains that the mirror is still showing. Both save paths (a
+processing run and a Shareholders-tab edit) write the block. Two review items:
+`cf-us-holders-absent` (warn) when Part I is unreadable, and
+`cf-us-holder-base` (warn) when Part I and Part II share totals disagree — the
+% columns divide by the DIRECT total, so they cannot match the stated pro rata
+% when the two differ (HMC: Part I 51 shares, Part II 98). dist mirrors all of
+it under EN9USSHREF / EN9USSH / EN9USSHR / EN9USSHW / EN9USSHF / EN9USSEED /
+EN9USSHRV. New suite `tests/test_us_shareholders.cjs` (`test:usshare`, 20
+checks, in `test:all`) covers both trees and asserts they agree exactly.
+Same day, the missing half: there was no UI for the block, so nothing changed
+on screen. The Shareholders tab now carries a SECOND card, "U.S. Shareholders
+rows 7-14", with a Subpart F % column and its own add/edit/remove actions
+(`addUsShareholder`, `updateUsShareholder`, `removeUsShareholder`). The direct
+card keeps rows 19-26. dist mirrors both under EN9USSHACT and EN9USSHUI
+(hand-written minified React using the page's own jsx runtime, Callout and
+source-badge components). Verified in Chromium: 15 checks covering the card
+rendering, the empty-state warning about the template mirror, and the values
+reaching B7/B8/H7/J8 with P7/P8 = 0.255.
+
+Two follow-on defects, found by generating a real workbook rather than trusting
+the write list (2026-09-17):
+
+1. Row 7 still showed the DIRECT holder while rows 8+ showed the U.S. ones.
+   `xlsxPatch.setCell` has a second, independent guard — a P0 audit fix — that
+   refuses to replace a cell holding a formula with a plain value. B7/H7/J7 are
+   the template's `=B19/=H19/=J19` mirror, so those three writes were silently
+   dropped while the empty rows below took theirs. `applyWrites` now takes
+   `mayReplaceFormula(sheet, ref)`; `REPLACEABLE_FORMULA_REFS` (engine.ts) is
+   the whole allow-list and contains exactly one entry: Shareholding Details
+   B/F/H/J/P rows 7-14. Everything else stays protected, and the injection hole
+   the P0 fix closed stays closed — `buildCell` still cannot emit `<f>`, so no
+   user string can become a live formula. A first attempt keyed the allowance
+   off FORMULA_REFS, which was far too broad and rightly failed `test:gen`.
+2. The Subpart F percentage shipped as 0.26, not 0.255. `buildWrites` rounds
+   every number to 2 dp unless the write says otherwise, and a percentage held
+   as a fraction needs more; the P writes now carry `dp: 6`.
+
+Proof is an end-to-end generation run in Chromium: build the HMC shape (a trust 98 direct, two individuals 25.5/25.5 at 25.5%), generate, unzip, read the
+sheet. B7 = the first U.S. shareholder, H7/J7 = 25.5, P7/P8 = 0.255, row 9 empty, B19
+still the trust with 98. `test:usshare` is 23 checks; `test:all` 1279.
+
+2026-09-17, third pass — the % Ownership denominator. Every percentage in BOTH
+shareholder blocks divided by `$H$27`/`$J$27`, the DIRECT-holder total, so a
+sole direct holder always read 100% and the U.S. rows read shares ÷ 98 (26.02%)
+rather than the 25.50% the return states. Schedule B Part I gives both a share
+count (columns (c)/(d)) and the pro rata percentage (column (e)) for the SAME
+holder, so the denominator the preparer used is derivable: shares ÷ (pct/100).
+HMC: 25.5 ÷ 0.255 = 100 shares outstanding. `outstandingFromPartI()` returns it
+only when every Part I holder implies the same figure (tolerance: half a share
+or 0.5%), and it is written to new template cells H4 (BOY) / J4 (EOY) — never
+when it would be below what the direct holders already hold.
+
+The master template changed for the first time: `assets/master-template.xlsx`
+and the copy embedded in `dist/index.html` (they are byte-compared by
+`test:boating`, so both were rewritten). B4 carries the label, H4/J4 are the
+inputs, and all seven percentage formulas became
+`IFERROR(H7/IF($H$4>0,$H$4,$H$27),0)` — the entered total when there is one,
+the old direct-holder total when there is not, so an existing file is
+unchanged. Only `xl/worksheets/sheet2.xml` differs; the other 74 parts are
+byte-identical.
+
+Proof, by generating a workbook and recalculating it with LibreOffice: H4/J4 =
+100, both U.S. shareholders 25.5 shares at 25.50% each, Subpart F 25.50% each,
+U.S. totals 51 shares / 51.00%, "% held by U.S. Shareholders" 51.00% (was
+126.02%), the trust 98 shares at 98.00% (was 100%). `test:usshare` is 32
+checks, the end-to-end generation test 13, `test:all` 1288.
+
+Note on BOY/EOY share counts: they are NOT calculated. They are read verbatim
+from Part I columns (c)/(d), which print 25.500 — 25.5 SHARES. The 25.50% is a
+different column, (e), the pro rata Subpart F share. The two look alike here
+only because 100 shares are outstanding.
+
+Verified against the client's actual return (page 41 of the 2023 filing):
+parsed, generated and recalculated with LibreOffice, every cell matches the
+form. The page itself was NOT kept as a fixture — it carries SSNs and a home
+address, and the parse it proves is already covered by row-level fixtures.
+
+Test data is synthetic. `test_schedule_b.cjs` and `test_us_shareholders.cjs`
+previously carried the real names, street address and SSNs from that return;
+all of it is now replaced (ALAN R SAMPLE / BETH M SAMPLE / TEST TRUST, 1 SAMPLE
+STREET, 111-11-1111 …). The share counts and percentages are unchanged — they
+are what the logic turns on. Narrative comments still name the engagement, the
+way the repo's other fixtures do.
+
+`test_us_shareholders.cjs` also drives the REAL `extractCarryForward` over a
+synthetic Schedule B page and carries its output through to the cells. Sections
+1-5 test the writer in isolation and `test_schedule_b.cjs` tests a COPY of the
+scanner, so neither would notice the extractor changing what it hands the
+writer; that seam is now covered. `test:usshare` is 34 checks.
+
+## HMC FY2025 reconciliation (2026-09-17)
+
+A tool-generated FY2025 work paper was reconciled against the client's
+hand-prepared FY2024 work paper, the signed 2025 accounts and the filed 2023
+return. Shareholding reconciled in full; Schedule C and Schedule F did not.
+Fourteen findings. The first three — all mapping-pipeline defects — are FIXED:
+
+1. **A repeated statement title reset the section at every page break.**
+   `tagSections()` ran BEFORE the furniture drop, and a multi-page P&L reprints
+   its own title at the top of each continuation page. That title IS a banner
+   ("Statement of Financial Performance" → income), so the section flipped from
+   `costs` back to `income` and every page-2 caption with no keyword match was
+   booked as gross receipts — six rows, 326,669. Fix: `dropFurniture()` now runs
+   first, in store.ts and behind `EN9FURNFIRST` in dist. `dropFurniture` already
+   knew how to spot a caption repeating across pages; it was simply too late in
+   the order. No new logic.
+2. **A subtotal printed FLUSH with the rows it adds was booked as data.**
+   `structRows()` only walked rows indented DEEPER than the total, so Xero-style
+   groups ("Total Purchases" level with "Contractor Labour Costs") were counted
+   twice — 270,737 across Schedule C and F. New fourth test in `structRows`
+   (`EN9FLUSHTOT` in dist): a total-word caption whose value equals the sum of
+   the consecutive rows immediately above it AT THE SAME indent. The walk stops
+   at a shallower row, at a row already found to be structure, at a caption
+   with no figure, and — the part that took a second pass to get right — at
+   ANOTHER total, proved or not. These accounts print "Total Expenses" as the
+   sum of 27 whole-dollar lines: 642,791 against a printed 642,794, three
+   dollars out, so it stays data; without that stop the next group's total
+   walked past it and summed 29 rows instead of its own one.
+3. **A movement schedule was read as a balance sheet.** The accounts'
+   "Shareholder Current Accounts" page (opening balance, funds introduced,
+   drawings, closing balance) put twelve non-balances on Schedule F line 16 —
+   113,062, the whole year-end imbalance. New `dropMovementSchedules()`
+   (`EN9MOVSCHED`): a page carrying BOTH an opening- and a closing-balance row
+   and NONE of the totals a balance sheet exists to state is a movement
+   schedule, and its rows are marked rather than deleted so the log can say so.
+
+Proved by re-running the real client documents through the shipped file:
+Schedule C gross receipts 1,044,522, cost of goods sold 152,418, compensation
+707,012, rents 33,800, interest 84, depreciation 15,862 — every one exactly the
+signed accounts. Schedule F liabilities and equity at 31/03/2025 land on
+179,864, the accounts' figure to the dollar, where the supplied file had
+291,614. `test:sections` is 41 checks and both trees are compared on the new
+behaviour; `test:all` 1301, the one failure still `test:peg`.
+
+One existing test asserted the old behaviour ("at the same indent as its
+siblings it is not a total of them") while its own name said the opposite. It
+was locking in the defect, and is rewritten to require the drop, with the
+no-arithmetic-tie case kept as the guard.
+
+### Findings 4-14, fixed 2026-09-18
+
+All eleven remaining findings are fixed. Schedule C now ties to the signed
+accounts on every line (net income before tax 2,866, per books 2,687) and
+Schedule F reconciles to the hand-prepared work paper line by line at
+31/03/2024 with no classification difference; the only residuals are 1 and -2
+of the statement's own rounding between the fixed-asset note and the face.
+
+**Two more sections, on the pattern the module already used for `cogs`.**
+`otherIncome` (banner `^(total )?other income$`): a caption printed there is a
+receipt, so it may reach lines 4-9 but never gross receipts and never a
+deduction. Motor Vehicle Contribution matched the motor-vehicle EXPENSE
+keyword and was deducted, moving the bottom line by twice itself.
+`termLiabilities` (banner `^(total )?(non-current|long-term|term|deferred)
+liabilit(y|ies)$`, which MUST precede the general liabilities pattern): line 19,
+not line 16. Both vetoes had to admit what prints underneath them — equity
+follows the long-term liabilities and the banner is sticky, so
+`NON_CURRENT_LIABILITY_TARGETS` includes rows 58-62 and the route runs the
+equity tests first. Without that, the boating fixture's retained earnings
+landed on a liability line.
+
+**The notes are read, never booked** (`statementNotes` / `fixedAssetSplit` /
+`noteLookthrough` in engine.ts, `EN9NOTES` in dist). Note headings carry no
+figure so the row reader drops them; a note is read BACKWARDS from its closing
+"Total X" line, stopping at the previous total at the same or a shallower
+indent and at a page break. Two uses, each of which proves its arithmetic
+against the note's own total first: the fixed-asset note supplies cost and
+accumulated depreciation for Schedule F 9a/9b, which the face prints only as a
+net; and a note holding exactly ONE thing renames the face caption to that
+thing ("Other Non Current Assets" is the note's "Intangible Assets", line 12c).
+The split is applied by REWRITING the evidence — the face row becomes the cost
+and a depreciation row is spliced in immediately after it, so the ordinary
+rules book both. Two things that cost a pass each: the face row carries the
+note NUMBER as its first value (`[4, 23353, 28667]`), so the comparison and the
+rewrite use the TRAILING columns; and the spliced row must sit beside its host,
+because appended at the end it fell under the Equity banner and the
+liabilities-side veto threw it away.
+
+**The accounts' own shareholder register** (`directoryShareholders`,
+`EN9DIRSH`) is read from the directory page and outranks the prior return's
+Schedule B Part II, which named one of the three holders. Names are matched on
+a prefix, because the form truncates at the column edge: "ARCK TRUST (ARCK
+LEGACY TRUS" is "ARCK Trust", and counting them separately doubled the trust.
+
+**The prior return must close where the work paper opens.** A FY2023 filing
+does not open FY2025. `cf-year-gap` is now a BLOCK and gates both the
+Schedule F seeding and the Schedule J opening (`cfStale`, `EN9cfStaleG`).
+
+**Template.** Line 21a carries a POSITIVE expense and row 22 subtracts it
+(F52-F54-F55 became F60-F62-F63 after the row shift); `taxBookValue` no longer
+flips the sign and warns only when the statement printed a tax negative.
+Schedule E M16/O16/Q16 carry formulas, so the USD tax computes instead of
+dividing by an empty rate. The Retained Earnings roll-forward opens at
+`'Balance Sheet'!D61` and row 24 COMPUTES the currency translation adjustment
+— the opening balance, the year's income and the closing balance translate at
+three different rates, so without it the US dollar column can never close;
+N() guards make a blank row nought rather than #VALUE!. Schedule F's
+out-of-balance row is labelled and computed in all four columns.
+
+**Line 17 has 25 detail rows, not 17** (this client has 21 captions and five
+were merged into one). Rows 51+ shifted down by eight. What that touches, and
+what caught me: the shared-formula `ref` ranges live on the `<f>` TAG, and a
+shared MASTER also carries its formula in its body, so both need moving; and
+cell refs must be renumbered EITHER by the row rewrite OR by the formula
+rewrite, never both. Code that moved with it: `IS_LINES` rows 51-67,
+`FORMULA_REFS[is]` [9,13,21,25,33,59,60,64,68], `POOLS["IS:OD"]` 34-58,
+`bookNetIncome` (rows 61-63, and it now SUBTRACTS the tax), the tax rules and
+`TAX_TARGETS` (IS:62/IS:63), and three test files.
+
+**Acknowledging a blocker asks only that the preparer says something.** The
+first version of that check demanded fifteen characters and rejected a list of
+filler words. It was wrong twice: it refused real answers for being short
+("Rod confirmed" is thirteen characters, "Client confirmed" is sixteen, and
+that is not a difference worth anything), and it left no way to acknowledge a
+blocker in order to see what the workbook looks like. A reason can be
+anything; the preparer signs the return. What the original defect actually
+needed was for the problem to stay VISIBLE afterwards, which the labelled
+out-of-balance row on Schedule F and the Provenance sheet now do. A thin note
+(`isThinNote`) is recorded, never refused: the Provenance line for that
+blocker gains "NOTE GIVES NO REASON: check this figure before filing".
+
+Also: `property, plant and equipment` added to the line 9a keywords (only the
+Spanish was there), catalogue version 7; an asset-side shareholder current
+account routes to line 6, mirroring the liabilities branch, so it no longer
+needs the AI; an empty
+acknowledgement note is refused, but nothing else is.
+
+**Basic Information, 2026-09-18.** Three defects, one of them a src/dist
+drift the earlier reconciliation never looked at.
+
+The shipped build carried an address splitter (`Ov`) that src did not have at
+all: it sorted the lines into street / city / region and wrote them to address
+lines 1, 2 and 3 by that classification. On a two-line address -- "49 SHRULE
+PLACE" then "HAMILTON 3210 NEW ZEALAND" -- nothing looked like a city, so B14
+was left blank and the country printed on B15 with a hole above it. The three
+template cells sit under one "Entity Address" label: they are LINES, not
+fields. `addressLines()` now fills them in printed order in both trees.
+
+"Does the entity have a 10% corporate shareholder?" answered No although a
+trust holds 98%. `isCorporateName` is anchored on the END of the name, and the
+form truncates at the column edge: "ARCK TRUST (ARCK LEGACY TRUS" does not end
+in "trust". The test now reads the accounts' shareholder register first, where
+the name is whole.
+
+"Is the filer a director or officer?" was left blank: it is proposed from the
+prior return's Item H boxes, which did not resolve. The accounts name their
+directors on the same page as the register, so `directoryDirectors()` reads
+them and `samePerson()` matches the filer past a middle initial ("RODNEY W.
+CLAYCOMB" is "Rodney Claycomb"). First and last name words must both match, so
+a shared surname is not enough.
+
+Left alone deliberately: the filer categories come from the prior return's
+Item B, and that return ticks 1a and 4 only where the hand-prepared work paper
+also ticks 5a. The tool is faithful to the document and warns; which categories
+apply this year is the preparer's determination, not something to infer.
+Likewise `legalName` follows the accounts ("HMC Communications Ltd") where the
+return says "LIMITED", and the books-keeper's name loses its "LP" to the same
+column truncation as the trust.
+
+`tests/test_notes_register.cjs` (`test:notes`, 27 checks) covers the note reader, the
+register, the directors, the address lines and the acknowledgement rule in
+both trees. `test:sections` is 49 and `test:notes` 21. `test:all` 1336,
+the one failure still `test:peg`.
+
+### src-only defect fixed 2026-09-21
+
+The `profile-year-vs-documents` block added on 2026-09-18 had landed inside
+`pruneRemovedDocData` in `src/prototype/wp/store.ts`, where neither `caseYears`
+nor `rv` exists — `npm run typecheck` failed and a src build would have thrown.
+Moved to the detection block beside `updateEntity(... unmatchedProfile ...)`,
+which is where dist's `EN9YEARVSDOCS` already had it. dist was correct
+throughout, so no shipped behaviour changed.
+
+## AI Mapping & Review Agent (2026-09-21)
+
+Added; nothing existing was rewritten.
+
+- Where it sits: documents → OCR/extraction → translation → **agent** → the
+  existing 5471 rules and mapping → validation → review/exceptions → work
+  paper. It runs at processing step 6, BEFORE `aiRun`, on rows the rules could
+  not place. It reads only cached extraction — no document is re-read.
+- It never books anything itself. Every confident suggestion goes through
+  `manualApply` (src) / `bF` (dist) with the same two document vetoes the AI
+  pass uses (bank-account caption, section banner). Low confidence, a conflict
+  and an invalid line id are refused and land in the Exception Centre with
+  document, page, caption and figures (`citeEvidence`).
+- Framework: the LangGraph state-graph API — `StateGraph`, channels with
+  reducers, `addNode`/`addEdge`/`addConditionalEdges`, `START`/`END`, a
+  recursion limit, a step callback. The runtime is local
+  (`src/prototype/wp/agentGraph.ts`, ~90 lines) because `dist/index.html` is a
+  single offline file that is patched and never rebuilt, and the npm package
+  needs a bundler and a Node runtime. The graph itself is the published shape,
+  so it can be moved onto the real library if a server is ever added.
+- Nodes: `gather` → `understand` → (model? `suggest` : `critique`) →
+  (translated? `terminology` : `critique`) → `critique` → `route`.
+  `understand` and `critique` are deterministic, so a key-less deployment
+  still gets gap and conflict findings.
+- Credentials: the existing Groq key only. No second key system anywhere.
+  Settings ▸ AI platform shows connection status, never the key.
+- Files: `src/prototype/wp/agentGraph.ts`, `src/prototype/wp/agent.ts`,
+  `agentRun`/`agentInfo`/`setAgent` in `store.ts`, `AgentCard` in
+  `SettingsView.tsx`, `enhanceAgentSettings()` in `layer-src/enhance.js`
+  (+ `.en9-agent` CSS), dist sentinels `EN9AGENT`, `EN9AGENTCALL`,
+  `EN9AGENTACT`, markers `EN9AGENTDEF` and `EN9AGENTSEEN`.
+- `aiRun` now skips rows carrying `agentSeen` / `EN9agentSeen`: the agent uses
+  the same two prompts, so re-asking would spend the tokens twice and would
+  book what the agent deliberately held back. The profile pass is unchanged.
+- State: `state.agent` (src) / `te.EN9agent` (dist) — `{enabled?, lastRun}`.
+  Defaults to on; a project saved before this loads with `{}`.
+- Tests: `npm run test:agent` (29 checks, src vs dist parity included),
+  `npm run test:e2e-agent` (22 checks in Chromium). `test:aiparity` gained the
+  `agentSeen` pin; `test:integrity` gained the three sentinels and four
+  wiring guards.
+
+## Period end and the agent's balance review (2026-09-21)
+
+Raised by a live client (Rise Digital Marketing, 30 June year end): the tax
+period was wrong, cash and fixed assets were missing from Schedule F, and
+equity did not tie. Fixed generally, not for that client.
+
+- **The statements' own period end is now read.** `detectStatementPeriodEnd`
+  (classify.ts / `EN9stmtPeriodEnd`) parses "for the year ended 30 June 2024",
+  "as at 31 March 2025", "as of December 31, 2023" — both date orders, ordinal
+  suffixes — from the head of every `fs-`/`ato-` page, and prefers the date
+  agreeing with the detected statement year, because every set of accounts
+  prints the comparative beside it. `DocClass.statementPeriodEnd` carries it.
+- **Seeding priority for B1/B2 changed**: the statements' printed period end
+  first, then a prior 5471's period rolled forward, then 12/31 last. Before
+  this the day and month could only come from a prior 5471, so a fiscal entity
+  with no prior return was silently dated 12/31 — wrong FX tables, wrong
+  Schedule E and J dates, wrong period filed.
+- **Provenance no longer implies a quotation.** A rolled-forward year end now
+  cites "… annual accounting period ended 06/30/2023, rolled forward one year",
+  and the 12/31 fallback says "no period end stated, 31 December assumed".
+  New review items `period-end-assumed` and `period-end-disagreement`.
+- **The agent gained a review phase.** `reconcile` is a seventh node reached by
+  a router at START (`phase: "review"`): the store runs the graph a second time
+  after booking, with `BookFacts` (period end and its provenance, EOY assets /
+  liabilities+equity / equity, the filled targets) and the still-unmatched
+  captions. Deterministic — it needs no key. It reports an empty Cash line, a
+  fixed-asset caption never booked, cost without accumulated depreciation, an
+  assumed or contradicted period end, and an out-of-balance sheet **naming the
+  unbooked caption (or pair) whose figure equals the gap exactly**.
+- `agentRun` no longer returns early when nothing is unmatched: a balance sheet
+  can be out with every caption mapped, and the review is the only thing that
+  reads it back.
+- Tests: `npm run test:period` (33 checks, src vs dist), `test:agent` now 49,
+  `test:e2e-agent` 26 including a real balance-sheet run in Chromium.
+- Still dist-only: the `EN9-fiscal-title` grid scan that reads a year end from
+  a CSV/Excel title row. It now runs as a fallback behind the PDF reader.
+
+## Tax-year check and the agent dashboard (2026-09-21, third pass)
+
+**Root cause of wrong-year selection.** Year detection and period detection
+were two separate anchor lists, and only the year list fed `deriveCaseYears`.
+Xero heads a P&L "For the 12 months ended 31 December 2024" — which says
+neither "year ended" nor a bare year — so `detectStatementYear` returned NULL
+and the document voted for no year at all. With only a P&L uploaded the case
+year is null, Basic Information falls back to 31 December, and the whole work
+paper is dated on an assumption. Verified live on Ashley Elliott: `pl.pdf` read
+as year `null` before the fix, `2024` after.
+
+Fixed at the root:
+- `YEAR_ANCHORS` gained the "N months ended" shape.
+- `detectStatementPeriod` reads a printed RANGE whole ("for the period 1 July
+  2023 to 30 June 2024") and returns both ends; a single-date reader would
+  take the first date, which is the period START, and date the work paper a
+  year early. `DocClass.statementPeriodStart` carries it.
+- When no year anchor matches, the year is taken from the period end. A
+  document can no longer be read for its figures while reporting no year.
+
+**Tax year check** is a new node (`yearCheck`) between `survey` and
+`spotlight`, so it runs before mapping, carry-forward and generation. Each
+document gets `role` (current-year / prior-year-input / reference / unclear),
+`supportsYear` and `match` (match / mismatch / unclear / unchecked). A
+mismatch or an unreadable year is a named failure with the document and the
+action; nothing is used silently. Graph is 12 nodes.
+
+**Agent dashboard.** The activity card was a wall of text; it is now a compact
+dashboard: status badge, five counts (documents, items reviewed, issues, sent
+to Review, could not process), activity chips, the tax-year table, document
+cards with View details and Open document, finding cards (title, one short
+line, source, impact, status, View source + Evidence), a separate "Important
+information not used" block, failure cards (what, source, stage, reason,
+action), and the workflow strip. "AI Mapping & Review Agent:" is no longer
+printed on every line, and no paragraph exceeds ~200 characters (asserted).
+**View source / Open document opens the real file** — the project holds the
+bytes, so it is a blob URL with `#page=N`, which PDF viewers honour.
+
+Not re-tested: Rodney W. Claycomb, whose documents are not in this session.
+The defect class was the same (year read from a prior return rather than from
+the statements' own period) and is covered by the same fix.
+
+## Agent across the whole lifecycle (2026-09-21, second pass)
+
+The agent was a post-pass; it is now three phases of one graph, entered by a
+router at START.
+
+  documents → reading/OCR → language → translation → **understand** → the
+  existing 5471 rules and mapping → validation → **map (leftovers)** →
+  **review** → work paper
+
+- **understand** (end of step 2, before any mapping): `survey` → `spotlight` →
+  (model? `interpret`) → `handoff`. It reads only what extraction already
+  cached. It records a `DocBrief` per document (kind, pages, figures, rows
+  dropped as structure, language, period end, OCR), detects the language and,
+  when it is not English and a key exists, **translates before mapping** so the
+  rules read the English rather than a translation that arrives too late.
+  `spotlight` names every figure the pipeline would let past: no rule and no
+  heading, dropped as structure although the caption does not call itself a
+  total, or non-Latin with no translation. `interpret` asks the model what
+  those are; a low-confidence answer becomes a FAILURE, never a guess.
+- **Acting on it without overriding anything**: a row the structure pass
+  dropped that the agent reads as a line item is marked `agentImportant` and
+  step 3 pushes it into `unmatched` with the agent's reason. It is never
+  booked — the arithmetic that dropped it may be right — but it stops being
+  invisible and reaches Review, the Exception Centre and the AI pass.
+- **review** closes the loop: every important item is marked `booked`,
+  `unmatched` or `unused`, and an `unused` one is a finding. Every earlier
+  failure is re-stated there with stage, what, source, page, reason and the
+  action required. Nothing the agent could not do is dropped quietly.
+- `translateCaptions()` is now shared by the agent and the Translate action —
+  one translator, one set of guards.
+- New state: `Entity.agentBrief` / `EN9agentBrief`.
+- **AI Agent activity** card (layer) on the entity's Review & log tab and in the
+  Entity workspace: steps run, what was read, what was translated, what was
+  flagged and what happened to it, what needs review, what failed and why.
+  Settings ▸ AI platform gained where the agent sits in the lifecycle, that it
+  runs twice, where to watch it, and what happens when it cannot do something.
+- Graph is 11 nodes. Tests: `test:agent` 71, `test:e2e-agent` 38.
+- A blind string replace damaged `enhanceCategoryAuthority` in the layer (its
+  `if(!host)` guard became `if(!seat)`), which silently killed the whole
+  enhancement pass. Caught by the browser e2e, not by any unit test — anchor
+  layer edits on their enclosing function, not on a line that repeats.
+
+## Rise Digital Marketing — live test (2026-09-21)
+
+Four real documents (Xero balance sheet, Xero P&L, the 2023 US return, the
+Bright!Tax questionnaire). Before the fixes below: period 06/30/24 (rolled
+forward from the prior return), 4 captions unmapped, Schedule F out by
+44,660.64. After: period 12/31/24 read from the statements, **0 unmatched**,
+Schedule F ties to the client's own totals (assets 44,933.33, equity
+32,940.38), 147 cells written.
+
+What the documents exposed, all fixed generally:
+
+- **A bare "Bank" heading.** Xero prints the group as "Bank" (QuickBooks prints
+  "Bank Accounts", which was the only pattern in the lexicon) and names the
+  accounts after the product — "Cheque Account", "Remote Boss Lifestyle". No
+  keyword can reach the second; the heading is the only evidence. New banner.
+- **"Cheque Account".** The cash rule knew "checking account" (US) but not the
+  Commonwealth spelling. Added with four more package defaults.
+- **A "Fixed Assets" heading was only "assets".** New `fixedAssets` section,
+  vetoed to the non-current asset lines, routing to BS:28 by default. Its
+  accumulated depreciation booked on 9b while the assets themselves stayed
+  unmapped, so the balance sheet was out by the cost of everything the entity
+  owns. The rule catalogue also gained the account names a package prints
+  ("Computer Equipment", "Office Equipment", "Motor Vehicles", ...).
+- **"Equity" was routed as "liabilities".** So Drawings, Current Year Earnings
+  and Opening Balances fell to the current-liability catch-all (BS:50) — money
+  owed within twelve months. New `equity` section, vetoed to BS:58-62.
+- **"Capital - <person>" claimed by the bare "capital" keyword** on the
+  common-stock group. A capital account in a named person's name is line 21
+  (paid-in or capital surplus), not line 20b. Added to the BS:60 group, which
+  precedes BS:59.
+- Rule catalogue **v7 → v8**; `RULES_ADDED_SINCE[7]` registers the three new
+  keyword groups so saved projects receive them.
+- Banner lexicon 29 → 34 patterns, both trees.
+
+Judgement call left alone: "Paypal Fees" (20.87) books to cost of goods sold
+by the payment-processor rule, although this P&L prints it under Operating
+Expenses. Changing that rule would push genuine cost-of-sales captions off the
+COGS lines for statements with a single "Expenses" banner, so it stays and is
+reported to the owner instead.
 
 ## Rule catalogue upgrades
 
@@ -167,15 +705,36 @@ cutting a release.
 
 ## Open issues
 
-- 2026-09-15 local UX pass (uncommitted): `layer-src/enhance.js` now scopes OCR detection, visible jobs, manual results and transient selection state to `activeEntityId`; the OCR panel has a drop target, full filename wrapping, and detection/processing/completion timing. The local server's Windows OCR proxy route was corrected in `scripts/serve-local.mjs`. `src/prototype/wp/CoreViews.tsx` now gives Exception Centre a real `onNavigate("signoff")` action; the shipped enhancement layer delegates its matching button to the existing React Review & sign-off navigation control until the dist source is rebuilt. Verified service health and a real scanned-PDF OCR run. A temporary `Entity 2` was added in the browser solely to verify client switching; remove it after confirmation if no longer needed.
-
-- 2026-09-15 local UX pass (uncommitted): Exception Centre blocking sign-off actions now show an in-page mandatory audit-note dialog rather than a browser `prompt`, which can be suppressed in the embedded browser and had made the controls appear inert. The original dismiss/sign-off handler still does the work after a note is provided. The single-item and selected-batch dialog flows were verified and cancelled without changing any review item.
-
-- 2026-09-15 Parnasa reconciliation remediation (uncommitted): Chilean `BALANCE <entity>` pages with assets, liabilities and totals are now classified as balance sheets; Spanish suffix totals such as `INGRESOS TOTALES` and `GASTOS TOTALES` are skipped before broad mapping rules; single-dot Chilean amounts are read as thousands only when the page establishes that convention; and negative cost lines inside a proved expense total are booked as Schedule C deduction magnitudes. The mapping catalogue is v5 so saved projects receive the new total controls. The shipped `dist` has matching EN9 safeguards (no rebuild), including an accurate prior-filing FX-rate explanation. Verified with `test:spanish`, `test:sections`, `test:rulesparity`, `test:detect`, `test:srcparity`, `test:fxparity`, `test:layer`, and `test:integrity`; `test:inject` remains blocked on this Windows host because its temporary symlink requires elevated filesystem permission.
-
-- 2026-09-15 Parnasa follow-up remediation (uncommitted): catalogue v6 adds Chilean balance-sheet coverage for cash, investments, buildings, tax provisions, bank loans, guarantees, other payables and capital. A P&L caption `Patentes` is context-routed to Schedule C other deductions instead of Schedule F intangibles. Schedule E now leaves a zero placeholder and blocks generation until a paid/accrued tax source or preparer assignment is supplied; a P&L tax expense alone is not evidence. Opening balances use the approved prior-year end rate in Basic Information before falling back to a prior filing's printed rate. Source and reviewed dist were patched in parity. Verified `typecheck`, `test:spanish`, `test:fx`, `test:ruleup`, `test:rulesparity`, `test:gen`, `test:boot`, and local HTTP 200.
-
-
+- `test:peg` fails at "the approved prior-year end rate outranks a prior
+  return's printed rate" (0.833 vs 0.82). PRE-EXISTING: it fails identically at
+  985ce6b, before the 2026-09-17 work. Which rate should win is a business-rule
+  decision for the owner, so it was left alone rather than silently changed.
+- OCR: a figure corrupted to `1:100.000)` (bracketed negative on a grainy
+  Spanish scan) gets no flag - `validate.py looks_numeric` rejects any token
+  with a colon before the grammar checks - and the app's `numericCell` then
+  refuses digit:digit as a time, so the figure is silently absent from the
+  work paper. Only unflagged OCR error that reached the work paper in the
+  2026-09-16 test. Fix: treat >=4 digits with one colon as numeric-like and
+  flag it; raise a review item for a caption row with digits but no value.
+- OCR: a wrong digit that keeps a valid shape (`61,199.37`, `443.711`) passes
+  the grammar check; only the cross-engine comparison catches it, and only
+  when the engines disagree. Fix candidates: always cross-check numeric
+  crops regardless of page confidence; sum-to-printed-total check surfaced
+  as an OCR review item.
+- OCR, minor: em dash read as a middle dot and glued to neighbours
+  (`SHEET·12/31/2024`, 15/18 pages); Spanish words glued
+  (`Préstamobancario`, `Capital.pagado`) - still mapped. Split on dashes and
+  middle dots in `split_line_into_words`.
+- Mapping side, seen while testing OCR (not OCR's fault): from the DIGITAL
+  fixture the rules leave Accounts payable, Deferred revenue and Retained
+  earnings unmatched and route Trade receivables to BS:10 by section
+  fallback; a bare 4-column trial balance and a 5-line German page classify
+  as `unknown`.
+- A temporary `Entity 2` was created in the browser on 2026-09-15 purely to
+  verify client switching. It lives in browser storage, not in the repo;
+  delete it once switching is confirmed.
+- `test:inject` could not run on the owner's Windows host: its temporary
+  symlink needs elevated filesystem permission. It is not known to be broken.
 - Undecided: `tests/fixtures/shori_rows.json` carries a real client entity name
   and 15 partial bank/card numbers with balances. The Boating fixture beside it
   anonymises its entity name; this one does not. The tests pin figures and

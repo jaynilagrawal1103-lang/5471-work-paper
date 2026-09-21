@@ -57,6 +57,10 @@ export type MapRow = {
       Set by structRows and gridStructRows; read when a caption is routed to a
       contra line, where the sign is the whole question. */
   inTotal?: boolean;
+  /** Set by the agent's understanding phase when it judged a row the structure
+      pass dropped to be a line item after all. Carries the reason, so the
+      Review row can quote it. Never books anything by itself. */
+  agentImportant?: string;
 };
 
 
@@ -210,11 +214,100 @@ export function structRows(rows: MapRow[]): MapRow[] {
       }
     }
 
+    /* The trailing total printed FLUSH with the rows it adds, which is how
+       Xero-style accounts set out a group:
+
+         Purchases
+             Contractor Labour Costs   152,418
+             Total Purchases           152,418
+
+       Test 2 above cannot see this — it only walks rows indented DEEPER than
+       the total — so both lines were booked and cost of sales came out at
+       double. Four of these on one set of accounts ("Total Purchases", "Total
+       Donations paid", "Total Shareholders Remuneration", "Total Term
+       Liabilities") moved 270,737 across Schedule C and Schedule F.
+
+       The walk stops at the first row that is not a plain sibling: a shallower
+       row ends the group, and a row already found to be structure means this
+       is a total of totals, where the members are counted through them. The
+       arithmetic still has to tie, so a genuine account called "Total Return
+       Fund" is left alone. */
+    if (!m.skipReason && TOTAL_WORD.test(String(m.row.label || "").trim())) {
+      const flush: MapRow[] = [];
+      for (let j = i - 1; j >= 0; j--) {
+        const sib = out[j];
+        if (indentOf(sib) < ind) break;             // a shallower row ends the group
+        if (indentOf(sib) > ind) continue;          // a deeper row belongs to a sibling
+        if (sib.skipReason) break;                  // structure already claimed it
+        /* Another total closes the group above it, whether or not we managed
+           to prove it. These accounts print "Total Expenses" as the sum of 27
+           rounded lines: 642,791 against a printed 642,794, three dollars out,
+           so it stays data. Without this stop the next group's total walked
+           straight past it and added 29 rows instead of its own one. */
+        if (TOTAL_WORD.test(String(sib.row.label || "").trim())) break;
+        if (amtOf(sib) === null) break;             // a caption with no figure opens a new group
+        flush.unshift(sib);
+      }
+      if (flush.length && same(flush.reduce((n, k) => n + (amtOf(k) as number), 0), amt)) {
+        m.skipReason = `total of the ${flush.length} row(s) printed flush above it`;
+        for (const kid of flush) (kid as MapRow).inTotal = true;
+        continue;
+      }
+    }
+
     if (ind === outermost && TOTAL_WORD.test(String(m.row.label || "").trim())) {
       m.skipReason = "a total at the outermost indent of the report";
     }
   }
   return out;
+}
+
+/* ---------- movement schedules ---------- */
+
+/** The captions a movement schedule is built from. A balance sheet never
+    prints any of them: it states positions, not the year's traffic. */
+const OPENING_ROW = /^(opening balance|balance (?:at|as at) (?:the )?(?:start|beginning) of (?:the )?year|brought forward)$/i;
+const CLOSING_ROW = /^(closing balance|balance (?:at|as at) (?:the )?end of (?:the )?year|carried forward)$/i;
+/** What a real balance sheet closes with. Its presence means the page states
+    positions whatever else is on it, so the page is left alone. */
+const BS_ANCHOR = /^(total (?:current |non-?current |term )?(?:assets|liabilities)|net assets|total (?:liabilities and )?(?:equity|capital))$/i;
+
+/** Drop the pages that reconcile ONE account's movements over the year.
+ *
+ * A set of accounts often carries a page like "Shareholder Current Accounts",
+ * laid out as opening balance, funds introduced, drawings, closing balance.
+ * Every row on it reads like a balance-sheet caption and carries a figure, so
+ * the page classifier files it as a balance sheet and all of it is booked.
+ * On one 2025 file that put twelve non-balances onto Schedule F line 16 —
+ * 113,062, the whole of the year-end imbalance — including the closing
+ * balance, which the balance sheet proper had already supplied.
+ *
+ * The test is the shape the layout cannot have by accident: the page opens
+ * with an opening balance AND closes with a closing balance, and states none
+ * of the totals a balance sheet exists to state. The reason is kept on the
+ * row so the log can say what was dropped and the preparer can disagree. */
+export function dropMovementSchedules<T extends MapRow>(rows: T[]): T[] {
+  const byPage = new Map<number, T[]>();
+  for (const m of rows) {
+    const page = Number(m.row && m.row.page);
+    if (!isFinite(page)) continue;
+    if (!byPage.has(page)) byPage.set(page, []);
+    byPage.get(page)!.push(m);
+  }
+  const movement = new Set<number>();
+  for (const [page, list] of byPage) {
+    const label = (m: T) => String((m.row && m.row.label) || "").trim();
+    if (list.some((m) => BS_ANCHOR.test(label(m)))) continue;
+    if (list.some((m) => OPENING_ROW.test(label(m))) && list.some((m) => CLOSING_ROW.test(label(m)))) {
+      movement.add(page);
+    }
+  }
+  if (!movement.size) return rows;
+  return rows.map((m) =>
+    movement.has(Number(m.row && m.row.page)) && !m.skipReason
+      ? { ...m, skipReason: `page ${m.row.page} reconciles one account's movements over the year — it states no balances` }
+      : m,
+  );
 }
 
 /** Caption reduced to the letters and digits that carry meaning, so that
@@ -372,6 +465,34 @@ export function bsSide(target: string): "assets" | "liabilities" | null {
    sold inside gross income, so the group name cannot be used to tell them
    apart — they are listed here by row instead. */
 const INCOME_TARGETS = new Set(["IS:7", "IS:14", "IS:15", "IS:16", "IS:17", "IS:18", "IS:19", "IS:20", "IS:22", "IS:23", "IS:24", "IS:OI"]);
+/** Where a caption printed under an "Other income" banner may land. Gross
+    receipts is deliberately absent: the statement has already said this is not
+    turnover. Everything else on the income half of Schedule C is fair game. */
+/** Where a caption printed under a non-current / term liabilities banner may
+    land: Schedule F line 19 and its detail rows, the shareholder loan line,
+    and derivatives. Line 16 is deliberately absent. */
+/* Everything Schedule F puts below the current assets: the depreciable and
+   depletable pools, land, the intangibles and the "other asset" slots. A
+   caption printed under a fixed-assets heading cannot be cash or a receivable
+   however it reads. */
+const NON_CURRENT_ASSET_TARGETS = new Set([
+  "BS:19", "BS:21", "BS:22", "BS:23", "BS:25", "BS:26", "BS:27", "BS:OI",
+  "BS:28", "BS:29", "BS:30", "BS:31", "BS:32", "BS:34", "BS:35", "BS:36", "BS:37",
+  "BS:39", "BS:40", "BS:41",
+]);
+
+/* The five equity lines and nothing else. */
+const EQUITY_TARGETS = new Set(["BS:58", "BS:59", "BS:60", "BS:61", "BS:62"]);
+
+const NON_CURRENT_LIABILITY_TARGETS = new Set([
+  "BS:OL", "BS:51", "BS:52", "BS:54", "BS:55", "BS:56",
+  /* Equity is printed BELOW the long-term liabilities and the banner is
+     sticky, so an equity caption reaches here whenever the statement does not
+     announce its equity section by a name the lexicon knows. Vetoing those
+     would push retained earnings onto a liability line. */
+  "BS:58", "BS:59", "BS:60", "BS:61", "BS:62",
+]);
+const OTHER_INCOME_TARGETS = new Set(["IS:14", "IS:15", "IS:16", "IS:17", "IS:18", "IS:19", "IS:20", "IS:22", "IS:23", "IS:24", "IS:OI"]);
 
 export function sectionOk(section: Section | null | undefined, target: string | null | undefined): boolean {
   if (!section || !target) return true;
@@ -382,7 +503,21 @@ export function sectionOk(section: Section | null | undefined, target: string | 
      receipts and inflate income by their whole amount. Contra-revenue (IS:8)
      and the cost lines themselves are left alone. */
   if (section === "cogs") return !isBs && !INCOME_TARGETS.has(target);
+  /* The mirror of the cogs rule. "Motor Vehicle Contribution" is printed under
+     Other Income and is a receipt, but the keyword scan saw "motor vehicle"
+     and sent it to the motor-vehicle expense line -- so the figure came out of
+     income AND went into deductions, moving the bottom line by twice itself. */
+  if (section === "otherIncome") return !isBs && OTHER_INCOME_TARGETS.has(target);
+  /* A liability the statement filed under "Non-Current Liabilities" belongs on
+     Schedule F line 19, never on line 16. Everything else on the liabilities
+     side stays reachable: a term loan from a shareholder is still line 18. */
+  if (section === "termLiabilities") return isBs && NON_CURRENT_LIABILITY_TARGETS.has(target);
   if (section === "cash") return target === "BS:10";
+  /* The mirror of the cash rule, one group down the balance sheet. */
+  if (section === "fixedAssets") return isBs && NON_CURRENT_ASSET_TARGETS.has(target);
+  /* Equity has its own block on Schedule F. A caption under the equity banner
+     can never be a liability, and a liability caption can never be equity. */
+  if (section === "equity") return isBs && EQUITY_TARGETS.has(target);
   if (section === "assets" || section === "liabilities") {
     if (!isBs) return false;
     const side =
@@ -410,6 +545,49 @@ export function sectionRoute(section: Section | null | undefined, label: string)
      cost of goods sold, and line 2 is where the form puts the ones that are
      neither labour nor purchases. */
   if (section === "cash") return "BS:10";
+  /* The banner says these are non-current assets; the caption says which kind.
+     The catch-all is the depreciable pool, because that is what a fixed-asset
+     register is mostly made of and it is where the form expects them. */
+  if (section === "fixedAssets") {
+    if (/\b(depreciat|amorti[sz])/.test(s)) return "BS:29";
+    if (/\bland\b/.test(s)) return "BS:32";
+    if (/goodwill/.test(s)) return "BS:34";
+    if (/\b(patent|trademark|trade mark|licence|license|software|intangible|website|domain)\b/.test(s)) return "BS:36";
+    if (/\b(investment|shares in|interest in)\b/.test(s)) return "BS:OI";
+    if (/\b(bond|deposit|security deposit|retention)\b/.test(s)) return "BS:39";
+    return "BS:28";
+  }
+  /* Equity. Drawings and current-year earnings are movements ON retained
+     earnings, not separate lines of the form, so they accumulate there — which
+     is also what a hand-prepared work paper does with them. A capital account
+     in one owner's name is proprietor capital (line 21), not stock issued to
+     the public (line 20b). */
+  if (section === "equity") {
+    if (/treasury|own shares/.test(s)) return "BS:62";
+    if (/preferen(?:ce|red)/.test(s)) return "BS:58";
+    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
+    if (/\b(capital|contribution|surplus|premium)\b/.test(s)) return "BS:60";
+    return "BS:61";
+  }
+  /* The banner already said what the figure is, so the catch-all is safe: an
+     unrecognised caption under "Other income" IS other income. */
+  if (section === "termLiabilities") {
+    // The equity tests first, and in the same order as the liabilities branch
+    // below: the banner is sticky and equity prints underneath it.
+    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
+    if (/reserve|retained earning|accumulated (profit|loss|deficit)|distributable/.test(s)) return "BS:61";
+    if (/current account/.test(s) && !/vat|tax/.test(s)) return "BS:52";
+    if (/shareholder|director|related part/.test(s)) return "BS:52";
+    return "BS:OL";
+  }
+  if (section === "otherIncome") {
+    if (/\b(dividend)/.test(s)) return "IS:14";
+    if (/\b(interest)/.test(s)) return "IS:15";
+    if (/\b(rent)/.test(s)) return "IS:16";
+    if (/\b(royalt|licence fee|license fee)/.test(s)) return "IS:17";
+    if (/\b(gain|loss)\b.*\b(sale|disposal)|\b(sale|disposal)\b.*\b(asset)/.test(s)) return "IS:18";
+    return "IS:OI";
+  }
   if (section === "cogs") {
     if (/\b(labour|labor|wage|salar|payroll|subcontract|sub-contract)/.test(s)) return "IS:10";
     if (/\b(purchase|goods|material|stock|inventor|supplier)/.test(s)) return "IS:11";
@@ -418,6 +596,10 @@ export function sectionRoute(section: Section | null | undefined, label: string)
   if (section === "assets") {
     if (/\b(depreciat|amorti[sz])/.test(s)) return "BS:29";
     if (/\b(receivable|debtor)/.test(s)) return "BS:11";
+    /* The mirror of the liabilities branch below. A shareholder current
+       account swings between the two sides year to year, and the balance
+       sheet says which side it is on THIS year by where it prints it. */
+    if (/current account|\bloan\b/.test(s) && !/vat|tax/.test(s)) return "BS:19";
     if (/\b(vat|tax|gst|prepaid|deposit|accrued income)/.test(s)) return "BS:OCA";
     return null;
   }
@@ -438,7 +620,7 @@ export function sectionRoute(section: Section | null | undefined, label: string)
     if (/\b(depreciat|amorti[sz])/.test(s)) return "IS:30";
     if (/interest/.test(s)) return "IS:29";
     if (/\bfx\b|exchange (gain|loss)|currency (gain|loss)/.test(s)) return "IS:19";
-    if (/\b(income tax|corporat\w* tax|profit tax|vennootschapsbelasting|körperschaftsteuer)/.test(s)) return "IS:54";
+    if (/\b(income tax|corporat\w* tax|profit tax|vennootschapsbelasting|körperschaftsteuer)/.test(s)) return "IS:62";
     if (/\b(tax|belasting)/.test(s)) return "IS:OD";
     return "IS:OD";
   }
@@ -449,8 +631,9 @@ export function sectionRoute(section: Section | null | undefined, label: string)
     page they were read on. Returns the two feeds with those rows exchanged,
     and how many moved — the caller logs the count. */
 export function refeedBySection(isRows: MapRow[], bsRows: MapRow[]): { is: MapRow[]; bs: MapRow[]; moved: number } {
-  const onBs = (m: MapRow) => m.section === "assets" || m.section === "liabilities" || m.section === "cash";
-  const onIs = (m: MapRow) => m.section === "income" || m.section === "costs" || m.section === "cogs";
+  const onBs = (m: MapRow) => m.section === "assets" || m.section === "liabilities" || m.section === "cash"
+    || m.section === "termLiabilities" || m.section === "fixedAssets" || m.section === "equity";
+  const onIs = (m: MapRow) => m.section === "income" || m.section === "costs" || m.section === "cogs" || m.section === "otherIncome";
   const toBs = isRows.filter(onBs);
   const toIs = bsRows.filter(onIs);
   if (!toBs.length && !toIs.length) return { is: isRows, bs: bsRows, moved: 0 };
@@ -515,6 +698,8 @@ export function collapsedRoute(label: string, section: Section): string | null {
   if (section === "costs") return "IS:OD";
   if (section === "cash") return "BS:10";
   if (section === "cogs") return "IS:12";
+  if (section === "otherIncome") return "IS:OI";
+  if (section === "termLiabilities") return "BS:OL";
   return null;
 }
 

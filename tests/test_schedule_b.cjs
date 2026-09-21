@@ -1,8 +1,10 @@
-/* Schedule B shareholders — built from the real Claycomb 2023 return.
+/* Schedule B shareholders — the row shape of a real 2023 return, with every
+ * name, address and identifying number replaced by a synthetic one. Only the
+ * share counts and percentages are as filed; they are what the logic turns on.
  *
  * The extractor originally read Part II ONLY. On that return:
- *   Part I  : RODNEY W CLAYCOMB 25.500 / 25.50%, HEATHER M CLAYCOMB 25.500 / 25.50%
- *   Part II : ARCK TRUST (ARCK LEGACY TRUS) 98.000
+ *   Part I  : ALAN R SAMPLE 25.500 / 25.50%, BETH M SAMPLE 25.500 / 25.50%
+ *   Part II : TEST TRUST (TEST LEGACY TRUS) 98.000
  * so both individuals — and the ONLY copies of the SSN and the pro rata % —
  * were silently dropped.
  *
@@ -79,25 +81,25 @@ function scan(face, from) {
 
 const mk = (rows) => rows.map((cells) => ({ page: 2, cells }));
 
-/* Real rows from Claycomb page 2. */
+/* Page 2's rows, in the order the text layer yields them. */
 const hmc = mk([
   ["Schedule B Shareholders of Foreign Corporation"],
   ["Part I U.S. Shareholders of Foreign Corporation (see instructions)"],
   ["(a) Name, address, and identifying", "(b) Description of each class of stock held by shareholder."],
-  ["RODNEY W CLAYCOMB", "COMMON", "25.500", "25.500"],
-  ["49 SHRULE PLACE"],
-  ["HAMILT, NEW ZEALAND 3210"],
-  ["174-56-8373", "25.50%"],
-  ["HEATHER M CLAYCOMB", "COMMON", "25.500", "25.500"],
-  ["49 SHRULE PLACE"],
-  ["HAMILT, NEW ZEALAND 3210"],
-  ["210-58-8456", "25.50%"],
+  ["ALAN R SAMPLE", "COMMON", "25.500", "25.500"],
+  ["1 SAMPLE STREET"],
+  ["SAMPLETON, NEW ZEALAND 3210"],
+  ["111-11-1111", "25.50%"],
+  ["BETH M SAMPLE", "COMMON", "25.500", "25.500"],
+  ["1 SAMPLE STREET"],
+  ["SAMPLETON, NEW ZEALAND 3210"],
+  ["222-22-2222", "25.50%"],
   ["Part II      Direct Shareholders of Foreign Corporation (see instructions)"],
   ["(a) Name, address, and identifying number of", "(b) Description of each class of stock held by shareholder."],
-  ["ARCK TRUST (ARCK LEGACY TRUS", "COMMON", "98.000 98.000"],
-  ["49 SHRULE PLACE"],
-  ["HAMILTON, NEW ZEALAND 3210"],
-  ["666-66-6666", "NZ"],
+  ["TEST TRUST (TEST LEGACY TRUS", "COMMON", "98.000 98.000"],
+  ["1 SAMPLE STREET"],
+  ["SAMPLETON, NEW ZEALAND 3210"],
+  ["333-33-3333", "NZ"],
 ]);
 
 const partI = hmc.findIndex((r) => /part i\b.*u\.?\s*s\.?\s*shareholders/i.test(r.cells.join(" ")));
@@ -111,7 +113,7 @@ t("Part I and Part II are both located", () => {
 t("Part II still reads the direct shareholder (unchanged behaviour)", () => {
   const d = scan(hmc, partII);
   assert.strictEqual(d.length, 1);
-  assert.ok(/ARCK TRUST/i.test(d[0].name), d[0].name);
+  assert.ok(/TEST TRUST/i.test(d[0].name), d[0].name);
   assert.strictEqual(d[0].boy, 98);
   assert.strictEqual(d[0].eoy, 98);
 });
@@ -119,8 +121,8 @@ t("Part II still reads the direct shareholder (unchanged behaviour)", () => {
 t("Part I now reads BOTH U.S. shareholders — previously dropped", () => {
   const u = scan(hmc, partI);
   assert.strictEqual(u.length, 2, `got ${u.length}: ${u.map((h) => h.name)}`);
-  assert.strictEqual(u[0].name, "RODNEY W CLAYCOMB");
-  assert.strictEqual(u[1].name, "HEATHER M CLAYCOMB");
+  assert.strictEqual(u[0].name, "ALAN R SAMPLE");
+  assert.strictEqual(u[1].name, "BETH M SAMPLE");
   assert.strictEqual(u[0].boy, 25.5);
   assert.strictEqual(u[1].eoy, 25.5);
 });
@@ -135,12 +137,12 @@ t("the pro rata % is captured — it exists ONLY in Part I", () => {
 
 t("Part I scan stops at Part II and does not swallow the trust", () => {
   const u = scan(hmc, partI);
-  assert.ok(!u.some((h) => /ARCK/i.test(h.name)), "Part I leaked into Part II");
+  assert.ok(!u.some((h) => /TEST/i.test(h.name)), "Part I leaked into Part II");
 });
 
 t("Part II scan does not reach back into Part I", () => {
   const d = scan(hmc, partII);
-  assert.ok(!d.some((h) => /CLAYCOMB/i.test(h.name)), "Part II picked up Part I rows");
+  assert.ok(!d.some((h) => /SAMPLE/i.test(h.name)), "Part II picked up Part I rows");
 });
 
 t("direct rows are NOT merged with Part I — that would double-count", () => {
@@ -156,7 +158,7 @@ t("direct rows are NOT merged with Part I — that would double-count", () => {
 const delink = mk([
   ["H Person(s) on whose behalf this information return is filed:"],
   ["(1) Name", "(2) Address", "(3) Identifying number"],
-  ["HEATHER M. CLAYCOMB", "49 SHRULE PLACE, HAMILTON, NEW ZEALAND 3210", "174-56-8373", "X", "X", "X"],
+  ["BETH M. SAMPLE", "1 SAMPLE STREET, SAMPLETON, NEW ZEALAND 3210", "111-11-1111", "X", "X", "X"],
   ["Important: Fill in all applicable lines and schedules."],
   ["1a Name and address of foreign corporation"],
   ["DELINK LIMITED"],
@@ -185,7 +187,7 @@ t("Item H is still readable on a page-1-only block", () => {
     people.push({ name: first, isShareholder: marks >= 1, isOfficer: marks >= 2, isDirector: marks >= 3 });
   }
   assert.strictEqual(people.length, 1, JSON.stringify(people));
-  assert.strictEqual(people[0].name, "HEATHER M. CLAYCOMB");
+  assert.strictEqual(people[0].name, "BETH M. SAMPLE");
   assert.ok(people[0].isShareholder && people[0].isOfficer && people[0].isDirector);
 });
 
@@ -205,7 +207,7 @@ const rise = mk([
   ["MATTHEW J METCALFE (NRA SPOU COMMON", "1.000", "1.000"],
   ["15 ABBOTSWOOD ROAD"],
   ["DOREEN, AUSTRALIA 3764"],
-  ["666-66-6666", "AS"],
+  ["333-33-3333", "AS"],
 ]);
 const riseII = rise.findIndex((r) => /part ii\b.*direct shareholders/i.test(r.cells.join(" ")));
 

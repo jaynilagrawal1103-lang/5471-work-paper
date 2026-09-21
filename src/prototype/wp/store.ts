@@ -1,29 +1,34 @@
 "use client";
 
 import {
-  BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES,
+  BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES, REPLACEABLE_FORMULA_REFS,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
-  detectRulers, explainUnreadable, extractPositionedRows, extractRows, matchRule, numeric, readDocument, signForLabel,
+  detectRulers, explainUnreadable, extractPositionedRows, extractRows, fixedAssetSplit, matchRule, noteLookthrough, numeric, readDocument, signForLabel, statementNotes,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
 import { pdfToDoc } from "./pdfText";
 import { parseQuestionnaire, type Questionnaire } from "./questionnaire";
 import { irsCountryCode } from "./countryCodes";
-import { collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
+import { collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, dropFurniture, dropMovementSchedules, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
   AI_BATCH, TPM_BUDGET, aiMode, askResume, classifyFailure, estTokens, maxTokensFor,
   norm1, ok as aiOk, parseMap, retryAfterMs, sleep, tpmCorrectLast, tpmNote, tpmWaitMs,
   type AiError, type AiMode, type Proposal,
 } from "./aiMapping";
+import {
+  AGENT_CAN, AGENT_CANNOT, AGENT_FRAMEWORK, AGENT_GRAPH, AGENT_NAME, AGENT_PROVIDER,
+  citeEvidence, runAgent,
+  type AgentBrief, type AgentFailure, type AgentImportant, type AgentRow, type AgentSuggestion, type DocBrief,
+} from "./agent";
 import { sessionSnapshot } from "../session";
 import { apiBase } from "../api";
 import {
-  classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
+  classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed, periodMinusOneYear,
   type DocClass, type DocKind,
 } from "./classify";
-import { extractCarryForwards, type CarryForward } from "./carryForward";
+import { addressLines, directoryDirectors, directoryShareholders, extractCarryForwards, samePerson, type CarryForward, type DirectoryHolder } from "./carryForward";
 
 /** One 5471 block's carry-forward, tagged with its origin for selection,
     cross-document dedupe and sibling fan-out. */
@@ -249,6 +254,10 @@ export type Shareholder = {
   boy: number;
   eoy: number;
   source?: string;
+  /** Schedule B Part I column (e) — the pro rata share of Subpart F income,
+      as a percentage. Only Part I states it; Part II never does. Used for the
+      U.S. Shareholders block only. */
+  pct?: number;
 };
 
 export type Entity = {
@@ -290,6 +299,12 @@ export type Entity = {
       pageHint routes a PDF's unclassified pages to one statement feed. */
   docKindOverrides: Record<string, DocKindOverride>;
   shareholders: Shareholder[];
+  /** Schedule B Part I — the U.S. shareholders (direct AND indirect), which
+      drive template rows 7-14. Kept separate from `shareholders` (Part II,
+      the direct legal owners, rows 19-26) because the same person often
+      appears in both — directly and through a trust — and merging the two
+      would double-count ownership. */
+  usShareholders: Shareholder[];
   /** Template sheets the preparer excluded in the Review Summary — they
       receive no writes on generation (the sheets themselves remain). */
   excludedSheets: string[];
@@ -310,12 +325,19 @@ export type Entity = {
         show the reasoning rather than just "unmapped". */
     aiProposal?: { to: string; confidence: string; reason: string; refused?: boolean };
     originalReason?: string;
+    /** The agent already read this caption. The AI mapping pass that follows
+        leaves it alone rather than re-proposing what the agent deliberately
+        sent to the Exception Centre. */
+    agentSeen?: boolean;
   })[];
   /** Caption/value pairs from the profile pages that no matcher claimed —
       the input to the AI profile pass. */
   unmatchedProfile: ProfileCandidate[];
   log: string[];
   processedAt: string | null;
+  /** What the agent understood about the documents BEFORE mapping, kept so the
+      activity view, the review phase and the log all read one record. */
+  agentBrief?: AgentBrief;
 };
 
 export type GroqState = {
@@ -336,6 +358,22 @@ export type GroqState = {
   noticeAt?: number | null;
   /** True once the preparer has seen and acknowledged the panel. */
   checked?: boolean;
+};
+
+/** Settings and the last run of the AI Mapping & Review Agent. The agent has
+    no credentials of its own — it uses the Groq key in `groq`. */
+export type AgentSettings = {
+  /** Undefined reads as on: the agent is the default path for leftovers. */
+  enabled?: boolean;
+  lastRun?: {
+    at: string;
+    entity: string;
+    considered: number;
+    accepted: number;
+    exceptions: number;
+    findings: number;
+    nodes: string[];
+  };
 };
 
 export type LogEvent = {
@@ -368,6 +406,7 @@ export type WpState = {
   policies: PolicyRule[];
   rateDb: RateDb;
   groq: GroqState;
+  agent: AgentSettings;
   usage: { docs: number; storage: number; api: number; generated: number };
   busy: boolean;
   providerUsage: Record<string, ProviderUsage>;
@@ -438,6 +477,7 @@ export function makeEntity(name: string, stakeholder: string): Entity {
     docClasses: {},
     docKindOverrides: {},
     shareholders: [],
+    usShareholders: [],
     excludedSheets: [],
     reviewItems: [],
     extraWrites: [],
@@ -451,6 +491,23 @@ export function makeEntity(name: string, stakeholder: string): Entity {
   };
 }
 
+/** A note that acknowledges a blocker without explaining it. Nothing is
+    refused for being thin -- the preparer may have a good reason to be brief,
+    or may simply be testing -- but the Provenance sheet says so, so a reviewer
+    can tell a considered acknowledgement from a keystroke. */
+export const isThinNote = (note: string): boolean => {
+  const said = String(note || "").trim();
+  return said.length < 12 || /^(test\w*|ok(ay)?|n\/?a|none|nil|x+|\.+|-+|check(ed|ing)?|done|fine|yes|no|asdf\w*|foo|bar)$/i.test(said);
+};
+
+/** The four-digit year behind a short period like "03/31/24". */
+export function yearOfShortPeriod(p: string | undefined): number | null {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(String(p || "").trim());
+  if (!m) return null;
+  const y = Number(m[3]);
+  return m[3].length === 4 ? y : 2000 + y;
+}
+
 /* ---------------- store ---------------- */
 const initialStakeholder = "New stakeholder";
 
@@ -461,7 +518,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 6;
+export const RULE_CATALOGUE_VERSION = 8;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -488,6 +545,15 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
       "payroll expense", "owner investment", "owner draw"],
   // v6 (2026-09-15): Chilean balance-sheet caption coverage.
   5: ["edificios", "provisi\u00f3n impuesto", "garant\u00eda", "fondo de capital", "inversiones", "capital"],
+  // v7 (2026-09-18): the English of "property, plant and equipment". Without
+  // it the line fell to the other-assets pool on every English balance sheet.
+  6: ["property, plant and equipment"],
+  // v8 (2026-09-21): a live Australian Xero balance sheet left its whole bank
+  // group and its whole fixed-asset register unmapped. The cash rule knew the
+  // US spelling only, the depreciable-assets rule knew no account name an
+  // accounting package actually prints, and a named partner capital account
+  // was claimed by the bare "capital" keyword on the common-stock group.
+  7: ["cheque account", "computer equipment", "capital -"],
 };
 
 /** Groups the saved catalogue is missing purely because it predates them.
@@ -520,6 +586,7 @@ let state: WpState = {
   policies: [],
   rateDb: seedRateDb(),
   groq: { key: "", model: GROQ_MODELS[0], status: "not configured", latency: null, calls: 0, tokens: 0, lastError: "" },
+  agent: {},
   usage: { docs: 0, storage: 0, api: 0, generated: 0 },
   busy: false,
   providerUsage: Object.fromEntries(
@@ -639,7 +706,9 @@ const hooks: StoreHooks = {
 export function loadState(next: WpState) {
   const rules = upgradeRules(next.rules || [], next.rulesVersion);
   const added = rules.length - (next.rules?.length || 0);
-  state = { ...next, rules, rulesVersion: RULE_CATALOGUE_VERSION };
+  // A project saved before the agent existed has no `agent` key; without the
+  // default every read of state.agent would throw on restore.
+  state = { ...next, rules, rulesVersion: RULE_CATALOGUE_VERSION, agent: next.agent || {} };
   listeners.forEach((fn) => fn());
   // After the assignment, not before: logEvent writes through set(), and the
   // entry would be discarded by the state replacement above.
@@ -1155,6 +1224,35 @@ export const actions = {
     if (gone?.name) logEvent("Shareholder removed", gone.name, ent.name);
   },
 
+  /* ------------- U.S. shareholders (Shareholding rows 7–14) -------------
+     Schedule B Part I. Separate from the direct holders above because the
+     same person is often in both — directly and again through a trust — and
+     adding the two together would double-count ownership. */
+  addUsShareholder(entityId: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    if ((ent.usShareholders || []).length >= 8) { toast("The template carries at most 8 U.S. shareholder rows (7–14)", "bad"); return; }
+    const usShareholders = [...(ent.usShareholders || []), { id: uid(), name: "", classOfShares: "Common", boy: 0, eoy: 0 }];
+    updateEntity(entityId, { usShareholders, extraWrites: rebuildShareholderWrites({ ...ent, usShareholders }) });
+  },
+
+  updateUsShareholder(entityId: string, id: string, patch: Partial<Shareholder>) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const usShareholders = (ent.usShareholders || []).map((s) => (s.id === id ? { ...s, ...patch, id } : s));
+    updateEntity(entityId, { usShareholders, extraWrites: rebuildShareholderWrites({ ...ent, usShareholders }) });
+  },
+
+  removeUsShareholder(entityId: string, id: string) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const gone = (ent.usShareholders || []).find((s) => s.id === id);
+    if (gone && typeof window !== "undefined" && window.confirm && !window.confirm(`Remove U.S. shareholder ${gone.name || "(unnamed)"}?`)) return;
+    const usShareholders = (ent.usShareholders || []).filter((s) => s.id !== id);
+    updateEntity(entityId, { usShareholders, extraWrites: rebuildShareholderWrites({ ...ent, usShareholders }) });
+    if (gone?.name) logEvent("U.S. shareholder removed", gone.name, ent.name);
+  },
+
   /** C-01: the preparer confirms an auto-detected functional currency. */
   confirmCurrency(entityId: string) {
     const ent = state.entities.find((e) => e.id === entityId);
@@ -1577,6 +1675,31 @@ export const actions = {
       toast("Answer this one — acknowledging would leave the cell blank", "bad");
       return;
     }
+    /* A blocking exception needs the preparer to SAY something, and that is
+       all this asks. An earlier version of this check also demanded fifteen
+       characters and rejected a list of filler words; it was wrong twice over.
+       It refused real answers for being short -- "Rod confirmed" is thirteen
+       characters and "Client confirmed" is sixteen, which is not a difference
+       worth anything -- and it left no way to acknowledge a blocker in order
+       to see what the workbook looks like. A reason can be anything; the
+       preparer is the one signing the return.
+
+       What the run that prompted this actually needed was for the problem to
+       be VISIBLE afterwards, not for the note to be long: an out-of-balance
+       Schedule F was waved through and the generated workbook said so nowhere
+       on its face. Schedule F now carries a labelled out-of-balance row in all
+       four columns, and a thin note is marked as such on the Provenance sheet,
+       so a reviewer can see both the figure and the fact that nobody explained
+       it. */
+    if (item.level === "block" && !String(note || "").trim()) {
+      logEvent(
+        "Acknowledgement refused",
+        `"${item.message.slice(0, 120)}" — a blocking exception needs a note, even a short one`,
+        ent.name,
+      );
+      toast("Type a reason first — anything, but the workbook records it", "bad");
+      return;
+    }
     const rest = ent.reviewItems.filter((r) => r.id !== id);
     updateEntity(entityId, { reviewItems: [...rest, { ...item, dismissed: true, dismissedNote: note || "" }] });
     logEvent(
@@ -1737,6 +1860,17 @@ export const actions = {
     let ato: AtoFacts = {};
     let cf: CarryForward | null = null;
     let cfSource = "";
+    /* The prior return is only an opening balance if it CLOSES where this work
+       paper OPENS. A FY2023 filing does not open FY2025, and seeding from one
+       silently backdates the whole of column (a) by a year. */
+    let cfStale = false;
+    /* The shareholder register as the CURRENT year's accounts state it. It
+       outranks the prior return's Schedule B Part II, which is a year or more
+       old -- see directoryShareholders. */
+    let directory: DirectoryHolder[] = [];
+    let directorySource = "";
+    /** The directors the accounts name, for Item H. */
+    let directors: string[] = [];
     let nameMismatch: Entity["nameMismatch"] = null;
     // Every 5471 block found across the prior-year documents. Exactly one
     // feeds THIS entity; the remaining named blocks fan out to siblings.
@@ -1913,8 +2047,91 @@ export const actions = {
             for (const row of bsPages.size ? extractPositionedRows(parsed.pdf, rulers, { pages: bsPages }) : []) {
               pdfBs.push({ row, docId: file.id, docName: file.name, feed: "bs", kind: "pdf", x0: row.x0 });
             }
+            /* The notes are not booked -- they restate what the face already
+               carries -- but they say what the face's captions MEAN. Two uses,
+               both of which have to prove their arithmetic against the note's
+               own total before anything moves: a note holding exactly one
+               thing renames the face caption to that thing, and the fixed
+               asset note supplies the cost and accumulated depreciation that
+               Schedule F lines 9a and 9b need and the face never prints. */
+            if (!directory.length && cls.kind === "cfc-financial-statements") {
+              const found = directoryShareholders(parsed.pdf.rows.map((r) => ({ page: r.page, cells: r.cells.map((c) => c.text) })));
+              if (found.length) { directory = found; directorySource = file.name; }
+              const dirRows = parsed.pdf.rows.map((r) => ({ page: r.page, cells: r.cells.map((c) => c.text) }));
+              if (!directors.length) directors = directoryDirectors(dirRows);
+            }
+            const notePages = new Set((cls.pages || []).filter((p) => p.kind === "fs-notes").map((p) => p.page));
+            const notes = notePages.size
+              ? statementNotes(extractPositionedRows(parsed.pdf, rulers, { pages: notePages }))
+              : [];
+            const lookthrough = notes.length ? noteLookthrough(notes) : new Map<string, string>();
+            if (lookthrough.size) {
+              const key = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+              let renamed = 0;
+              for (const m of pdfBs) {
+                const to = lookthrough.get(key(String(m.row.label || "")));
+                if (!to) continue;
+                m.row = { ...m.row, label: to };
+                renamed++;
+              }
+              if (renamed) {
+                log.push(`${file.name}: ${renamed} balance-sheet caption(s) resolved through their own note (for example "Other Non Current Assets" is the note's "Intangible Assets")`);
+              }
+            }
+            const fixedAssets = notes.length ? fixedAssetSplit(notes) : null;
+            if (fixedAssets) {
+              /* The face carries the fixed asset NET; Schedule F wants cost on
+                 9a and accumulated depreciation on 9b. Rather than plumb the
+                 split past the mapper, rewrite the evidence: the face row
+                 becomes the cost, and the depreciation the face never printed
+                 is added as a row of its own, which the existing
+                 "accumulated depreciation" rule already books to 9b.
+
+                 Only a face row whose OWN figures equal the note's total is
+                 touched. That is the proof the two are the same asset, and
+                 without it a note could overwrite an unrelated line. */
+              /* Compare the LAST columns, not the whole row: a balance sheet
+                 that cross-references its notes prints the note number first,
+                 so the face row reads [4, 23,353, 28,667] and only the tail is
+                 the money. The same slice is what gets rewritten, so the note
+                 reference survives. */
+              const tailSame = (a: number[], b: number[]) =>
+                a.length >= b.length && b.every((v, i) => Math.abs(a[a.length - b.length + i] - v) <= Math.max(0.02, 1));
+              const host = pdfBs.find((m) => tailSame(m.row.values || [], fixedAssets.net));
+              if (host) {
+                const page = host.row.page;
+                const lead = (host.row.values || []).slice(0, (host.row.values || []).length - fixedAssets.net.length);
+                host.row = { ...host.row, values: [...lead, ...fixedAssets.cost] };
+                /* Immediately after its host, not at the end: the row has to
+                   sit under the same section banner as the asset it depreciates.
+                   Appended, it landed below the Equity banner and the
+                   liabilities-side veto threw it away. */
+                pdfBs.splice(pdfBs.indexOf(host) + 1, 0, {
+                  row: { label: "Accumulated depreciation", values: [...lead, ...fixedAssets.accumDep.map((v) => -Math.abs(v))],
+                         page, years: host.row.years ? host.row.years.slice() : undefined, x0: host.row.x0 },
+                  docId: file.id, docName: file.name, feed: "bs", kind: "pdf", x0: host.x0,
+                  section: host.section,
+                });
+                log.push(`${file.name}: the fixed asset note supplied cost ${fixedAssets.cost.join(" / ")} and accumulated depreciation ${fixedAssets.accumDep.join(" / ")}, which the balance sheet prints only as the net ${fixedAssets.net.join(" / ")} — Schedule F lines 9a and 9b need the split`);
+              }
+            }
+            /* Page furniture goes FIRST, before anything reads the banners.
+               A multi-page statement repeats its own title at the top of every
+               continuation page, and that title IS a section banner ("Statement
+               of Financial Performance" -> income). Tagging before the drop let
+               the running header reset the section at every page break, so a
+               P&L that ran onto a second page had its remaining expenses booked
+               as income — 326,669 of them on one 2025 file. structRows drops the
+               same rows a few lines below; doing it here as well costs nothing
+               (the second pass finds nothing left to drop) and stops the header
+               being read as structure by anything downstream. */
+            pdfIs = dropFurniture(pdfIs);
+            pdfBs = dropFurniture(pdfBs);
             pdfIs = tagSections(pdfIs);
             pdfBs = tagSections(pdfBs);
+            // A page that reconciles one account's movements is not a balance
+            // sheet, however much its captions read like one.
+            pdfBs = dropMovementSchedules(pdfBs);
             const refed = refeedBySection(pdfIs, pdfBs);
             pdfIs = refed.is;
             pdfBs = refed.bs;
@@ -2086,9 +2303,10 @@ export const actions = {
             // A reference copy OLDER than the immediately prior year: its
             // Schedule J line 14 opens the WRONG year — flag, never adjust.
             if (caseYears.cy && selected.statementYear && selected.statementYear < caseYears.cy - 1) {
+              cfStale = true;
               rv({
-                id: "cf-year-gap", level: "warn", category: "carry-forward",
-                message: `${selected.source} is a FY${selected.statementYear} filing but the case year is ${caseYears.cy} — its Schedule J line 14 is the opening balance of FY${selected.statementYear + 1}, NOT ${caseYears.cy}. Confirm the opening E&P and the prior-filed balances before relying on them.`,
+                id: "cf-year-gap", level: "block", category: "carry-forward",
+                message: `${selected.source} is a FY${selected.statementYear} filing, but this work paper is FY${caseYears.cy}, so its opening column is the close of FY${caseYears.cy - 1}. That return closes at the end of FY${selected.statementYear}, one year earlier, and its Schedule J line 14 opens FY${selected.statementYear + 1}. Nothing has been carried forward from it: a silently backdated opening balance is worse than a blank one. Supply the FY${caseYears.cy - 1} Form 5471, or enter the opening figures yourself.`,
                 source: selected.source,
               });
             }
@@ -2108,6 +2326,18 @@ export const actions = {
           }
         }
         updateEntity(entityId, { nameMismatch, log: [...log] });
+
+        /* The agent reads the documents BEFORE the rules do. It changes
+           nothing the rules decide — it translates where translation is
+           needed, names the figures at risk of being let past, and marks the
+           rows the structure pass dropped that it reads as line items so they
+           reach Review rather than disappearing. */
+        try {
+          await agentUnderstand(entityId, mapRows, log);
+        } catch (err) {
+          log.push(`AI agent could not read the documents — ${(err as Error).message}`);
+        }
+        updateEntity(entityId, { log: [...log] });
       }
 
       /* Step 3 — map with year routing, pools and provenance; detect profile. */
@@ -2161,7 +2391,21 @@ export const actions = {
           // structural subtotal is already the sum of rows being booked.
           // Both stay in mapRows so the log and the evidence view can show
           // them; neither is ever booked.
-          if (m.skipReason || m.row.isBanner) continue;
+          if (m.skipReason || m.row.isBanner) {
+            /* The agent read this row before mapping and judged it a line
+               item rather than a total. It is still NOT booked — the
+               arithmetic that dropped it may be right, and booking it would
+               double-count — but it stops being invisible: it reaches the
+               Review tab, the Exception Centre and the AI mapping pass, where
+               a preparer can assign it in one move. */
+            if (m.agentImportant && !m.row.isBanner) {
+              unmatched.push({
+                ...m.row, docId: m.docId, docName: m.docName, section: m.section,
+                reason: `Dropped before mapping — ${m.skipReason} — but the agent judged it a line item, not a total: ${m.agentImportant}. Confirm and assign it, or leave it out.`,
+              });
+            }
+            continue;
+          }
           const matched = matchWithTranslation(m.row.label);
           let target = matched.target;
           /* A caption's accounting meaning depends on the statement it is
@@ -2313,11 +2557,11 @@ export const actions = {
               continue;
             }
             const booked = taxBookValue(resolved.target, r.field, r.value);
-            if (booked !== r.value) {
+            if (taxPrintedNegative(resolved.target, r.field, r.value)) {
               rv({
                 id: `tax-sign-${resolved.target}`, level: "warn", category: "mapping", applied: true,
                 sourceLabel: m.row.label,
-                  message: `"${m.row.label}" ${r.value.toLocaleString()} was booked to ${resolved.target === "IS:54" ? "income tax expense — current (row 54)" : "deferred tax (row 55)"} as a NEGATIVE amount: the template's net income (row 56) is a plain SUM of rows 52–55, so a positive tax would increase profit. If this line is genuinely a tax credit, edit the value in the Exception Center.`,
+                  message: `"${m.row.label}" is printed as ${r.value.toLocaleString()} — a NEGATIVE tax. It has been booked as printed to ${resolved.target === "IS:62" ? "income tax expense — current (row 62)" : "deferred tax (row 63)"}, and row 64 subtracts that line, so it will ADD ${Math.abs(r.value).toLocaleString()} to profit. That is right for a genuine tax credit and wrong if the statement simply prints taxes as negatives. Confirm it in the Exception Center.`,
                 target: `${SHEET.is}!F${resolved.target.split(":")[1]}`, source: m.docName,
               });
             }
@@ -2394,6 +2638,41 @@ export const actions = {
           // they only fill seed-only cases with no statements at all.
           const periodEndYear = cf?.periodEnd ? Number(cf.periodEnd.slice(-4)) : null;
           const fiscalSeed = !!cf?.periodEnd && isFiscalPeriod(cf.periodEnd);
+
+          /* FIRST: the period end the statements themselves print. They are
+             the current-year source of truth, they carry the DAY and MONTH,
+             and they need no assumption. Only when no statement states one
+             does a prior return's period (rolled forward) or, last, 12/31
+             have to stand in. A 30 June entity dated 12/31 pulls the wrong
+             FX tables and files the wrong period, and nothing on the face of
+             the work paper shows it. */
+          const stmtPeriod = (() => {
+            let best: { end: string; doc: string } | null = null;
+            for (const c of Object.values(fresh.docClasses || {}) as DocClass[]) {
+              const end = c.statementPeriodEnd;
+              if (!end || c.duplicateOf) continue;
+              if (c.kind !== "cfc-financial-statements" && c.kind !== "cfc-tax-return") continue;
+              if (caseYears.cy && Number(end.slice(-4)) !== caseYears.cy) continue;
+              if (!best) best = { end, doc: c.fileName };
+            }
+            return best;
+          })();
+          if (stmtPeriod) {
+            propose(profile, "cyEnd", shortPeriod(stmtPeriod.end), `${stmtPeriod.doc} · period end printed on the statements`);
+            const prior = periodMinusOneYear(stmtPeriod.end);
+            if (prior) propose(profile, "pyEnd", shortPeriod(prior), `${stmtPeriod.doc} · the year before the period the statements report on`);
+            /* Two documents stating two different period ends is a real
+               question, not a preference: one of them is not this year's. */
+            if (cf?.periodEnd && shortPeriod(cf.periodEnd) !== shortPeriod(periodMinusOneYear(stmtPeriod.end) || "")
+                && shortPeriod(cf.periodEnd) !== shortPeriod(stmtPeriod.end)) {
+              rv({
+                id: "period-end-disagreement", level: "warn", category: "consistency",
+                message: `${stmtPeriod.doc} reports on the period ended ${stmtPeriod.end}, but the prior 5471 in ${cfSource} states an annual accounting period ending ${cf.periodEnd}. The statements were used. If the entity changed its year end, say so in Basic Information; otherwise check that both documents belong to this entity.`,
+                source: stmtPeriod.doc,
+              });
+            }
+          }
+
           if (fiscalSeed && periodEndYear && caseYears.cy && caseYears.cy !== periodEndYear + 1) {
             rv({
               id: "cf-period-year-mismatch", level: "warn", category: "consistency",
@@ -2403,18 +2682,34 @@ export const actions = {
           } else if (fiscalSeed) {
             const nextEnd = periodPlusOneYear(cf!.periodEnd!);
             if (nextEnd) {
-              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period`);
+              /* Provenance that says what actually happened. This value was
+                 NOT read from the return — the return states the year before
+                 it. A citation naming only the document reads as a quotation
+                 and gets reviewed as one. */
+              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period ended ${cf!.periodEnd}, rolled forward one year`);
               propose(profile, "pyEnd", shortPeriod(cf!.periodEnd!), `${cfSource} · annual accounting period`);
             }
           }
-          if (caseYears.cy) propose(profile, "cyEnd", `12/31/${String(caseYears.cy).slice(2)}`, "statement year");
-          if (caseYears.py) propose(profile, "pyEnd", `12/31/${String(caseYears.py).slice(2)}`, "statement year");
+          if (caseYears.cy) propose(profile, "cyEnd", `12/31/${String(caseYears.cy).slice(2)}`, `statement year ${caseYears.cy} — no period end stated, 31 December assumed`);
+          if (caseYears.py) propose(profile, "pyEnd", `12/31/${String(caseYears.py).slice(2)}`, `statement year ${caseYears.py} — no period end stated, 31 December assumed`);
           if (cf?.periodEnd && !fiscalSeed) {
             const nextEnd = periodPlusOneYear(cf.periodEnd);
             if (nextEnd) {
-              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period`);
+              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period ended ${cf.periodEnd}, rolled forward one year`);
               propose(profile, "pyEnd", shortPeriod(cf.periodEnd), `${cfSource} · annual accounting period`);
             }
+          }
+
+          /* The year end decides the FX tables, Schedule E and J dates and the
+             period the work paper is filed for. When no document stated one,
+             say so plainly rather than letting an AUTO badge imply it was
+             read from a document. */
+          if (profile.cyEnd && /assumed/i.test(detected.cyEnd?.sourceLabel || "")) {
+            rv({
+              id: "period-end-assumed", level: "warn", category: "consistency",
+              message: `No document states the period end, so 31 December was assumed and Basic Information reads ${profile.cyEnd}. If this entity has a fiscal year end — 30 June and 31 March are the common ones — correct B1 and B2 before generating: the year end selects the exchange-rate tables and dates Schedules E and J.`,
+              target: `${SHEET.basic}!B1`,
+            });
           }
           if (cf && !cf.periodEnd) {
             rv({
@@ -2429,9 +2724,10 @@ export const actions = {
           // so a cover page can't claim the address with the accountant's.
           if (cf) {
             propose(profile, "legalName", cf.cfcName || "", `${cfSource} · 5471 face`);
-            propose(profile, "addr1", cf.cfcAddress[0] || "", `${cfSource} · 5471 face`);
-            propose(profile, "addr2", cf.cfcAddress[1] || "", `${cfSource} · 5471 face`);
-            propose(profile, "addr3", cf.cfcAddress[2] || "", `${cfSource} · 5471 face`);
+            const cfAddr = addressLines(cf.cfcAddress);
+            propose(profile, "addr1", cfAddr[0] || "", `${cfSource} · 5471 face`);
+            propose(profile, "addr2", cfAddr[1] || "", `${cfSource} · 5471 face`);
+            propose(profile, "addr3", cfAddr[2] || "", `${cfSource} · 5471 face`);
             propose(profile, "formed", cf.formed || "", `${cfSource} · 5471 face`);
             propose(profile, "countryInc", cf.countryInc || "", `${cfSource} · 5471 face`);
             propose(profile, "activity", cf.activity || "", `${cfSource} · 5471 face`);
@@ -2461,7 +2757,11 @@ export const actions = {
                the old rule answered Yes for any 10% holder, individuals
                included. Yes only when a Schedule B holder is a company. */
             {
-              const holders = [...(cf.holders || []), ...(cf.usHolders || [])];
+              /* The register first. The form truncates a long name at the
+                 column edge -- "ARCK TRUST (ARCK LEGACY TRUS" no longer ENDS
+                 in "trust", so the corporate test failed on it and the answer
+                 came out No although the entity is 98% owned by a trust. */
+              const holders = [...directory, ...(cf.holders || []), ...(cf.usHolders || [])];
               const corporate = holders.filter((h) => isCorporateName(h.name));
               if (corporate.length) {
                 propose(ownership, "tenPct", "Yes", `${cfSource} · Schedule B holder ${corporate.map((h) => h.name).join(", ")}`);
@@ -2478,6 +2778,13 @@ export const actions = {
                 ?? (people.length === 1 ? people[0] : undefined);
               if (mine) {
                 propose(ownership, "isOfficer", mine.isOfficer || mine.isDirector ? "Yes" : "No", `${cfSource} · Item H boxes for ${mine.name}`);
+              }
+              /* Item H could not answer it. The accounts name their directors
+                 on the same page as the shareholder register, and that is the
+                 current year's answer rather than the prior return's. */
+              if (directors.length) {
+                const me = directors.find((n) => !!filer && samePerson(n, filer));
+                if (me) propose(ownership, "isOfficer", "Yes", `${directorySource} · named as a director`);
               }
             }
             // The transition tax (section 965) was a 2017/2018 event.
@@ -2624,6 +2931,24 @@ export const actions = {
             unmatchedProfile.push(cand);
           }
 
+  /* The engagement year the preparer entered against the year the documents
+             are for. The column routing follows the DOCUMENTS -- a set of accounts
+             headed "year ended 31 March 2025" books its 2025 column as the current
+             year whatever Basic Information says -- so a year end typed over the
+             detected one produces a work paper dated one year and filled with
+             another's figures. Nothing about that is visible on the face of it, which
+             is why it blocks rather than warns. */
+          {
+            const typed = yearOfShortPeriod(profile.cyEnd);
+            if (typed && caseYears.cy && typed !== caseYears.cy) {
+              rv({
+                id: "profile-year-vs-documents", level: "block", category: "consistency",
+                message: `Basic Information gives the current year end as ${profile.cyEnd} — year ${typed} — but every figure booked here comes from documents reporting on ${caseYears.cy}. The work paper would be dated ${typed} and filled with ${caseYears.cy} figures. Either set the year end back to the documents' year, or supply the ${typed} statements and re-process.`,
+                target: `${SHEET.basic}!B1`,
+              });
+            }
+          }
+
           updateEntity(entityId, { profile, ownership, categories, detected, unmatchedProfile, ...nameSync });
           if (filled) {
             log.push(`${filled} entity detail(s) detected from the documents`);
@@ -2669,7 +2994,7 @@ export const actions = {
           }
         }
 
-        if (cf?.priorClosingUSD) {
+        if (cf?.priorClosingUSD && !cfStale) {
           const cur0 = state.entities.find((e) => e.id === entityId);
           /* WHICH rate turns the prior return's filed USD back into opening
              local currency, in order of authority:
@@ -2750,19 +3075,73 @@ export const actions = {
 
         // Shareholders seed from the prior 5471's Sch B Part II first —
         // merge-by-name, so hand-edited or hand-added rows always survive.
-        if (cf?.holders?.length) {
+        /* Direct holders. The accounts' own directory first when there is
+           one: it is this year's register, where the return's Schedule B Part
+           II is last year's or older. On the filing that prompted this, Part
+           II named only the trust and left two of the three holders out, so
+           the direct total came to 98 of 100 shares. */
+        if (directory.length || cf?.holders?.length) {
           const cur = state.entities.find((e) => e.id === entityId);
           if (cur) {
             const merged = [...(cur.shareholders || [])];
-            for (const h of cf.holders) {
-              if (!merged.some((s) => s.name.toLowerCase() === h.name.toLowerCase())) {
-                merged.push({
-                  id: uid(), name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
-                  source: `${cfSource} · Sch B p.${h.page}${h.single ? " · single printed count taken as BOY = EOY — confirm" : ""}`,
-                });
+            const fromDirectory = directory.map((h) => ({
+              name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
+              source: `${directorySource} p.${h.page} · shareholder register · one holding printed, taken as BOY = EOY — confirm`,
+            }));
+            const fromReturn = (cf?.holders || []).map((h) => ({
+              name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
+              source: `${cfSource} · Sch B p.${h.page}${h.single ? " · single printed count taken as BOY = EOY — confirm" : ""}`,
+            }));
+            /* The form's column width cuts a long name off mid-word, so the
+               return calls the trust "ARCK TRUST (ARCK LEGACY TRUS" while the
+               register calls it "ARCK Trust". An exact comparison treats them
+               as two holders and doubles the share count. One name being the
+               start of the other is the same holder. */
+            const nameKey = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+            const sameHolder = (a: string, b: string) => {
+              const x = nameKey(a), y = nameKey(b);
+              if (!x || !y) return false;
+              const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+              return short.length >= 4 && (long === short || long.startsWith(short + " "));
+            };
+            for (const h of [...fromDirectory, ...fromReturn]) {
+              if (!merged.some((s) => sameHolder(s.name, h.name))) {
+                merged.push({ id: uid(), ...h });
               }
             }
             if (merged.length !== (cur.shareholders || []).length) updateEntity(entityId, { shareholders: merged });
+            if (directory.length) {
+              const missed = fromReturn.filter((r) => !directory.some((d) => sameHolder(d.name, r.name)));
+              log.push(
+                `${directory.length} direct shareholder(s) read from the ${directorySource} shareholder register` +
+                (missed.length ? `; ${missed.length} further holder(s) came from ${cfSource} Schedule B Part II` : "") +
+                ` (the register is this year's; Schedule B Part II is the prior return's)`,
+              );
+            }
+          }
+        }
+
+        /* Schedule B Part I — the U.S. shareholders, which drive rows 7-14.
+           Seeded into their own list, never merged into the direct holders:
+           the same person commonly appears in both parts (directly and again
+           through a trust) and merging would double-count ownership. */
+        if (cf?.usHolders?.length) {
+          const cur = state.entities.find((e) => e.id === entityId);
+          if (cur) {
+            const merged = [...(cur.usShareholders || [])];
+            for (const h of cf.usHolders) {
+              if (!merged.some((s) => s.name.toLowerCase() === h.name.toLowerCase())) {
+                merged.push({
+                  id: uid(), name: h.name, classOfShares: h.classOfShares, boy: h.boy, eoy: h.eoy,
+                  ...(h.pct !== undefined ? { pct: h.pct } : {}),
+                  source: `${cfSource} · Sch B Part I p.${h.page}${h.single ? " · single printed count taken as BOY = EOY — confirm" : ""}`,
+                });
+              }
+            }
+            if (merged.length !== (cur.usShareholders || []).length) {
+              updateEntity(entityId, { usShareholders: merged });
+              log.push(`${merged.length} U.S. shareholder(s) carried from ${cfSource} Sch B Part I into the U.S. Shareholders block (rows 7-14)`);
+            }
           }
         }
         /* The questionnaire lists the filer and the other shareholders with
@@ -2800,7 +3179,7 @@ export const actions = {
         }
         const ent = state.entities.find((e) => e.id === entityId);
         if (!ent) return;   // removed mid-run
-        const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, ledger, questionnaire, salary, rv });
+        const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, cfStale, ledger, questionnaire, salary, rv });
         log.push(`${writes.list.length} schedule cell(s) prepared beyond the core statements`);
         // Sign-offs AND value edits survive re-processing, keyed by stable id.
         const prior = new Map(
@@ -2839,6 +3218,14 @@ export const actions = {
          deterministic answer is already fixed before it runs, and failure-safe
          because a work paper without the AI pass is still a work paper. */
       if (step === 5) {
+        /* The agent first: it reads the cached extraction, proposes with
+           evidence, and routes what it is unsure of to the Exception Centre.
+           The AI mapping pass then takes only what the agent did not read. */
+        try {
+          await agentRun(entityId, log);
+        } catch (err) {
+          log.push(`AI agent did not run — ${(err as Error).message}`);
+        }
         try {
           await aiRun(entityId, log);
         } catch (err) {
@@ -2881,6 +3268,11 @@ export const actions = {
 
   /* ---------------- Groq ---------------- */
   setGroq(patch: Partial<GroqState>) { set({ groq: { ...state.groq, ...patch } }); },
+
+  /** The agent's only setting: whether it runs during processing. It has no
+      key of its own — it uses the Groq credential above. */
+  setAgent(patch: Partial<AgentSettings>) { set({ agent: { ...state.agent, ...patch } }); },
+  agentInfo: () => agentInfo(),
 
   async testGroq() {
     if (!state.groq.key) { toast("Add a Groq API key first", "bad"); return; }
@@ -3306,7 +3698,10 @@ export function bookNetIncome(lines: Record<string, LineValue>): number | null {
   const income = grossProfit + [14, 15, 16, 17, 18, 19, 20, 22, 23, 24].reduce((n, r) => n + amt(r), 0);
   const deductions = [26, 27, 28, 29, 30, 31, 32].reduce((n, r) => n + amt(r), 0)
     + POOLS["IS:OD"].rows.reduce((n, r) => n + amt(r), 0);
-  const below = [53, 54, 55].reduce((n, r) => n + amt(r), 0);
+  /* Rows 61-63 mirror the template's line 22: the unusual-items row adds and
+     the two tax rows subtract, because line 21a now carries a POSITIVE
+     expense (it used to be booked negative so a plain SUM came out right). */
+  const below = amt(61) - amt(62) - amt(63);
   return r2(income - deductions + below);
 }
 
@@ -3535,10 +3930,102 @@ function linesFromContribs(list: Contribution[]): LineValue | null {
 
 /** Apply an explicitly assigned row (manual or Groq) with provenance.
     Returns false when the assignment could not be applied safely. */
+/* The U.S. Shareholders block, template rows 7-14.
+
+   Schedule B counts two different populations. Part I is the U.S.
+   shareholders — direct AND indirect — and is the only place the pro rata
+   Subpart F percentage appears. Part II is the direct legal owners. The
+   template has a block for each, but ships rows 7-14 as B7=B19, H7=H19,
+   J7=J19: a one-row mirror of the FIRST direct holder. On HMC Communications
+   that printed a New Zealand trust as a 100% U.S. shareholder, while the two
+   real U.S. shareholders named in Part I appeared nowhere and the Subpart F
+   column stayed blank. Writing the Part I rows replaces the mirror.
+
+   Returns nothing when there is no Part I data: the mirror is then the best
+   the file has, and a review item says so rather than blanking the block. */
+const US_ROWS = 8;
+
+/** Total shares outstanding, as the return itself implies it.
+
+    Schedule B Part I states BOTH a share count (columns (c)/(d)) and the pro
+    rata percentage (column (e)) for the SAME holder, so the denominator the
+    preparer worked to is shares ÷ (pct/100). HMC Communications: 25.5 ÷ 0.255
+    = 100 shares issued, which makes the trust's 98 direct shares 98% — not the
+    100% you get by dividing by the direct-holder total, and makes each U.S.
+    shareholder 25.50% rather than 26.02%.
+
+    Returns null when Part I states no percentage, or when the holders imply
+    different totals. The template then falls back to the direct-holder total,
+    which is what it always did. */
+export function outstandingFromPartI(list: Shareholder[] | undefined, field: "boy" | "eoy"): number | null {
+  const implied: number[] = [];
+  for (const h of list || []) {
+    const shares = Number(h[field]);
+    const pct = Number(h.pct);
+    if (!isFinite(shares) || shares <= 0 || !isFinite(pct) || pct <= 0) continue;
+    implied.push(shares / (pct / 100));
+  }
+  if (!implied.length) return null;
+  // Every holder must point at the same denominator, allowing for the rounding
+  // the form prints to (25.50% is stated to 2 dp, so tolerate half a share).
+  const first = implied[0];
+  if (implied.some((v) => Math.abs(v - first) > Math.max(0.5, first * 0.005))) return null;
+  return r2(implied.reduce((n, v) => n + v, 0) / implied.length);
+}
+
+export function usShareholderWrites(list: Shareholder[] | undefined, fallbackSource?: string,
+                                    directTotals?: { boy: number; eoy: number }): CellWrite[] {
+  const holders = (list || []).slice(0, US_ROWS);
+  if (!holders.length) return [];
+  const add: CellWrite[] = [];
+  holders.forEach((h, i) => {
+    const row = 7 + i;
+    const src = h.source || fallbackSource || "US shareholders tab";
+    add.push({ sheet: SHEET.shareholding, ref: `B${row}`, value: h.name, source: src });
+    add.push({ sheet: SHEET.shareholding, ref: `F${row}`, value: h.classOfShares, source: src });
+    add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: h.boy, source: src });
+    add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: h.eoy, source: src });
+    // The cell is formatted as a percentage, so 25.5% is stored as 0.255.
+    if (typeof h.pct === "number" && isFinite(h.pct)) {
+      /* dp: a percentage stored as a fraction needs more than the default 2 dp -
+         25.5% is 0.255, and rounding to 2 shipped 0.26 (26%). */
+      add.push({ sheet: SHEET.shareholding, ref: `P${row}`, value: r2(h.pct) / 100, dp: 6, source: `${src} · Sch B Part I col (e)` });
+    } else {
+      /* Part I stated no percentage for this holder. Clear the cell rather
+         than leave one behind from an earlier run or from the template. */
+      add.push({ sheet: SHEET.shareholding, ref: `P${row}`, value: "", source: `${src} · no pro rata % stated in Part I` });
+    }
+  });
+  /* Clear every row the list does not fill. Row 7 is the only one carrying a
+     mirror formula, but a shorter list on a re-run must not leave a previous
+     run's holder behind either. */
+  for (let row = 7 + holders.length; row <= 7 + US_ROWS - 1; row++) {
+    for (const col of ["B", "F", "H", "J", "P"]) {
+      add.push({ sheet: SHEET.shareholding, ref: `${col}${row}`, value: "", source: "US shareholder row not used" });
+    }
+  }
+
+  /* H4/J4 — total shares outstanding, the denominator for every % Ownership
+     cell in BOTH blocks. Written only when Part I implies it consistently AND
+     it is at least what the direct holders already hold; a smaller figure
+     would be nonsense and is left for the preparer, with a review item. */
+  for (const [field, ref] of [["boy", "H4"], ["eoy", "J4"]] as const) {
+    const implied = outstandingFromPartI(holders, field);
+    const held = directTotals ? directTotals[field] : 0;
+    if (implied === null || implied + 0.005 < held) continue;
+    add.push({
+      sheet: SHEET.shareholding, ref, value: implied, dp: 4,
+      source: `${fallbackSource || "Sch B Part I"} · shares ÷ pro rata % from Sch B Part I column (e)`,
+    });
+  }
+  return add;
+}
+
 /** Regenerate the Shareholding-row writes after a shareholders-tab edit —
     the workbook must always reflect the CURRENT list without a re-process. */
 function rebuildShareholderWrites(ent: Entity): CellWrite[] {
-  const keep = ent.extraWrites.filter((w) => !(w.sheet === SHEET.shareholding && /^[BFHJ](19|2[0-6])$/.test(w.ref)));
+  const keep = ent.extraWrites.filter((w) => !(w.sheet === SHEET.shareholding
+    && (/^[BFHJ](19|2[0-6])$/.test(w.ref) || /^[BFHJP](?:[7-9]|1[0-4])$/.test(w.ref) || w.ref === "H4" || w.ref === "J4")));
   const add: CellWrite[] = [];
   ent.shareholders.slice(0, 8).forEach((h, i) => {
     const row = 19 + i;
@@ -3552,7 +4039,9 @@ function rebuildShareholderWrites(ent: Entity): CellWrite[] {
     add.push({ sheet: SHEET.shareholding, ref: `J${row}`, value: "", source: "template demo data cleared" });
     if (row > 19) add.push({ sheet: SHEET.shareholding, ref: `H${row}`, value: "", source: "template demo data cleared" });
   }
-  return [...keep, ...add];
+  const dt = { boy: (ent.shareholders || []).reduce((n, h) => n + (Number(h.boy) || 0), 0),
+               eoy: (ent.shareholders || []).reduce((n, h) => n + (Number(h.eoy) || 0), 0) };
+  return [...keep, ...add, ...usShareholderWrites(ent.usShareholders, undefined, dt)];
 }
 
 /** The staleness prune: drop AUTO-derived data whose source document is no
@@ -3604,9 +4093,14 @@ function pruneRemovedDocData(ent: Entity): Partial<Entity> | null {
   return { detected, profile, ownership, categories, shareholders, currencyConfirmed, ...fxPatch };
 }
 
-/** Row-56 net income is a plain SUM of rows 52–55 — income tax expense must
-    book NEGATIVE, or a statement-positive tax would INCREASE profit (RAT-003). */
-const TAX_TARGETS = new Set(["IS:54", "IS:55"]);
+/** Schedule C line 21a is an EXPENSE and the form takes it positive, which is
+    what the hand-prepared work papers show. The template used to compute row 56
+    as a plain SUM of rows 52-55, which forced the tax to be booked negative to
+    come out right; row 56 now subtracts rows 54 and 55, so the figure is booked
+    exactly as the statement prints it. A statement that prints the tax negative
+    is stating a credit, and a credit still belongs on the line as a negative —
+    flagged, because the other reading is a presentation artifact. */
+const TAX_TARGETS = new Set(["IS:62", "IS:63"]);
 /** Total deductions (row 51) is SUM(F26:F33) and net income is F25 − F51, so
     every deduction must book POSITIVE. Statements that present financial costs
     as negatives — "86000 Interest paid  −49,00" in the 2Hats accounts, where
@@ -3616,8 +4110,12 @@ const TAX_TARGETS = new Set(["IS:54", "IS:55"]);
 const DEDUCTION_TARGETS = new Set(
   IS_LINES.filter((l) => l.group === "Deductions").map((l) => `IS:${l.row}`),
 );
-const taxBookValue = (target: string, field: "amount" | "eoy" | "boy", value: number): number =>
-  field === "amount" && TAX_TARGETS.has(target) && value > 0 ? -value : value;
+const taxBookValue = (_target: string, _field: "amount" | "eoy" | "boy", value: number): number => value;
+/** A tax line the statement printed as a negative. Row 56 subtracts it, so it
+    will ADD to profit — right for a real credit, wrong for a presentation
+    artifact, and only the preparer can tell which. */
+const taxPrintedNegative = (target: string, field: "amount" | "eoy" | "boy", value: number): boolean =>
+  field === "amount" && TAX_TARGETS.has(target) && value < 0;
 
 /** Correct a deduction line whose AGGREGATED total came out negative.
     This runs after every contribution is summed, never per contribution: a
@@ -3781,6 +4279,9 @@ type CaseFacts = {
   ato: AtoFacts;
   cf: CarryForward | null;
   cfSource: string;
+  /** The prior return does not close where this work paper opens, so nothing
+      may be carried from it. Optional: absent means it lines up. */
+  cfStale?: boolean;
   ledger: LedgerSummary | null;
   questionnaire: Questionnaire | null;
   salary: SalarySchedule | null;
@@ -3794,7 +4295,7 @@ export async function materializeCaseWrites(
   ent: Entity,
   facts: CaseFacts,
 ): Promise<{ list: CellWrite[]; dividends: DividendRec[] }> {
-  const { caseYears, equity, ato, cf, cfSource, ledger, questionnaire, salary, rv } = facts;
+  const { caseYears, equity, ato, cf, cfSource, cfStale, ledger, questionnaire, salary, rv } = facts;
   const list: CellWrite[] = [];
   const dividends: DividendRec[] = [];
   const avgRate = numeric(ent.fx.avgRate);
@@ -3858,7 +4359,7 @@ export async function materializeCaseWrites(
   }
 
   /* ---- carry-forward: opening E&P, shareholding, prior-filed USD ---- */
-  if (cf?.openingEP) {
+  if (cf?.openingEP && !cfStale) {
     w({
       sheet: SHEET.schJ, ref: "F15", value: cf.openingEP.value,
       source: `${cfSource} p.${cf.openingEP.page} · prior Sch J line 14`, reviewId: "cf-opening-ep",
@@ -3893,6 +4394,12 @@ export async function materializeCaseWrites(
     w({ sheet: SHEET.shareholding, ref: `H${row}`, value: h.boy, source: h.source || cfSource || "shareholders tab" });
     w({ sheet: SHEET.shareholding, ref: `J${row}`, value: h.eoy, source: h.source || cfSource || "shareholders tab" });
   });
+  /* U.S. Shareholders block, rows 7-14 — Schedule B Part I. Written from the
+     entity's own list so a preparer edit survives a re-generate. */
+  for (const uw of usShareholderWrites(ent.usShareholders, cfSource, {
+    boy: holderRows.reduce((n, h) => n + (Number(h.boy) || 0), 0),
+    eoy: holderRows.reduce((n, h) => n + (Number(h.eoy) || 0), 0),
+  })) w(uw);
   if (cf || holderRows.length) {
     for (let row = 19 + Math.min(holderRows.length, 8); row <= 22; row++) {
       for (const col of ["B", "J"]) w({ sheet: SHEET.shareholding, ref: `${col}${row}`, value: "", source: "template demo data cleared" });
@@ -3916,8 +4423,8 @@ export async function materializeCaseWrites(
       });
     }
     // Part I holders carry the pro rata % and the SSN — neither appears in
-    // Part II. Surface them even when the direct rows came from Part II, so the
-    // combined US ownership (which drives CFC status) is visible.
+    // Part II. They drive rows 7-14 (the U.S. Shareholders block); rows 19-26
+    // stay with the DIRECT holders from Part II.
     if (cf?.usHolders?.length) {
       rv({
         id: "cf-us-holders", level: "info", category: "carry-forward", applied: true,
@@ -3927,8 +4434,42 @@ export async function materializeCaseWrites(
           cf.usHolders.every((h) => h.pct !== undefined)
             ? ` — combined ${cf.usHolders.reduce((n, h) => n + (h.pct || 0), 0).toFixed(2)}%`
             : ""
-        }. Template rows 19-26 carry DIRECT shareholders; Part I names are shown here because the same person is often counted through a trust.`,
-        target: `${SHEET.shareholding}!B19`, source: cfSource,
+        }. They were written to the U.S. Shareholders block (rows 7-14); rows 19-26 carry the DIRECT shareholders from Part II. The same person often appears in both, so the two blocks are kept separate rather than added together.`,
+        target: `${SHEET.shareholding}!B7`, source: cfSource,
+      });
+      /* The percentages now divide by total shares outstanding, taken from
+         Part I itself (shares ÷ pro rata %). Two things can still go wrong and
+         both are worth saying out loud rather than leaving in a cell. */
+      const outEoy = outstandingFromPartI(ent.usShareholders, "eoy");
+      const dirEoy = (cf.holders || []).reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+      if (outEoy === null) {
+        rv({
+          id: "cf-us-holder-base", level: "warn", category: "carry-forward",
+          message: `Schedule B Part I does not state a usable pro rata percentage for every U.S. shareholder, so total shares outstanding could not be derived. The % Ownership columns fall back to dividing by the DIRECT holders' total (${dirEoy || "0"}), which reads 100% whenever one holder owns all the listed shares. Enter the real total in Shareholding Details H4/J4 if it differs.`,
+          target: `${SHEET.shareholding}!H4`, source: cfSource,
+        });
+      } else if (outEoy + 0.005 < dirEoy) {
+        rv({
+          id: "cf-us-holder-base", level: "warn", category: "carry-forward",
+          message: `Schedule B Part I implies ${outEoy} total shares outstanding (shares ÷ pro rata %), but the direct holders in Part II already hold ${dirEoy}. Outstanding cannot be less than that, so it was NOT written and the percentages fall back to the direct total. Check Part I column (e) and enter the real figure in Shareholding Details H4/J4.`,
+          target: `${SHEET.shareholding}!H4`, source: cfSource,
+        });
+      } else if (Math.abs(outEoy - dirEoy) > 0.005) {
+        rv({
+          id: "cf-us-holder-base", level: "info", category: "carry-forward", applied: true,
+          message: `Total shares outstanding is taken as ${outEoy}, derived from Schedule B Part I (shares ÷ pro rata % in column (e)). The direct holders in Part II hold ${dirEoy} of them, so ${r2(outEoy - dirEoy)} share(s) are held by someone Part II does not list. Every % Ownership cell divides by ${outEoy}; override it in Shareholding Details H4/J4 if that is wrong.`,
+          target: `${SHEET.shareholding}!H4`, source: cfSource,
+        });
+      }
+    } else if (cf && holderRows.length) {
+      /* No Part I to write, so rows 7-14 still show the template's built-in
+         copy of the FIRST direct holder. That is right only when the direct
+         holder is itself the U.S. shareholder — often it is a foreign trust or
+         holding company, and the block then claims 100% U.S. ownership. */
+      rv({
+        id: "cf-us-holders-absent", level: "warn", category: "carry-forward",
+        message: `No Schedule B Part I (U.S. shareholders) could be read from ${cfSource}, so the U.S. Shareholders block still shows the template's built-in copy of the first DIRECT shareholder — "${holderRows[0].name}". That is only correct if that holder is itself a U.S. person. Check it, and type the real U.S. shareholders into rows 7-14 if not.`,
+        target: `${SHEET.shareholding}!B7`, source: cfSource,
       });
     }
   }
@@ -4449,7 +4990,7 @@ export async function materializeCaseWrites(
      left Schedule E blank — 2Hats 2024 books no tax at all ("Total Taxes –") and
      got no row. Drive the choice off the tax figure itself instead, so it works
      for any country. */
-  const taxBooked = ent.lines["IS:54"]?.amount;
+  const taxBooked = ent.lines["IS:62"]?.amount;
   const taxCur = typeof taxBooked === "number" && isFinite(taxBooked) ? taxBooked : null;
   const taxAbs = taxCur ? Math.abs(taxCur) : 0;
   /* "Booked at zero" and "never found" are not the same fact. Both land in the
@@ -5008,8 +5549,10 @@ function provenanceRows(ent: Entity): CellValue[][] {
   rows.push(["ACKNOWLEDGED BLOCKING EXCEPTIONS — generation proceeded despite these"]);
   if (!acknowledged.length) rows.push(["none"]);
   for (const r of acknowledged) {
+    const said = String(r.dismissedNote || "").trim();
     rows.push(["Acknowledged blocker", r.target || "", "", "", "", "", "",
-               `${r.message}${r.dismissedNote ? ` — preparer's note: "${r.dismissedNote}"` : " — no note left"}`]);
+               `${r.message}${said ? ` — preparer's note: "${said}"` : " — no note left"}` +
+               (said && isThinNote(said) ? " — NOTE GIVES NO REASON: check this figure before filing" : "")]);
   }
   ocrProvenance(rows, ent);
   return rows;
@@ -5105,7 +5648,9 @@ export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffe
     });
   }
 
-  const report = await applyWrites(zip, writes);
+  const report = await applyWrites(zip, writes, {
+    mayReplaceFormula: (sheet, ref) => !!REPLACEABLE_FORMULA_REFS[sheet]?.(ref),
+  });
 
   /* AFTER applyWrites, so the provenance describes what was actually written,
      and wrapped so it can never block a download: a work paper without its
@@ -5160,6 +5705,438 @@ const targetLabel = (target: string) => {
    evidence of the same thing. */
 const BANK_ACCOUNT = /\biban\b|account\s*(?:#|no\.?\s|number)|\(#\d+\)|\b[a-z]{2}\d{2}[a-z]{4}\d{6,}\b|\b(?:cheque|savings|transaction|cash management)\s+account\b/i;
 
+/** Translate a list of captions with the configured model and write them onto
+    the entity. Extracted from the Translate action so the agent can run the
+    same code BEFORE mapping instead of duplicating it — one translator, one
+    set of guards, one place where a bad answer is refused. Returns how many
+    captions were translated. */
+async function translateCaptions(entityId: string, labels: string[]): Promise<number> {
+  const ent = state.entities.find((e) => e.id === entityId);
+  if (!ent || !labels.length) return 0;
+  const raw = await groqCall([
+    { role: "system", content: "You translate accounting captions into English. Reply with JSON only." },
+    {
+      role: "user",
+      content: `Translate each caption to English. Keep accounting terminology. If already English, repeat it unchanged.\n\n${labels.map((l, i) => `${i}. ${l}`).join("\n")}\n\nReturn {"t":{"<index>":"<english>"}}`,
+    },
+  ], true);
+  const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+  const translations = { ...ent.translations };
+  const failures = { ...ent.translationFailures };
+  let n = 0;
+  labels.forEach((label, i) => {
+    const v = parsed?.t?.[String(i)];
+    const value = typeof v === "string" ? v.trim() : "";
+    if (value && !isServiceErrorText(value) && !(isMostlyNonLatin(label) && isMostlyNonLatin(value))) {
+      translations[label] = value;
+      delete failures[label];
+      n++;
+    } else {
+      failures[label] = value
+        ? "Unreadable characters or unsupported text — the model stayed in the source script."
+        : "The model returned no translation — unsupported text or missing context.";
+    }
+  });
+  updateEntity(entityId, { translations, translationFailures: failures });
+  if (n) logEvent("Captions translated", `${n} caption(s) via ${state.groq.model}`, ent.name, "groq");
+  return n;
+}
+
+/* ---------------- the AI Mapping & Review Agent ---------------- */
+/**
+ * The understanding phase — the agent's first pass, BEFORE any mapping.
+ *
+ * It reads what extraction and classification already produced (no document is
+ * opened again), works out what each document is and what language it is in,
+ * and picks out the figures that the keyword rules and the structure pass
+ * would let past. Those become `agentBrief.important`, and the ones that were
+ * dropped as structure are marked so step 3 surfaces them in Review instead of
+ * discarding them silently.
+ *
+ * It decides nothing. The 5471 rules, the FX policy, the calculations and the
+ * validations are untouched by it; all it changes is what they are given the
+ * chance to see.
+ */
+async function agentUnderstand(
+  entityId: string,
+  mapRows: MapRow[],
+  log: string[],
+): Promise<AgentBrief | null> {
+  if (state.agent?.enabled === false) return null;
+  const ent = state.entities.find((e) => e.id === entityId);
+  if (!ent) return null;
+
+  /* ---- what the documents are ---- */
+  const byDoc = new Map<string, MapRow[]>();
+  for (const m of mapRows) {
+    if (!byDoc.has(m.docId)) byDoc.set(m.docId, []);
+    byDoc.get(m.docId)!.push(m);
+  }
+  const docs: DocBrief[] = [];
+  for (const [docId, cls] of Object.entries(ent.docClasses || {})) {
+    const rows = byDoc.get(docId) || [];
+    const langs = new Map<string, number>();
+    for (const m of rows) {
+      const name = detectLanguage(m.row.label || "");
+      langs.set(name, (langs.get(name) || 0) + 1);
+    }
+    docs.push({
+      docId, name: cls.fileName, kind: cls.kind, pages: (cls.pages || []).length,
+      statementYear: cls.statementYear ?? null,
+      periodEnd: cls.statementPeriodEnd ?? null,
+      periodStart: cls.statementPeriodStart ?? null,
+      rowsRead: rows.length,
+      rowsWithFigures: rows.filter((m) => (m.row.values || []).some((v) => typeof v === "number" && isFinite(v))).length,
+      rowsDropped: rows.filter((m) => !!m.skipReason).length,
+      sections: [...new Set(rows.map((m) => m.section).filter(Boolean) as string[])],
+      language: [...langs.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "English",
+      ocr: (ent.files || []).some((f) => f.id === docId && !!f.ocr),
+      feedsLineItems: ["cfc-financial-statements", "cfc-tax-return", "trial-balance"].includes(cls.kind),
+    });
+  }
+
+  /* ---- what the pipeline is about to do with each figure ---- */
+  const rows: AgentRow[] = mapRows
+    .filter((m) => !m.row.isBanner)
+    .map((m) => ({
+      key: norm(m.row.label), label: m.row.label,
+      english: ent.translations?.[m.row.label],
+      values: (m.row.values || []) as Array<number | null>,
+      years: (m.row.years || []) as Array<number | null>,
+      section: m.section || undefined,
+      docName: m.docName, page: m.row.page ?? null,
+      dropped: m.skipReason,
+      ruleMatched: matchRule(m.row.label, state.rules) !== null,
+    }));
+
+  const haveModel = aiReady();
+  const nodes: string[] = [];
+  let result;
+  try {
+    result = await runAgent(
+      { phase: "understand", rows, docs, haveModel, requiredYear: deriveCaseYears(Object.values(ent.docClasses || {})).cy },
+      { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS }, (n) => nodes.push(n.node),
+    );
+  } catch (err) {
+    log.push(`${AGENT_NAME}: the understanding pass did not finish — ${(err as Error)?.message || String(err)}`);
+    return null;
+  }
+  for (const note of result.notes) log.push(note);
+
+  /* ---- translate before mapping, not after ----
+     Mapping reads the English; a translation that arrives after the rules have
+     run is a translation nobody mapped through. */
+  const failures: AgentFailure[] = [...result.failures];
+  let translated = 0;
+  const language = docs.length ? (docs.find((d) => d.language !== "English")?.language || "English") : "English";
+  if (language !== "English") {
+    const todo = rows.map((r) => r.label).filter((l) => l && !ent.translations?.[l]);
+    if (todo.length && haveModel) {
+      try {
+        translated = await translateCaptions(entityId, [...new Set(todo)]);
+        log.push(`${AGENT_NAME}: ${translated} ${language} caption(s) translated before mapping, so the rules read the English`);
+      } catch (err) {
+        failures.push({
+          stage: "translate", what: `${todo.length} ${language} caption(s) could not be translated`,
+          reason: (err as Error)?.message || String(err),
+          action: "Use the Translate buttons on the Multilingual evidence tab, then re-process. Until then these captions are matched in their own language only.",
+        });
+      }
+    } else if (todo.length) {
+      failures.push({
+        stage: "translate", what: `${todo.length} ${language} caption(s) were not translated`,
+        reason: "no AI key is configured, and translation before mapping needs one",
+        action: "Add a Groq key on Settings ▸ AI platform, or translate on the Multilingual evidence tab and re-process.",
+      });
+    }
+  }
+
+  /* ---- tell the rules engine what not to throw away ---- */
+  let surfaced = 0;
+  for (const item of result.important) {
+    if (item.risk !== "dropped-as-structure") continue;
+    for (const m of mapRows) {
+      if (norm(m.row.label) !== item.key || !m.skipReason) continue;
+      m.agentImportant = item.why;
+      surfaced++;
+    }
+  }
+  if (surfaced) log.push(`${AGENT_NAME}: ${surfaced} row(s) dropped as structure are carried into Review instead — the agent reads them as line items`);
+
+  const brief: AgentBrief = {
+    at: new Date().toLocaleString(),
+    requiredYear: result.requiredYear,
+    docs: result.docs, language, important: result.important, failures,
+    notes: result.notes, steps: nodes, translated,
+  };
+  updateEntity(entityId, { agentBrief: brief });
+  return brief;
+}
+
+
+
+/** Everything the Settings panel shows about the agent, from the graph and
+    the constants that define it rather than from prose typed into a view. */
+export const agentInfo = () => ({
+  name: AGENT_NAME,
+  framework: AGENT_FRAMEWORK,
+  provider: AGENT_PROVIDER,
+  /* The agent shares the Groq credential — there is no second key anywhere in
+     this application, and the key itself is never read back into the panel. */
+  connected: aiReady(),
+  keySource: useProxy() ? "this deployment's server key" : state.groq.key ? "your key in Settings ▸ AI platform" : "none configured",
+  model: state.groq.model,
+  enabled: state.agent?.enabled !== false,
+  can: AGENT_CAN,
+  cannot: AGENT_CANNOT,
+  steps: AGENT_GRAPH.nodes,
+  lastRun: state.agent?.lastRun,
+});
+
+export type AgentRunResult = { considered: number; accepted: number; exceptions: number; findings: number; ranModel: boolean };
+
+/**
+ * Run the agent over the captions the deterministic rules could not place.
+ *
+ * It sits between translation and the 5471 rules: it reads only what earlier
+ * stages already cached, and it finishes with suggestions and findings. Every
+ * accepted suggestion is then offered to `manualApply` — the same gate a
+ * preparer's own assignment passes, with the same two document vetoes the AI
+ * pass uses — so the rules, the FX policy, the calculations and the
+ * validations all still decide. Everything else becomes a review item with
+ * its document, page and figures attached.
+ */
+async function agentRun(entityId: string, log?: string[]): Promise<AgentRunResult> {
+  const messages = log || [];
+  const nothing: AgentRunResult = { considered: 0, accepted: 0, exceptions: 0, findings: 0, ranModel: false };
+  const ent = state.entities.find((e) => e.id === entityId);
+  if (!ent) return nothing;
+  if (state.agent?.enabled === false) return nothing;
+
+  const candidates = ent.unmatched.filter(
+    (row) => /No mapping rule matches/.test(row.reason || "") && !(ent.mapOverrides && ent.mapOverrides[norm(row.label)]),
+  );
+  /* No early return on an empty list: a balance sheet can be out by a figure
+     with every caption mapped, and the review phase below is the only thing
+     that reads it back. With no candidates the mapping phase costs nothing —
+     the graph's router sends an empty row list straight past the model. */
+
+  const rows: AgentRow[] = candidates.map((row) => ({
+    key: norm(row.label),
+    label: row.label,
+    english: ent.translations?.[row.label],
+    values: (row.values || []) as Array<number | null>,
+    years: (row.years || []) as Array<number | null>,
+    section: row.section || undefined,
+    docName: row.docName,
+    docKind: row.docId && ent.docClasses?.[row.docId] ? ent.docClasses[row.docId].kind : undefined,
+    page: row.page ?? null,
+  }));
+
+  const catalogue = [
+    ...IS_LINES.map((l) => `IS:${l.row} = ${l.label}${l.row === 12 ? " (cost of goods sold ONLY — operating overheads belong on IS:34-50 other deductions)" : ""}`),
+    ...BS_LINES.map((l) => `BS:${l.row} = ${l.label}`),
+  ].join("\n");
+
+  const haveModel = aiReady();
+  if (!haveModel && rows.length) {
+    messages.push(`${AGENT_NAME}: running its document checks only — no AI key available, so no mapping is suggested (add one in Settings ▸ AI platform)`);
+  }
+
+  const nodes: string[] = [];
+  let result;
+  try {
+    result = await runAgent(
+      { rows, catalogue, targets: [...VALID_TARGETS], occupied: Object.keys(ent.lines || {}), haveModel },
+      { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS },
+      (note) => nodes.push(note.node),
+    );
+  } catch (err) {
+    messages.push(`${AGENT_NAME} did not finish — ${(err as Error)?.message || String(err)}`);
+    return nothing;
+  }
+  for (const note of result.notes) messages.push(note);
+  if (result.failure) messages.push(`${AGENT_NAME}: the model stopped answering — ${result.failure}`);
+
+  /* ---- hand the accepted suggestions to the existing mapping gate ---- */
+  const fresh = state.entities.find((e) => e.id === entityId);
+  if (!fresh) return nothing;
+  const lines = { ...fresh.lines };
+  const sourceLabels = { ...fresh.sourceLabels };
+  const contributions = { ...fresh.contributions };
+  const relabels = { ...fresh.relabels };
+  const mapOverrides = { ...fresh.mapOverrides };
+  const byKey = new Map<string, AgentSuggestion>(result.suggestions.map((sg) => [sg.key, sg]));
+  const stillUnmatched: Entity["unmatched"] = [];
+  const flags: ReviewItem[] = [];
+  let accepted = 0, exceptions = 0;
+
+  /* Every candidate the agent read is marked, whether or not it produced an
+     answer: the AI mapping pass that follows uses the same two prompts, so
+     re-asking the same caption would spend the tokens twice to reach the
+     answer the agent already has. */
+  const readKeys = new Set(rows.map((r) => r.key));
+  for (const row of fresh.unmatched) {
+    const key = norm(row.label);
+    const sg = /No mapping rule matches/.test(row.reason || "") ? byKey.get(key) : undefined;
+    if (!sg) {
+      stillUnmatched.push(haveModel && readKeys.has(key) ? { ...row, agentSeen: true } : row);
+      continue;
+    }
+    const seen = { ...row, agentSeen: haveModel };
+
+    const refuse = (why: string) => {
+      exceptions++;
+      const original = row.originalReason || row.reason;
+      stillUnmatched.push({
+        ...seen,
+        originalReason: original,
+        aiProposal: sg.target ? { to: sg.target, confidence: sg.confidence, reason: sg.rationale, refused: true } : undefined,
+        reason: `${original} · ${why}`,
+      });
+    };
+
+    if (sg.status !== "accepted" || !sg.target) {
+      refuse(sg.target
+        ? `the agent suggested ${targetLabel(sg.target)} but ${sg.issue || "was not confident"} — left for you to assign.`
+        : `the agent read it as “${sg.rationale || "not a work paper line"}” and named no line — left for you to assign.`);
+      continue;
+    }
+    /* The two document vetoes. A caption naming a bank account is a balance
+       whatever the model says, and a caption printed under a banner cannot
+       cross to the other side of the accounts. The document wins. */
+    if (/^IS:/.test(sg.target) && BANK_ACCOUNT.test(row.label || "")) {
+      refuse(`the agent suggested ${targetLabel(sg.target)}, but the caption names a bank account — a balance, not income or expense; refused.`);
+      continue;
+    }
+    if (row.section && !sectionOk(row.section, sg.target)) {
+      refuse(`the agent suggested ${targetLabel(sg.target)} but the caption was printed under the "${row.section}" banner — refused as a documentary contradiction.`);
+      continue;
+    }
+    if (!manualApply(fresh, lines, contributions, relabels, sg.target, row, "groq")) {
+      refuse(VALID_TARGETS.has(sg.target)
+        ? `the agent suggested ${targetLabel(sg.target)} but the row has no single unambiguous current-year figure to book — enter it on the line directly.`
+        : `the agent named a line id that does not exist (${sg.target}) — ignored.`);
+      continue;
+    }
+    sourceLabels[sg.target] = { label: row.label, values: row.values, years: row.years };
+    mapOverrides[key] = { to: sg.target };
+    accepted++;
+    if (sg.confidence !== "high") {
+      flags.push({
+        id: `agent-medium-${key}`, level: "warn", category: "mapping", applied: true, sourceLabel: row.label,
+        message: `${AGENT_NAME}: “${row.label}” was placed on ${targetLabel(sg.target)} with MEDIUM confidence${sg.rationale ? ` — ${sg.rationale}` : ""}. Evidence: ${citeEvidence(sg.evidence)}. The figure is booked; check the line before filing or remap it on Mapping & adjustments.`,
+        source: row.docName,
+      });
+    }
+  }
+
+  /* ---- findings go to the Review / Exception Centre ---- */
+  /* One caption can raise two findings of a kind (unsure AND landing on a
+     line the rules already filled). Review items are keyed by id and merged
+     by id across re-processing, so a collision would silently drop one. */
+  const usedIds = new Set(flags.map((f) => f.id));
+  for (const f of result.findings) {
+    let id = `agent-${f.kind}-${f.key || "x"}`;
+    for (let n = 2; usedIds.has(id); n++) id = `agent-${f.kind}-${f.key || "x"}-${n}`;
+    usedIds.add(id);
+    flags.push({
+      id,
+      level: f.kind === "missing" ? "info" : "warn",
+      category: f.kind === "terminology" ? "consistency" : "mapping",
+      applied: false,
+      sourceLabel: f.caption,
+      message: `${AGENT_NAME}: ${f.message}${f.evidence ? ` Evidence: ${citeEvidence(f.evidence)}.` : ""}`,
+    });
+  }
+  /* ---- the review phase: read the booked balance sheet back ----
+     Deterministic, so it runs with or without a key. This is where a missing
+     cash line, fixed assets with no depreciation, an equity that does not tie
+     and an assumed period end are caught — and named with the caption or the
+     figure behind them, rather than left as "out by N". */
+  const leftovers: AgentRow[] = stillUnmatched.map((row) => ({
+    key: norm(row.label), label: row.label,
+    english: fresh.translations?.[row.label],
+    values: (row.values || []) as Array<number | null>,
+    years: (row.years || []) as Array<number | null>,
+    section: row.section || undefined, docName: row.docName, page: row.page ?? null,
+  }));
+  let assetsEoy = 0, liabEquityEoy = 0, equityEoy = 0;
+  const filledTargets: string[] = [];
+  for (const spec of BS_LINES) {
+    const target = `BS:${spec.row}`;
+    const v = lines[target];
+    const eoy = typeof v?.eoy === "number" ? v.eoy : typeof v?.amount === "number" ? v.amount : null;
+    if (eoy === null || !isFinite(eoy)) continue;
+    filledTargets.push(target);
+    if (/assets/i.test(spec.group)) assetsEoy += eoy;
+    else {
+      liabEquityEoy += eoy;
+      if (spec.row >= 58) equityEoy += eoy;
+    }
+  }
+  for (const key of Object.keys(lines)) if (/^IS:/.test(key)) filledTargets.push(key);
+  const stmtDoc = Object.values(fresh.docClasses || {}).find((c) => c.statementPeriodEnd && !c.duplicateOf);
+  const brief = fresh.agentBrief;
+  const facts = {
+    cyEnd: fresh.profile.cyEnd,
+    cyEndSource: fresh.detected?.cyEnd?.sourceLabel,
+    statementPeriodEnd: stmtDoc?.statementPeriodEnd ?? null,
+    statementDoc: stmtDoc?.fileName,
+    assetsEoy: r2(assetsEoy), liabEquityEoy: r2(liabEquityEoy), equityEoy: r2(equityEoy),
+    filled: filledTargets,
+    /* Closing the loop on the understanding phase: what it said mattered,
+       against what the run actually did with it. */
+    important: brief?.important || [],
+    bookedKeys: [...new Set(Object.values(contributions).flat().map((c) => norm(c.label || "")))],
+    unmatchedKeys: stillUnmatched.map((u) => norm(u.label)),
+    failures: brief?.failures || [],
+  };
+  try {
+    const review = await runAgent({ phase: "review", rows: leftovers, facts }, { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS }, (n) => nodes.push(n.node));
+    for (const note of review.notes) messages.push(note);
+    // The brief carries the outcomes back, so the activity view shows what
+    // happened to each item rather than only what was flagged.
+    if (brief) updateEntity(entityId, { agentBrief: { ...brief, important: review.important } });
+    for (const f of review.findings) {
+      let id = `agent-${f.kind}-${f.key || "x"}`;
+      for (let n = 2; usedIds.has(id); n++) id = `agent-${f.kind}-${f.key || "x"}-${n}`;
+      usedIds.add(id);
+      flags.push({
+        id, level: "warn",
+        category: f.kind === "period" ? "consistency" : f.kind === "failure" || f.kind === "unused" ? "process" : "tie-out",
+        applied: false, sourceLabel: f.caption,
+        message: `${AGENT_NAME}: ${f.message}${f.evidence ? ` Evidence: ${citeEvidence(f.evidence)}.` : ""}`,
+      });
+      result.findings.push(f);
+    }
+  } catch (err) {
+    messages.push(`${AGENT_NAME}: the balance review did not run — ${(err as Error)?.message || String(err)}`);
+  }
+
+  const flagIds = new Set(flags.map((f) => f.id));
+  updateEntity(entityId, {
+    lines, relabels, sourceLabels, contributions, mapOverrides,
+    unmatched: stillUnmatched,
+    reviewItems: [...fresh.reviewItems.filter((r) => !flagIds.has(r.id)), ...flags],
+  });
+  messages.push(`${AGENT_NAME}: ${accepted} caption(s) accepted by the 5471 mapping rules · ${exceptions} sent to Review & exceptions · ${result.findings.length} finding(s)`);
+  if (accepted || result.findings.length) {
+    logEvent("AI agent review", `${accepted} caption(s) mapped · ${exceptions} exception(s) · ${result.findings.length} finding(s) (${AGENT_FRAMEWORK} · ${state.groq.model})`, fresh.name, "groq");
+  }
+  set({
+    agent: {
+      ...state.agent,
+      lastRun: {
+        at: new Date().toLocaleString(), entity: fresh.name,
+        considered: rows.length, accepted, exceptions: exceptions,
+        findings: result.findings.length, nodes,
+      },
+    },
+  });
+  return { considered: rows.length, accepted, exceptions: exceptions, findings: result.findings.length, ranModel: haveModel };
+}
+
 export type AiRunResult = { applied: number; considered: number; low: number; left: number };
 
 /**
@@ -5183,7 +6160,7 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
      would undo their work on every re-process. */
   const rows = ent.unmatched
     .map((row) => ({ row }))
-    .filter((x) => /No mapping rule matches/.test(x.row.reason || "") && !(ent.mapOverrides && ent.mapOverrides[norm(x.row.label)]));
+    .filter((x) => /No mapping rule matches/.test(x.row.reason || "") && !x.row.agentSeen && !(ent.mapOverrides && ent.mapOverrides[norm(x.row.label)]));
   if (!rows.length && !profileCands.length) return nothing;
 
   if (!aiReady()) {

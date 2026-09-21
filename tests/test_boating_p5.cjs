@@ -165,7 +165,10 @@ t("N · the Provenance sheet labels each kind honestly and leaves Confidence bla
 t("N · acknowledged blocking exceptions are listed on the sheet, with the preparer's note", () => {
   assert.ok(store.includes('const acknowledged = allReviewItems(ent).filter((r) => r.level === "block" && r.dismissed);'));
   assert.ok(store.includes("ACKNOWLEDGED BLOCKING EXCEPTIONS — generation proceeded despite these"));
-  assert.ok(store.includes('preparer\'s note: "${r.dismissedNote}"'));
+  assert.ok(store.includes('preparer\'s note: "${said}"'));
+  // ...and says so when the note explains nothing, since a thin note is
+  // recorded rather than refused.
+  assert.ok(store.includes("NOTE GIVES NO REASON: check this figure before filing"));
 });
 
 /* ---- the shipped app carries the same behaviour ---- */

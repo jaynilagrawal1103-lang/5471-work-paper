@@ -183,3 +183,52 @@ button.en9-swapped{display:none}
 
 /* OCR provenance flag — the compact stand-in for the full OCR panel */
 .en9-ocr-flag{display:inline-block;margin-left:6px;background:#fef3c7;color:#92400e;border:1px solid #f2d9a4;border-radius:999px;font-size:9px;font-weight:800;padding:1px 7px;letter-spacing:.03em;vertical-align:middle;white-space:nowrap}
+
+/* AI Agent activity — a compact dashboard, not a wall of text */
+.en9-agentact{display:flex;flex-direction:column;gap:14px}
+.en9-agentact .en9-ag-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0}
+.en9-agentact .en9-ag-sub{font-size:12px;color:#64748b}
+.en9-ag-badge{font-size:11px;font-weight:600;letter-spacing:.02em;padding:2px 9px;border-radius:999px;border:1px solid transparent;white-space:nowrap}
+.en9-ag-ok{background:#dcfce7;border-color:#86efac;color:#166534}
+.en9-ag-warn{background:#fef3c7;border-color:#fcd34d;color:#92400e}
+.en9-ag-bad{background:#fee2e2;border-color:#fca5a5;color:#991b1b}
+.en9-ag-work{background:#e0e7ff;border-color:#a5b4fc;color:#3730a3}
+.en9-ag-off{background:#f1f5f9;border-color:#cbd5e1;color:#475569}
+.en9-ag-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px}
+.en9-ag-stat{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.en9-ag-num{font-size:20px;font-weight:700;line-height:1.1;color:#0f172a}
+.en9-ag-lab{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#64748b}
+.en9-ag-h{margin:2px 0 0;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#475569}
+.en9-ag-h.en9-ag-alert{color:#b45309}
+.en9-ag-chips{display:flex;flex-wrap:wrap;gap:6px}
+.en9-ag-chip{font-size:12px;padding:3px 10px;border-radius:999px;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe}
+.en9-ag-table{display:flex;flex-direction:column;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden}
+.en9-ag-tr{display:grid;grid-template-columns:minmax(120px,2fr) minmax(110px,1.4fr) 90px 110px minmax(100px,1fr);
+  gap:8px;padding:8px 12px;font-size:12px;align-items:center;border-top:1px solid #eef2f6}
+.en9-ag-tr:first-child{border-top:0}
+.en9-ag-th{background:#f8fafc;font-weight:600;color:#475569;text-transform:uppercase;font-size:10px;letter-spacing:.05em}
+.en9-ag-doc{font-weight:600;color:#0f172a;word-break:break-word}
+.en9-ag-docs,.en9-ag-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.en9-ag-doccard,.en9-ag-card{border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:#fff}
+.en9-ag-docline,.en9-ag-cardhead{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.en9-ag-meta{font-size:11px;color:#64748b;word-break:break-word}
+.en9-ag-text{margin:0;font-size:13px;line-height:1.45;color:#334155}
+.en9-ag-action{color:#0f172a;font-weight:500}
+.en9-ag-acts{display:flex;gap:6px;flex-wrap:wrap}
+.en9-agentact .button.en9-ag-src,.en9-agentact .button.en9-ag-ev{font-size:12px;padding:4px 10px}
+.en9-ag-evbody{border-top:1px dashed #e2e8f0;padding-top:6px;display:flex;flex-direction:column;gap:2px}
+.en9-ag-flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.en9-ag-flowstep{font-size:12px;padding:3px 10px;border-radius:8px;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0}
+.en9-ag-flowsep{color:#94a3b8}
+.en9-ag-foot{margin:0;font-size:11px;color:#64748b}
+.en9-ag-empty{margin:0;font-size:13px;color:#64748b}
+@media (max-width:720px){
+  .en9-ag-tr{grid-template-columns:1fr 1fr;row-gap:4px}
+  .en9-ag-th{display:none}
+}
+
+/* Settings: the AI Agent card */
+.en9-agent .en9-ag-head{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.en9-agent .en9-ag-pill{font-size:11px;font-weight:600;letter-spacing:.02em;padding:2px 9px;border-radius:999px;border:1px solid transparent}
+.en9-agent .en9-ag-on{background:#dcfce7;border-color:#86efac;color:#166534}
+.en9-agent .en9-ag-off{background:#f1f5f9;border-color:#cbd5e1;color:#475569}

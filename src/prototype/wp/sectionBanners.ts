@@ -16,39 +16,69 @@
    Sales" and names them after the supplier ("Shopify fees", "Freight"). Both
    groups are unreachable by keyword, and both have exactly one right answer
    for anything printed under them, so the banner carries the answer. */
-export type Section = "assets" | "liabilities" | "income" | "costs" | "cash" | "cogs";
+export type Section = "assets" | "liabilities" | "income" | "costs" | "cash" | "cogs" | "otherIncome" | "termLiabilities" | "fixedAssets" | "equity";
 
 /* Anchored on both ends: a banner is a SHORT line that is nothing but the
    section name. "Total current assets 412,500" is a data row that happens to
    contain "current assets", and must not be read as a banner. */
 export const SECTION_BANNERS: [RegExp, Section][] = [
+  /* Narrower than "assets", and for the same reason as "cash": everything
+     printed under a fixed-assets heading is a non-current asset whatever it is
+     called. Xero and MYOB name the accounts after the thing — "Computer
+     Equipment", "Office Equipment", "Shopfit" — and none of those words has to
+     appear in any keyword list for the banner to place them. Must precede the
+     general assets pattern. */
+  [/^(?:total\s+)?(?:fixed|non-?current|tangible|capital)\s+assets$/i, "fixedAssets"],
+  [/^(?:property,?\s+plant\s+(?:and|&)\s+equipment|plant\s+(?:and|&)\s+equipment)$/i, "fixedAssets"],
   [/^(?:total\s+)?(?:current|non-?current|fixed|other|tangible|intangible)?\s*assets$/i, "assets"],
   [/^(?:cash|bank|liquid)\s+assets$/i, "assets"],
   /* QuickBooks' own group heading. Everything indented under it is a bank or
      card account whatever the account is called, so it is cash. */
   [/^(?:total\s+)?bank\s+accounts?$/i, "cash"],
+  /* Xero prints the same group as a bare "Bank", and names the accounts after
+     the product or the business ("Cheque Account", "Remote Boss Lifestyle").
+     No keyword can reach those; the heading is the only evidence there is. */
+  [/^(?:total\s+)?bank$/i, "cash"],
   [/^cash\s+and\s+cash\s+equivalents$/i, "cash"],
   [/^inventor(?:y|ies)$/i, "assets"],
   [/^current\s+tax\s+assets$/i, "assets"],
-  [/^(?:property,?\s+plant\s+(?:and|&)\s+equipment|vaste\s+activa|vlottende\s+activa)$/i, "assets"],
+  [/^(?:vaste\s+activa|vlottende\s+activa)$/i, "assets"],
+  /* Narrower than "liabilities", for the same reason "other income" is
+     narrower than "income": Schedule F splits current liabilities (line 16)
+     from the rest (line 19), and this banner is the statement saying which is
+     which. Without it a term loan printed under "Non-Current Liabilities" fell
+     to the current-liabilities catch-all. Must precede the general pattern. */
+  [/^(?:total\s+)?(?:non-?current|long.?term|term|deferred)\s+liabilit(?:y|ies)$/i, "termLiabilities"],
   [/^(?:total\s+)?(?:current|non-?current|long.?term|other)?\s*liabilit(?:y|ies)$/i, "liabilities"],
   [/^(?:current|deferred)\s+tax\s+liabilit(?:y|ies)$/i, "liabilities"],
   [/^provisions?$/i, "liabilities"],
-  [/^(?:total\s+)?equity$/i, "liabilities"],
-  [/^issued\s+capital$/i, "liabilities"],
-  [/^shareholders?\W?\s*(?:equity|funds)$/i, "liabilities"],
-  [/^eigen\s+vermogen$/i, "liabilities"],
+  /* Equity is not a liability, and the difference is a whole Schedule F block.
+     Under the old generic "liabilities" section an unrecognised equity caption
+     fell to the current-liability catch-all, so partner drawings and current
+     year earnings were booked as amounts owed within twelve months. */
+  [/^(?:total\s+)?equity$/i, "equity"],
+  [/^(?:total\s+)?(?:owners?|members?|partners?|proprietors?)\W?\s*(?:equity|funds|capital)$/i, "equity"],
+  [/^issued\s+capital$/i, "equity"],
+  [/^shareholders?\W?\s*(?:equity|funds)$/i, "equity"],
+  [/^eigen\s+vermogen$/i, "equity"],
   // Continental balance sheets name the two sides as capital, not as assets
   // and liabilities: "own capital" against "foreign capital".
-  [/^(?:equity|share|own)\s+capital$/i, "liabilities"],
+  [/^(?:equity|share|own)\s+capital$/i, "equity"],
   [/^(?:foreign|borrowed|outside|third.?party)\s+capital$/i, "liabilities"],
-  [/^capitaux\s+propres$/i, "liabilities"],
+  [/^capitaux\s+propres$/i, "equity"],
   [/^capitaux\s+(?:é|e)trangers$/i, "liabilities"],
   [/^passif$/i, "liabilities"],
   [/^actif(?:\s+(?:circulant|immobilis(?:é|e)))?$/i, "assets"],
-  [/^(?:patrimonio|patrimonio\s+neto|pasivos?)$/i, "liabilities"],
+  [/^(?:patrimonio|patrimonio\s+neto)$/i, "equity"],
+  [/^pasivos?$/i, "liabilities"],
   [/^activos?$/i, "assets"],
-  [/^(gross margin|revenue|income|turnover|trading income|other income)$/i, "income"],
+  /* "Other income" is narrower than "income", for the same reason "cogs" is
+     narrower than "costs": the form has a line for it (9, Other income), and a
+     caption printed under this banner is never turnover. Without its own
+     section, "Motor Vehicle Contribution" matched the motor-vehicle EXPENSE
+     keyword and was deducted instead of earned -- a swing of twice itself. */
+  [/^(?:total\s+)?other\s+income$/i, "otherIncome"],
+  [/^(gross margin|revenue|income|turnover|trading income)$/i, "income"],
   [/^(profit\s*(and|&|or)\s*loss(\s+account|\s+statement)?|income statement|statement of (comprehensive income|profit or loss|financial performance)|trading account|winst.?en.?verliesrekening)$/i, "income"],
   /* QuickBooks closes a P&L with an "Other Income" group and an "Other
      Expenses" group. Without the second one, "8150 Exchange gain or loss"

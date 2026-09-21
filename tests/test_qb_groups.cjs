@@ -198,7 +198,7 @@ t("taxes and licenses reach line 16, income tax still reaches 21a", () => {
     assert.strictEqual(ENG.matchRule(caption, RULES), "IS:32", `src: ${caption}`);
     assert.strictEqual(M.Tv(caption, M.P1), "IS:32", `dist: ${caption}`);
   }
-  assert.strictEqual(ENG.matchRule("Income tax expense", RULES), "IS:54");
+  assert.strictEqual(ENG.matchRule("Income tax expense", RULES), "IS:62");
 });
 
 t("payroll is line 17; wages and salaries keep line 11", () => {

@@ -1856,6 +1856,344 @@ function enhanceOcrSettings(){
   card.appendChild(el("p","en9-os-foot","Values booked from an OCR’d document are never treated as verified: the “(OCR)” name follows them through every source chip, evidence trace and export until you confirm them against the original."));
 }
 
+/* ---------- Entity workspace: AI Agent activity ----------
+   What the agent did on this entity, in order, in plain words: what it read
+   before mapping, what it translated, what it judged important and what
+   happened to each one, what it suggested, what needs review, and anything it
+   could not do -- with the page, the reason and the action. */
+function en9AgentSeat(){
+  /* Two homes, because the log lives in two places: the entity card's
+     "Review & log" tab renders a "Processing log" panel outright, and the
+     Entity workspace shows the entity with its own actions. Anchor on
+     whichever is on screen, and on nothing when neither is. Returns where to
+     put the card and how. */
+  var heads=document.querySelectorAll(".panel-heading h2");
+  for(var i=0;i<heads.length;i++)
+    if((heads[i].textContent||"").trim()==="Processing log"){
+      var p=heads[i].closest(".panel");
+      if(p&&p.parentNode) return { node:p, how:"before" }; }
+  var stacks=document.querySelectorAll(".view-stack");
+  for(var j=0;j<stacks.length;j++)
+    if((stacks[j].textContent||"").indexOf("Generate this entity")>-1) return { node:stacks[j], how:"append" };
+  return null;
+}
+function en9AgRow(grid,k,v){ var r=el("div","en9-os-row");
+  r.appendChild(el("span","en9-os-k",k)); r.appendChild(el("span","en9-os-v",v)); grid.appendChild(r); }
+function en9AgStat(host,n,label){ var t=el("div","en9-ag-stat");
+  t.appendChild(el("span","en9-ag-num",String(n))); t.appendChild(el("span","en9-ag-lab",label)); host.appendChild(t); }
+function en9AgBadge(kind,text){ return el("span","en9-ag-badge en9-ag-"+kind,text); }
+/* "AI Mapping & Review Agent: ..." on every line, and the evidence tail, are
+   for the log. The card shows the sentence and the source separately. */
+function en9AgParse(msg){
+  var m=String(msg||"").replace(/^AI Mapping & Review Agent:\s*/,"");
+  var src=null, ev=/\sEvidence:\s([^·]+?)(?:\sp\.(\d+))?\s·\s“([^”]*)”([\s\S]*)$/.exec(m);
+  if(ev){ src={doc:ev[1].trim(), page:ev[2]||null, caption:ev[3], rest:(ev[4]||"").replace(/^[\s·]+/,"").replace(/\.$/,"")};
+    m=m.slice(0,ev.index); }
+  m=m.replace(/\s+/g," ").trim();
+  return { text:m, src:src };
+}
+function en9AgShort(text,max){ var t=String(text||"");
+  if(t.length<=max) return t;
+  var cut=t.slice(0,max), dot=cut.lastIndexOf(". ");
+  return (dot>60?cut.slice(0,dot+1):cut.trim()+"…"); }
+var EN9AG_TITLES=[[/^agent-balance-/,"Balance sheet gap","Calculation"],
+  [/^agent-period-/,"Period end","Review"],
+  [/^agent-unused-/,"Important information not used","Mapping"],
+  [/^agent-medium-/,"Mapped, medium confidence","Mapping"],
+  [/^agent-ambiguous-/,"Needs a decision","Mapping"],
+  [/^agent-conflict-/,"Conflicting suggestion","Mapping"],
+  [/^agent-terminology-/,"Translation wording","Review"],
+  [/^agent-missing-/,"Figure missing","Review"]];
+function en9AgTitle(id){ for(var i=0;i<EN9AG_TITLES.length;i++) if(EN9AG_TITLES[i][0].test(id)) return EN9AG_TITLES[i];
+  return [null,"Finding","Review"]; }
+/* Open the source document at the page the finding came from. The file is
+   held in the project, so this is the document itself, not a description of
+   it: PDF viewers honour #page=. */
+function en9AgOpenSource(docName,page){
+  var e=ent(); if(!e) return false;
+  var f=(e.files||[]).filter(function(x){ return x.name===docName||(docName&&x.name.indexOf(docName)===0); })[0];
+  if(!f||!f.blob) return false;
+  try{
+    var u=URL.createObjectURL(f.blob)+(page?"#page="+page:"");
+    window.open(u,"_blank","noopener");
+    setTimeout(function(){ URL.revokeObjectURL(u); },60000);
+    return true;
+  }catch(x){ return false; }
+}
+function en9AgSourceBtn(row,docName,page,evidence){
+  var wrap=el("div","en9-ag-acts");
+  var b=el("button","button en9-ag-src","View source"); b.type="button";
+  b.addEventListener("click",function(){
+    if(!en9AgOpenSource(docName,page)) b.textContent="Source file not held — see evidence below";
+  });
+  wrap.appendChild(b);
+  if(evidence){
+    var t=el("button","button en9-ag-ev","Evidence"); t.type="button";
+    var panel=el("div","en9-ag-evbody"); panel.style.display="none";
+    Object.keys(evidence).forEach(function(k){
+      if(evidence[k]===null||evidence[k]===undefined||evidence[k]==="") return;
+      var r=el("div","en9-os-row"); r.appendChild(el("span","en9-os-k",k));
+      r.appendChild(el("span","en9-os-v",String(evidence[k]))); panel.appendChild(r); });
+    t.addEventListener("click",function(){
+      var open=panel.style.display!=="none";
+      panel.style.display=open?"none":""; t.textContent=open?"Evidence":"Hide evidence"; });
+    wrap.appendChild(t); row.appendChild(wrap); row.appendChild(panel); return;
+  }
+  row.appendChild(wrap);
+}
+function enhanceAgentActivity(){
+  var seat=en9AgentSeat();
+  var old=document.querySelector(".en9-agentact");
+  if(!seat){ if(old)old.remove(); return; }
+  var e=ent(); if(!e){ if(old)old.remove(); return; }
+  var info=null;
+  try{ info=window.__WPACT&&window.__WPACT.EN9agentInfo&&window.__WPACT.EN9agentInfo(); }catch(x){ info=null; }
+  var brief=e.EN9agentBrief||null;
+  var s=st()||{};
+  var last=(s.EN9agent||{}).lastRun||null;
+  if(!info){ if(old)old.remove(); return; }
+  var card=old;
+  if(!card){ card=el("section","panel en9-agentact");
+    if(seat.how==="before") seat.node.parentNode.insertBefore(card,seat.node);
+    else seat.node.appendChild(card); }
+  while(card.firstChild)card.removeChild(card.firstChild);
+  card.EN9_refresh=enhanceAgentActivity;
+
+  var items=(e.reviewItems||[]).filter(function(i){ return /^agent-/.test(i.id); });
+  var fails=(brief&&brief.failures)||[];
+  var open=items.filter(function(i){ return !i.dismissed&&!i.resolution; });
+  var status = e.status==="processing" ? ["work","Working"]
+    : (!brief&&!last) ? ["off","Not run"]
+    : (fails.length||open.length) ? ["warn","Needs review"]
+    : ["ok","Completed"];
+
+  var head=el("div","en9-ag-head");
+  head.appendChild(el("strong",null,"AI Agent"));
+  head.appendChild(el("span","en9-ag-sub","Mapping & Review · "+info.framework+" · "+info.provider));
+  head.appendChild(en9AgBadge(status[0],status[1]));
+  if(!info.enabled) head.appendChild(en9AgBadge("off","Switched off"));
+  card.appendChild(head);
+
+  if(!brief&&!last){
+    card.appendChild(el("p","en9-ag-empty","Process the entity and the agent's work appears here."));
+    return;
+  }
+
+  /* numbers first */
+  var read=0; (brief&&brief.docs||[]).forEach(function(d){ read+=d.rowsWithFigures||0; });
+  var stats=el("div","en9-ag-stats");
+  en9AgStat(stats,(brief&&brief.docs.length)||0,"Documents");
+  en9AgStat(stats,read||(last?last.considered:0),"Items reviewed");
+  en9AgStat(stats,items.length,"Issues found");
+  en9AgStat(stats,last?last.exceptions:0,"Sent to Review");
+  en9AgStat(stats,fails.length,"Could not process");
+  card.appendChild(stats);
+
+  /* what it did, as chips */
+  var STEP={survey:"Read documents",yearCheck:"Checked tax year",spotlight:"Checked unmapped information",
+    interpret:"Understood structure",handoff:"Passed to the rules",gather:"Collected leftovers",
+    understand:"Read headings",suggest:"Suggested lines",terminology:"Checked translation",
+    critique:"Checked its answers",route:"Split offer and review",reconcile:"Validated results"};
+  var ran=[].concat(brief&&brief.steps||[],last&&last.nodes||[]);
+  var seen={},chips=el("div","en9-ag-chips");
+  if(brief&&brief.translated) ran.push("translated");
+  STEP.translated="Translated content";
+  ran.forEach(function(x){ if(seen[x]||!STEP[x])return; seen[x]=1; chips.appendChild(el("span","en9-ag-chip",STEP[x])); });
+  if(chips.childNodes.length){ card.appendChild(el("h4","en9-ag-h","Agent activity")); card.appendChild(chips); }
+
+  /* tax year check */
+  if(brief&&brief.docs&&brief.docs.length){
+    card.appendChild(el("h4","en9-ag-h","Tax year check"+(brief.requiredYear?" · work paper year "+brief.requiredYear:"")));
+    var tb=el("div","en9-ag-table");
+    var hr=el("div","en9-ag-tr en9-ag-th");
+    ["Document","Identified","Required","Result","Role"].forEach(function(h){ hr.appendChild(el("span",null,h)); });
+    tb.appendChild(hr);
+    var MATCH={match:["ok","Match"],mismatch:["bad","Mismatch"],unclear:["warn","Unclear"],unchecked:["off","Not year-bound"]};
+    brief.docs.forEach(function(d){
+      var r=el("div","en9-ag-tr");
+      r.appendChild(el("span","en9-ag-doc",d.name));
+      r.appendChild(el("span",null,(d.statementYear||"—")+(d.periodEnd?" · to "+d.periodEnd:"")+(d.periodStart?" (from "+d.periodStart+")":"")));
+      r.appendChild(el("span",null,String(d.supportsYear||brief.requiredYear||"—")));
+      var mm=MATCH[d.match||"unchecked"];
+      var c=el("span"); c.setAttribute("data-en9",""); c.appendChild(en9AgBadge(mm[0],mm[1])); r.appendChild(c);
+      r.appendChild(el("span",null,d.role==="current-year"?"Current year":d.role==="prior-year-input"?"Prior-year input":d.role==="unclear"?"Unknown":"Reference"));
+      tb.appendChild(r);
+    });
+    card.appendChild(tb);
+  }
+
+  /* documents understood */
+  if(brief&&brief.docs&&brief.docs.length){
+    card.appendChild(el("h4","en9-ag-h","Documents understood"));
+    var dl=el("div","en9-ag-docs");
+    brief.docs.forEach(function(d){
+      var row=el("div","en9-ag-doccard");
+      var top=el("div","en9-ag-docline");
+      top.appendChild(el("strong",null,d.name));
+      top.appendChild(en9AgBadge(d.rowsWithFigures?"ok":"off",d.rowsWithFigures?"Reviewed":"No figures"));
+      row.appendChild(top);
+      row.appendChild(el("div","en9-ag-meta",[d.kind.replace(/-/g," "),d.pages+" page(s)",d.language,
+        d.rowsWithFigures+" figure(s)",d.ocr?"OCR":""].filter(Boolean).join(" · ")));
+      var det=el("div","en9-ag-evbody"); det.style.display="none";
+      [["Period",(d.periodStart?d.periodStart+" to ":"")+(d.periodEnd||"not stated")],
+       ["Rows read",String(d.rowsRead)],["Dropped as totals",String(d.rowsDropped)],
+       ["Sections",(d.sections||[]).join(", ")||"none named"],
+       ["Supports work paper year",String(d.supportsYear||"—")]].forEach(function(pq){
+        var rr=el("div","en9-os-row"); rr.appendChild(el("span","en9-os-k",pq[0]));
+        rr.appendChild(el("span","en9-os-v",pq[1])); det.appendChild(rr); });
+      var acts=el("div","en9-ag-acts");
+      var vb=el("button","button en9-ag-ev","View details"); vb.type="button";
+      vb.addEventListener("click",function(){ var o=det.style.display!=="none";
+        det.style.display=o?"none":""; vb.textContent=o?"View details":"Hide details"; });
+      acts.appendChild(vb);
+      var ob=el("button","button en9-ag-src","Open document"); ob.type="button";
+      ob.addEventListener("click",function(){ if(!en9AgOpenSource(d.name,null)) ob.textContent="File not held"; });
+      acts.appendChild(ob);
+      row.appendChild(acts); row.appendChild(det); dl.appendChild(row);
+    });
+    card.appendChild(dl);
+  }
+
+  /* findings */
+  var unused=items.filter(function(i){ return /^agent-unused-/.test(i.id); });
+  var rest=items.filter(function(i){ return !/^agent-unused-|^agent-failure-/.test(i.id); });
+  var IMPACT={mapping:"Mapping","tie-out":"Calculation",consistency:"Review",process:"Review"};
+  var drawFinding=function(host,it){
+    var t=en9AgTitle(it.id), p=en9AgParse(it.message);
+    var c=el("div","en9-ag-card");
+    var h=el("div","en9-ag-cardhead");
+    h.appendChild(el("strong",null,t[1]));
+    h.appendChild(en9AgBadge(it.dismissed||it.resolution?"ok":"warn",it.dismissed||it.resolution?"Resolved":"Needs review"));
+    c.appendChild(h);
+    c.appendChild(el("p","en9-ag-text",en9AgShort(p.text,190)));
+    var doc=(p.src&&p.src.doc)||it.source||"", page=p.src&&p.src.page;
+    c.appendChild(el("div","en9-ag-meta",["Source: "+(doc||"—")+(page?" · page "+page:""),
+      "Impact: "+(IMPACT[it.category]||"Review")].join(" · ")));
+    en9AgSourceBtn(c,doc,page,p.src?{Document:doc,Page:page||"—",
+      "Original text":p.src.caption,"What the agent understood":en9AgShort(p.text,140),
+      "Figures":p.src.rest||"—",Confidence:/MEDIUM/.test(it.message)?"medium":/LOW/.test(it.message)?"low":"high"}:null);
+    host.appendChild(c);
+  };
+  if(rest.length){ card.appendChild(el("h4","en9-ag-h","Findings"));
+    var fl=el("div","en9-ag-cards"); rest.forEach(function(i){ drawFinding(fl,i); }); card.appendChild(fl); }
+
+  /* the rule that matters most: nothing important is ignored quietly */
+  if(unused.length){
+    card.appendChild(el("h4","en9-ag-h en9-ag-alert","Important information not used"));
+    var ul=el("div","en9-ag-cards"); unused.forEach(function(i){ drawFinding(ul,i); }); card.appendChild(ul);
+  }
+
+  /* what it could not process */
+  if(fails.length){
+    card.appendChild(el("h4","en9-ag-h","Could not process"));
+    var xl=el("div","en9-ag-cards");
+    fails.forEach(function(f){
+      var c=el("div","en9-ag-card");
+      var h=el("div","en9-ag-cardhead");
+      h.appendChild(el("strong",null,en9AgShort(f.what,80)));
+      h.appendChild(en9AgBadge("bad","Failed"));
+      c.appendChild(h);
+      c.appendChild(el("div","en9-ag-meta",[f.doc?"Source: "+f.doc+(f.page?" · page "+f.page:""):"",
+        "Stage: "+f.stage].filter(Boolean).join(" · ")));
+      c.appendChild(el("p","en9-ag-text","Reason: "+en9AgShort(f.reason,140)));
+      c.appendChild(el("p","en9-ag-text en9-ag-action","Action: "+en9AgShort(f.action,140)));
+      en9AgSourceBtn(c,f.doc||"",f.page,null);
+      xl.appendChild(c);
+    });
+    card.appendChild(xl);
+  }
+
+  /* where the agent sat in the workflow */
+  var flow=el("div","en9-ag-flow");
+  ["Understood","Translated","Checked","Suggested","Validated","Flagged"].forEach(function(x,i){
+    if(i) flow.appendChild(el("span","en9-ag-flowsep","›"));
+    flow.appendChild(el("span","en9-ag-flowstep",x)); });
+  card.appendChild(el("h4","en9-ag-h","How the agent helped"));
+  card.appendChild(flow);
+  card.appendChild(el("p","en9-ag-foot","It reads, translates, suggests and flags. The 5471 rules, the rates and the checks decide."));
+}
+
+/* ---------- Settings: the AI Agent card ----------
+   Plain-language description of the agent, on the AI platform tab, beside the
+   Groq key it shares. It never shows the key itself -- only whether one is
+   present, which is all the preparer needs to know from here. */
+function enhanceAgentSettings(){
+  var stacks=document.querySelectorAll(".view-stack"), host=null;
+  for(var i=0;i<stacks.length;i++)
+    if((stacks[i].textContent||"").indexOf("Every methodology, rule set, model and limit")>-1){ host=stacks[i]; break; }
+  var old=document.querySelector(".en9-agent");
+  if(!host||en9SettingsTab(host)!=="AI platform"){ if(old)old.remove(); return; }
+  var info=null;
+  try{ info=window.__WPACT&&window.__WPACT.EN9agentInfo&&window.__WPACT.EN9agentInfo(); }catch(e){ info=null; }
+  if(!info){ if(old)old.remove(); return; }
+  var card=old;
+  if(!card){ card=el("section","panel en9-agent"); host.appendChild(card); }
+  while(card.firstChild)card.removeChild(card.firstChild);
+  card.EN9_refresh=enhanceAgentSettings;
+
+  var head=el("div","en9-ag-head");
+  head.appendChild(el("strong",null,"AI Agent"));
+  head.appendChild(el("span",info.connected?"en9-ag-pill en9-ag-on":"en9-ag-pill en9-ag-off",info.connected?"Connected":"Not connected"));
+  card.appendChild(head);
+  card.appendChild(el("p","en9-os-p","An assistant that reads the documents you uploaded and suggests where each figure belongs. It only suggests \u2014 the tool's own 5471 rules, exchange rates and checks still decide what goes into the work paper."));
+
+  var facts=el("div","en9-os-grid");
+  [["Agent",info.name],
+   ["Where it works","Documents \u2014 reading and OCR \u2014 language \u2014 translation \u2014 understanding \u2014 the 5471 rules \u2014 checks \u2014 Review \u2014 work paper. It reads the documents BEFORE the rules run, and reads the result back after."],
+   ["Framework",info.framework+" \u2014 the agent is a state graph: "+info.steps.join(", ")],
+   ["AI provider",info.provider+(info.model?" \u00b7 "+info.model:"")],
+   ["Status",info.connected?"Connected \u2014 using "+info.keySource:"Not connected \u2014 add a Groq key above and the agent starts suggesting; until then it still reports gaps it can find without a model"],
+   ["API key","Shared with the Groq card above. There is no separate key for the agent, and the key is never displayed or exported \u2014 only its status is shown here."],
+   ["Runs during processing",info.enabled?"Yes \u2014 twice: it reads the documents before mapping, and reads the booked result back afterwards":"No \u2014 switched off"],
+   ["Where to watch it","Open an entity and look at Review & log \u2014 the AI Agent activity card lists every step, what it found and anything it could not do."]
+  ].forEach(function(p){ var r=el("div","en9-os-row");
+    r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); facts.appendChild(r); });
+  card.appendChild(facts);
+
+  var act=el("div","review-actions");
+  var btn=el("button","button",info.enabled?"Turn the agent off":"Turn the agent on");
+  btn.type="button";
+  btn.addEventListener("click",function(){
+    try{ window.__WPACT.EN9setAgent({enabled:!info.enabled}); }catch(e){}
+    setTimeout(enhanceAgentSettings,60);
+  });
+  act.appendChild(btn); card.appendChild(act);
+
+  card.appendChild(el("h4","en9-os-h","What it can do"));
+  var pc=el("div","en9-os-2col");
+  var pros=el("div","en9-os-pros");
+  info.can.forEach(function(x){ pros.appendChild(el("div","en9-auth-fact","\u2713 "+x)); });
+  var cons=el("div","en9-os-cons"); cons.appendChild(el("strong",null,"What it cannot do"));
+  info.cannot.forEach(function(x){ cons.appendChild(el("div","en9-auth-miss","\u2013 "+x)); });
+  pc.appendChild(pros); pc.appendChild(cons); card.appendChild(pc);
+
+  card.appendChild(el("h4","en9-os-h","How it works"));
+  var steps=el("ol","en9-os-list");
+  ["It starts from what the tool has already read \u2014 the text pulled out of your documents and any translations. Nothing is uploaded or read again.",
+   "It works out what each caption means in accounting terms, using the headings it was printed under and the figures beside it.",
+   "It suggests a work paper line for each caption the ordinary rules could not place, and says how sure it is and which page it read.",
+   "It checks the English used for translated captions and queries any term that could mislead.",
+   "Everything it is sure about is handed to the normal mapping rules, which can still refuse it. Everything else goes to Review & exceptions with the document, page and figures attached."
+  ].forEach(function(x){ var li=document.createElement("li"); li.textContent=x; li.setAttribute("data-en9",""); steps.appendChild(li); });
+  card.appendChild(steps);
+
+  if(info.lastRun){
+    card.appendChild(el("h4","en9-os-h","Last run"));
+    var lg=el("div","en9-os-grid");
+    [["When",info.lastRun.at+" \u00b7 "+info.lastRun.entity],
+     ["Captions reviewed",String(info.lastRun.considered)],
+     ["Accepted by the mapping rules",String(info.lastRun.accepted)],
+     ["Sent to Review & exceptions",String(info.lastRun.exceptions)],
+     ["Gaps and queries raised",String(info.lastRun.findings)]
+    ].forEach(function(p){ var r=el("div","en9-os-row");
+      r.appendChild(el("span","en9-os-k",p[0])); r.appendChild(el("span","en9-os-v",p[1])); lg.appendChild(r); });
+    card.appendChild(lg);
+  }
+  card.appendChild(el("h4","en9-os-h","When it cannot do something"));
+  card.appendChild(el("p","en9-os-p","It says so. Every thing it could not read, translate, understand or check is listed on the entity\u2019s Review & log tab with the document, the page, the reason and what you need to do. Nothing it fails at is dropped quietly."));
+  card.appendChild(el("p","en9-os-foot","The agent never changes a figure, an exchange rate or a calculation, and it cannot sign anything off. Every suggestion it makes is recorded with its evidence so you can check it."));
+}
+
 /* ---------- master pass ---------- */
 /* ---------- Overview: Preview format <-> Generate (state-dependent) ----------
    With nothing processed there is nothing to generate — the primary action
@@ -1933,6 +2271,10 @@ function rebuildAll(){
     enhanceCategoryAuthority();
     enhanceSettingsSources();
     enhanceOcrSettings();
+    /* Isolated: an agent card that throws must not take the rest of the
+       layer down with it — everything here shares one try/catch. */
+    try{ enhanceAgentSettings(); }catch(e){ try{ window.__EN9AGERR="settings: "+(e&&e.message||e); }catch(x){} }
+    try{ enhanceAgentActivity(); }catch(e){ try{ window.__EN9AGERR="activity: "+(e&&e.message||e); }catch(x){} }
     enhanceTopbarHint();
     enhanceOcrPanel();
     enhanceExceptionSignoff();
