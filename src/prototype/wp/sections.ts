@@ -57,6 +57,10 @@ export type MapRow = {
       Set by structRows and gridStructRows; read when a caption is routed to a
       contra line, where the sign is the whole question. */
   inTotal?: boolean;
+  /** Set by the agent's understanding phase when it judged a row the structure
+      pass dropped to be a line item after all. Carries the reason, so the
+      Review row can quote it. Never books anything by itself. */
+  agentImportant?: string;
 };
 
 
@@ -467,6 +471,19 @@ const INCOME_TARGETS = new Set(["IS:7", "IS:14", "IS:15", "IS:16", "IS:17", "IS:
 /** Where a caption printed under a non-current / term liabilities banner may
     land: Schedule F line 19 and its detail rows, the shareholder loan line,
     and derivatives. Line 16 is deliberately absent. */
+/* Everything Schedule F puts below the current assets: the depreciable and
+   depletable pools, land, the intangibles and the "other asset" slots. A
+   caption printed under a fixed-assets heading cannot be cash or a receivable
+   however it reads. */
+const NON_CURRENT_ASSET_TARGETS = new Set([
+  "BS:19", "BS:21", "BS:22", "BS:23", "BS:25", "BS:26", "BS:27", "BS:OI",
+  "BS:28", "BS:29", "BS:30", "BS:31", "BS:32", "BS:34", "BS:35", "BS:36", "BS:37",
+  "BS:39", "BS:40", "BS:41",
+]);
+
+/* The five equity lines and nothing else. */
+const EQUITY_TARGETS = new Set(["BS:58", "BS:59", "BS:60", "BS:61", "BS:62"]);
+
 const NON_CURRENT_LIABILITY_TARGETS = new Set([
   "BS:OL", "BS:51", "BS:52", "BS:54", "BS:55", "BS:56",
   /* Equity is printed BELOW the long-term liabilities and the banner is
@@ -496,6 +513,11 @@ export function sectionOk(section: Section | null | undefined, target: string | 
      side stays reachable: a term loan from a shareholder is still line 18. */
   if (section === "termLiabilities") return isBs && NON_CURRENT_LIABILITY_TARGETS.has(target);
   if (section === "cash") return target === "BS:10";
+  /* The mirror of the cash rule, one group down the balance sheet. */
+  if (section === "fixedAssets") return isBs && NON_CURRENT_ASSET_TARGETS.has(target);
+  /* Equity has its own block on Schedule F. A caption under the equity banner
+     can never be a liability, and a liability caption can never be equity. */
+  if (section === "equity") return isBs && EQUITY_TARGETS.has(target);
   if (section === "assets" || section === "liabilities") {
     if (!isBs) return false;
     const side =
@@ -523,6 +545,30 @@ export function sectionRoute(section: Section | null | undefined, label: string)
      cost of goods sold, and line 2 is where the form puts the ones that are
      neither labour nor purchases. */
   if (section === "cash") return "BS:10";
+  /* The banner says these are non-current assets; the caption says which kind.
+     The catch-all is the depreciable pool, because that is what a fixed-asset
+     register is mostly made of and it is where the form expects them. */
+  if (section === "fixedAssets") {
+    if (/\b(depreciat|amorti[sz])/.test(s)) return "BS:29";
+    if (/\bland\b/.test(s)) return "BS:32";
+    if (/goodwill/.test(s)) return "BS:34";
+    if (/\b(patent|trademark|trade mark|licence|license|software|intangible|website|domain)\b/.test(s)) return "BS:36";
+    if (/\b(investment|shares in|interest in)\b/.test(s)) return "BS:OI";
+    if (/\b(bond|deposit|security deposit|retention)\b/.test(s)) return "BS:39";
+    return "BS:28";
+  }
+  /* Equity. Drawings and current-year earnings are movements ON retained
+     earnings, not separate lines of the form, so they accumulate there — which
+     is also what a hand-prepared work paper does with them. A capital account
+     in one owner's name is proprietor capital (line 21), not stock issued to
+     the public (line 20b). */
+  if (section === "equity") {
+    if (/treasury|own shares/.test(s)) return "BS:62";
+    if (/preferen(?:ce|red)/.test(s)) return "BS:58";
+    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
+    if (/\b(capital|contribution|surplus|premium)\b/.test(s)) return "BS:60";
+    return "BS:61";
+  }
   /* The banner already said what the figure is, so the catch-all is safe: an
      unrecognised caption under "Other income" IS other income. */
   if (section === "termLiabilities") {
@@ -585,7 +631,8 @@ export function sectionRoute(section: Section | null | undefined, label: string)
     page they were read on. Returns the two feeds with those rows exchanged,
     and how many moved — the caller logs the count. */
 export function refeedBySection(isRows: MapRow[], bsRows: MapRow[]): { is: MapRow[]; bs: MapRow[]; moved: number } {
-  const onBs = (m: MapRow) => m.section === "assets" || m.section === "liabilities" || m.section === "cash" || m.section === "termLiabilities";
+  const onBs = (m: MapRow) => m.section === "assets" || m.section === "liabilities" || m.section === "cash"
+    || m.section === "termLiabilities" || m.section === "fixedAssets" || m.section === "equity";
   const onIs = (m: MapRow) => m.section === "income" || m.section === "costs" || m.section === "cogs" || m.section === "otherIncome";
   const toBs = isRows.filter(onBs);
   const toIs = bsRows.filter(onIs);

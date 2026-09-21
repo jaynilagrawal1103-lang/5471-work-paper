@@ -31,6 +31,59 @@ const VERSIONS: Array<[string, string]> = [
   ["Mapping configuration", "MAP-MULTI-1.4"],
 ];
 
+/** Settings ▸ AI platform ▸ AI Agent. Everything here comes from `agentInfo()`
+    so the panel cannot drift from the graph that actually runs. The key is
+    never read back into the view — only whether one is configured. */
+function AgentCard() {
+  const info = actions.agentInfo();
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div><span className="section-kicker">Agent</span><h2>AI Agent</h2></div>
+        <StatusPill status={info.connected ? "approved" : "waiting"} />
+      </div>
+      <p className="hint">
+        An assistant that reads the documents you uploaded and suggests where each figure belongs. It only suggests —
+        the tool&rsquo;s own 5471 rules, exchange rates and checks still decide what goes into the work paper.
+      </p>
+      <Row label="Agent" value={info.name} />
+      <Row label="Framework" value={`${info.framework} — the agent is a state graph: ${info.steps.join(" → ")}`} />
+      <Row label="AI provider" value={`${info.provider}${info.model ? ` · ${info.model}` : ""}`} />
+      <Row
+        label="Status"
+        value={info.connected
+          ? `Connected — using ${info.keySource}`
+          : "Not connected — add a Groq key above and the agent starts suggesting; until then it still reports gaps it can find without a model"}
+      />
+      <Row label="API key" value="Shared with the Groq card above. There is no separate key for the agent, and the key is never displayed or exported — only its status is shown here." />
+      <Row label="Runs during processing" value={info.enabled ? "Yes — step 6, after the rules have done their work" : "No — switched off"} />
+      <div className="review-actions">
+        <button type="button" className="button" onClick={() => actions.setAgent({ enabled: !info.enabled })}>
+          {info.enabled ? "Turn the agent off" : "Turn the agent on"}
+        </button>
+      </div>
+      <h4>What it can do</h4>
+      <ul>{info.can.map((x) => <li key={x}>{x}</li>)}</ul>
+      <h4>What it cannot do</h4>
+      <ul>{info.cannot.map((x) => <li key={x}>{x}</li>)}</ul>
+      {info.lastRun ? (
+        <>
+          <h4>Last run</h4>
+          <Row label="When" value={`${info.lastRun.at} · ${info.lastRun.entity}`} />
+          <Row label="Captions reviewed" value={String(info.lastRun.considered)} />
+          <Row label="Accepted by the mapping rules" value={String(info.lastRun.accepted)} />
+          <Row label="Sent to Review & exceptions" value={String(info.lastRun.exceptions)} />
+          <Row label="Gaps and queries raised" value={String(info.lastRun.findings)} />
+        </>
+      ) : null}
+      <Callout title="What it never does" tone="teal">
+        The agent never changes a figure, an exchange rate or a calculation, and it cannot sign anything off. Every
+        suggestion it makes is recorded with its evidence so you can check it.
+      </Callout>
+    </section>
+  );
+}
+
 function Row({ label, value }: { label: string; value: string }) {
   return <div className="fact-row"><span>{label}</span><strong>{value}</strong></div>;
 }
@@ -380,6 +433,8 @@ export function SettingsView() {
               unmatched label text is ever transmitted.
             </Callout>
           </section>
+
+          <AgentCard />
         </div>
       ) : null}
 

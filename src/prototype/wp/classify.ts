@@ -50,6 +50,12 @@ export type DocClass = {
   method: "rules" | "groq" | "user";      // "user" = manual type override
   pages: PageInfo[];                      // one pseudo-page for grids
   statementYear: number | null;           // the year the document reports ON
+  /** The period end the document PRINTS ("for the year ended 30 June 2024"),
+      MM/DD/YYYY. Null when it states none. Carries the day and month that
+      `statementYear` cannot. */
+  statementPeriodEnd?: string | null;
+  /** The period START, only when the document printed both ends. */
+  statementPeriodStart?: string | null;
   entityName: string | null;              // primary subject entity
   foreignCorpName: string | null;         // "Name of foreign corporation" on 5471 pages
   entityIds: string[];                    // ABN / EIN / reference IDs found
@@ -260,6 +266,10 @@ export function classifyPages(doc: PdfDoc): PageInfo[] {
 const YEAR_ANCHORS: RegExp[] = [
   /company tax return\s*(\d{4})/,
   /for the year ended[^\d]*\d{1,2}? ?\w* (\d{4})/,
+  /* "For the 12 months ended 31 December 2024" never says "year", so the
+     anchor above missed it and the document reported NO year at all — which
+     is how a set of accounts ends up supporting the wrong work paper year. */
+  /for the \d{1,2} months? ended[^\d]*\d{1,2}? ?\w* (\d{4})/,
   /year ended 31 december (\d{4})/,
   /as at \d{1,2} \w+ (\d{4})/,
   /for calendar year (\d{4})/,
@@ -269,6 +279,120 @@ const YEAR_ANCHORS: RegExp[] = [
   /as of (?:january|february|march|april|may|june|july|august|september|october|november|december) \d{1,2},? (\d{4})/,
   /(?:january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{0,2}\s*[-–]\s*(?:january|february|march|april|may|june|july|august|september|october|november|december)?\s*\d{0,2},?\s*(\d{4})/,
 ];
+
+/* ---------- the period the statements themselves report on ----------
+
+   `detectStatementYear` answers "which YEAR", which is all the column routing
+   needs. Basic Information needs the DAY: a work paper for an entity with a
+   30 June year end that is dated 12/31 pulls the wrong FX tables, dates
+   Schedule E and J wrongly and files the wrong period. Before this, the day
+   and month could only come from a prior-year 5471's accounting-period line —
+   so a first-year fiscal entity, or one with no prior return in the pile,
+   silently got 12/31. The statements say it on their own face; read it. */
+
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const MONTH_RE = MONTHS.join("|");
+const monthNo = (name: string) => MONTHS.indexOf(String(name || "").toLowerCase().slice(0, 30)) + 1;
+
+/** "30 June 2024" and "June 30, 2024" — both orders, ordinal suffixes and a
+    written or numeric day. Returns MM/DD/YYYY, or null when the date is not a
+    real one (31 June is a typo, not a year end). */
+export function parseLongDate(text: string): string | null {
+  const t = String(text || "").toLowerCase().replace(/\u00a0/g, " ");
+  let day: number | null = null, month = 0, year = 0;
+  const dmy = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_RE})\\s*,?\\s*(\\d{4})\\b`).exec(t);
+  const mdy = new RegExp(`\\b(${MONTH_RE})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\s*,?\\s*(\\d{4})\\b`).exec(t);
+  if (dmy) { day = Number(dmy[1]); month = monthNo(dmy[2]); year = Number(dmy[3]); }
+  else if (mdy) { month = monthNo(mdy[1]); day = Number(mdy[2]); year = Number(mdy[3]); }
+  if (day === null || !month || !year) return null;
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  if (dt.getUTCMonth() + 1 !== month || dt.getUTCDate() !== day) return null;
+  if (year < 2000 || year > 2035) return null;
+  return `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}/${year}`;
+};
+
+/** "06/30/2024" → "06/30/2023". The period the comparative column reports on. */
+export function periodMinusOneYear(p: string): string | null {
+  const m = /^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/.exec((p || "").trim());
+  if (!m) return null;
+  return `${m[1]}/${m[2]}/${Number(m[3]) - 1}`;
+}
+
+/* The phrases that introduce a balance-sheet date or a reporting period end.
+   Everything after the phrase up to ~60 characters is handed to the date
+   parser, so wording between the phrase and the date ("ended on the 30th of
+   June 2024") does not need its own pattern. */
+const PERIOD_ANCHORS: RegExp[] = [
+  /for the (?:financial )?(?:year|period) ended[^\n]{0,60}/i,
+  /* Xero heads a P&L "For the 12 months ended 31 December 2024" — it never
+     says "year". A "from X to Y" range is deliberately NOT matched here: the
+     date parser takes the first date it sees, which in a range is the
+     BEGINNING, and a period start read as a period end is worse than no
+     answer at all. */
+  /for the \d{1,2} months? ended[^\n]{0,60}/i,
+  /for the (?:year|period) ending[^\n]{0,60}/i,
+  /(?:financial )?year ended[^\n]{0,60}/i,
+  /period ended[^\n]{0,60}/i,
+  /as at[^\n]{0,60}/i,
+  /as of[^\n]{0,60}/i,
+  /balance sheet (?:as )?(?:at|of)[^\n]{0,60}/i,
+];
+
+/**
+ * The period end the statements print, as MM/DD/YYYY.
+ *
+ * Every page votes; the date agreeing with `year` (the detected statement
+ * year) wins, because a set of accounts also prints the COMPARATIVE date on
+ * the same face and a naive first-match reads last year's. Within the right
+ * year the most-repeated date wins — the year end appears in the page
+ * headings of every statement, a stray date appears once.
+ */
+/** The whole period a document states, when it prints both ends
+    ("for the period 1 July 2023 to 30 June 2024"). The END is what everything
+    downstream needs; the START is shown to the preparer so a short or long
+    period is visible rather than inferred. */
+export function detectStatementPeriod(doc: PdfDoc, pages: PageInfo[], year: number | null): { start: string | null; end: string | null } {
+  /* A printed range is read FIRST and read whole: its second date is the
+     period end and its first is the start. Read half of it — the way a
+     single-date reader does — and the work paper is dated the day the period
+     BEGAN, a year early. */
+  for (const pi of pages) {
+    if (!/^(fs-|ato-)/.test(pi.kind)) continue;
+    const head = pageText(doc, pi.page, "head");
+    for (const m of head.matchAll(/\b(?:for the (?:financial )?period|for the period from|from)\b([^\n]{0,90})/gi)) {
+      const parts = String(m[1]).split(/\bto\b|\bthrough\b|\bthru\b|\u2013|\u2014/);
+      if (parts.length < 2) continue;
+      const start = parseLongDate(parts[0]);
+      const end = parseLongDate(parts[1]);
+      if (!start || !end) continue;
+      if (year && Number(end.slice(-4)) !== year) continue;
+      return { start, end };
+    }
+  }
+  return { start: null, end: detectStatementPeriodEnd(doc, pages, year) };
+}
+
+export function detectStatementPeriodEnd(doc: PdfDoc, pages: PageInfo[], year: number | null): string | null {
+  const votes = new Map<string, number>();
+  for (const pi of pages) {
+    if (!/^(fs-|ato-)/.test(pi.kind)) continue;
+    const head = pageText(doc, pi.page, "head");
+    for (const re of PERIOD_ANCHORS) {
+      for (const m of head.matchAll(new RegExp(re.source, "gi"))) {
+        const date = parseLongDate(m[0]);
+        if (date) votes.set(date, (votes.get(date) || 0) + 1);
+      }
+    }
+  }
+  if (!votes.size) return null;
+  const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? 1 : -1));
+  if (year) {
+    const inYear = ranked.find(([d]) => Number(d.slice(-4)) === year);
+    if (inYear) return inYear[0];
+    return null;      // a date from another year is the comparative, not this period
+  }
+  return ranked[0][0];
+}
 
 export function detectStatementYear(doc: PdfDoc, pages: PageInfo[]): number | null {
   const votes = new Map<number, number>();
@@ -552,7 +676,20 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
   else if (has("ato-")) kind = "cfc-tax-return";
   else if (kinds.size === 1 && kinds.has("tandc")) kind = "terms-and-conditions";
 
-  const statementYear = detectStatementYear(doc, pages);
+  let statementYear = detectStatementYear(doc, pages);
+  /* The period reader knows headings the year anchors do not. When the anchors
+     found nothing, the period end IS the year — a document with no year at all
+     cannot be placed against a work paper year, and was silently ignored by
+     `deriveCaseYears`. */
+  const period = detectStatementPeriod(doc, pages, statementYear);
+  if (statementYear === null && !period.end) {
+    const loose = detectStatementPeriodEnd(doc, pages, null);
+    if (loose) statementYear = Number(loose.slice(-4));
+  } else if (statementYear === null && period.end) {
+    statementYear = Number(period.end.slice(-4));
+  }
+  const statementPeriodEnd = period.end ?? detectStatementPeriodEnd(doc, pages, statementYear);
+  const statementPeriodStart = period.start;
   if (kind === "prior-year-us-return" && caseYear && statementYear === caseYear) {
     notes.push({ level: "warn", message: `${fileName}: a US return for the CURRENT year (${caseYear}) was uploaded — expected a prior-year reference copy.` });
   }
@@ -568,6 +705,8 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
     method: "rules",
     pages,
     statementYear,
+    statementPeriodEnd,
+    statementPeriodStart,
     entityName,
     foreignCorpName: findForeignCorpName(doc),
     entityIds: findEntityIds(doc),

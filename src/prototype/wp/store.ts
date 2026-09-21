@@ -17,10 +17,15 @@ import {
   norm1, ok as aiOk, parseMap, retryAfterMs, sleep, tpmCorrectLast, tpmNote, tpmWaitMs,
   type AiError, type AiMode, type Proposal,
 } from "./aiMapping";
+import {
+  AGENT_CAN, AGENT_CANNOT, AGENT_FRAMEWORK, AGENT_GRAPH, AGENT_NAME, AGENT_PROVIDER,
+  citeEvidence, runAgent,
+  type AgentBrief, type AgentFailure, type AgentImportant, type AgentRow, type AgentSuggestion, type DocBrief,
+} from "./agent";
 import { sessionSnapshot } from "../session";
 import { apiBase } from "../api";
 import {
-  classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed,
+  classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed, periodMinusOneYear,
   type DocClass, type DocKind,
 } from "./classify";
 import { addressLines, directoryDirectors, directoryShareholders, extractCarryForwards, samePerson, type CarryForward, type DirectoryHolder } from "./carryForward";
@@ -320,12 +325,19 @@ export type Entity = {
         show the reasoning rather than just "unmapped". */
     aiProposal?: { to: string; confidence: string; reason: string; refused?: boolean };
     originalReason?: string;
+    /** The agent already read this caption. The AI mapping pass that follows
+        leaves it alone rather than re-proposing what the agent deliberately
+        sent to the Exception Centre. */
+    agentSeen?: boolean;
   })[];
   /** Caption/value pairs from the profile pages that no matcher claimed —
       the input to the AI profile pass. */
   unmatchedProfile: ProfileCandidate[];
   log: string[];
   processedAt: string | null;
+  /** What the agent understood about the documents BEFORE mapping, kept so the
+      activity view, the review phase and the log all read one record. */
+  agentBrief?: AgentBrief;
 };
 
 export type GroqState = {
@@ -346,6 +358,22 @@ export type GroqState = {
   noticeAt?: number | null;
   /** True once the preparer has seen and acknowledged the panel. */
   checked?: boolean;
+};
+
+/** Settings and the last run of the AI Mapping & Review Agent. The agent has
+    no credentials of its own — it uses the Groq key in `groq`. */
+export type AgentSettings = {
+  /** Undefined reads as on: the agent is the default path for leftovers. */
+  enabled?: boolean;
+  lastRun?: {
+    at: string;
+    entity: string;
+    considered: number;
+    accepted: number;
+    exceptions: number;
+    findings: number;
+    nodes: string[];
+  };
 };
 
 export type LogEvent = {
@@ -378,6 +406,7 @@ export type WpState = {
   policies: PolicyRule[];
   rateDb: RateDb;
   groq: GroqState;
+  agent: AgentSettings;
   usage: { docs: number; storage: number; api: number; generated: number };
   busy: boolean;
   providerUsage: Record<string, ProviderUsage>;
@@ -471,6 +500,14 @@ export const isThinNote = (note: string): boolean => {
   return said.length < 12 || /^(test\w*|ok(ay)?|n\/?a|none|nil|x+|\.+|-+|check(ed|ing)?|done|fine|yes|no|asdf\w*|foo|bar)$/i.test(said);
 };
 
+/** The four-digit year behind a short period like "03/31/24". */
+export function yearOfShortPeriod(p: string | undefined): number | null {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(String(p || "").trim());
+  if (!m) return null;
+  const y = Number(m[3]);
+  return m[3].length === 4 ? y : 2000 + y;
+}
+
 /* ---------------- store ---------------- */
 const initialStakeholder = "New stakeholder";
 
@@ -481,7 +518,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 7;
+export const RULE_CATALOGUE_VERSION = 8;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -511,6 +548,12 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
   // v7 (2026-09-18): the English of "property, plant and equipment". Without
   // it the line fell to the other-assets pool on every English balance sheet.
   6: ["property, plant and equipment"],
+  // v8 (2026-09-21): a live Australian Xero balance sheet left its whole bank
+  // group and its whole fixed-asset register unmapped. The cash rule knew the
+  // US spelling only, the depreciable-assets rule knew no account name an
+  // accounting package actually prints, and a named partner capital account
+  // was claimed by the bare "capital" keyword on the common-stock group.
+  7: ["cheque account", "computer equipment", "capital -"],
 };
 
 /** Groups the saved catalogue is missing purely because it predates them.
@@ -543,6 +586,7 @@ let state: WpState = {
   policies: [],
   rateDb: seedRateDb(),
   groq: { key: "", model: GROQ_MODELS[0], status: "not configured", latency: null, calls: 0, tokens: 0, lastError: "" },
+  agent: {},
   usage: { docs: 0, storage: 0, api: 0, generated: 0 },
   busy: false,
   providerUsage: Object.fromEntries(
@@ -662,7 +706,9 @@ const hooks: StoreHooks = {
 export function loadState(next: WpState) {
   const rules = upgradeRules(next.rules || [], next.rulesVersion);
   const added = rules.length - (next.rules?.length || 0);
-  state = { ...next, rules, rulesVersion: RULE_CATALOGUE_VERSION };
+  // A project saved before the agent existed has no `agent` key; without the
+  // default every read of state.agent would throw on restore.
+  state = { ...next, rules, rulesVersion: RULE_CATALOGUE_VERSION, agent: next.agent || {} };
   listeners.forEach((fn) => fn());
   // After the assignment, not before: logEvent writes through set(), and the
   // entry would be discarded by the state replacement above.
@@ -2280,6 +2326,18 @@ export const actions = {
           }
         }
         updateEntity(entityId, { nameMismatch, log: [...log] });
+
+        /* The agent reads the documents BEFORE the rules do. It changes
+           nothing the rules decide — it translates where translation is
+           needed, names the figures at risk of being let past, and marks the
+           rows the structure pass dropped that it reads as line items so they
+           reach Review rather than disappearing. */
+        try {
+          await agentUnderstand(entityId, mapRows, log);
+        } catch (err) {
+          log.push(`AI agent could not read the documents — ${(err as Error).message}`);
+        }
+        updateEntity(entityId, { log: [...log] });
       }
 
       /* Step 3 — map with year routing, pools and provenance; detect profile. */
@@ -2333,7 +2391,21 @@ export const actions = {
           // structural subtotal is already the sum of rows being booked.
           // Both stay in mapRows so the log and the evidence view can show
           // them; neither is ever booked.
-          if (m.skipReason || m.row.isBanner) continue;
+          if (m.skipReason || m.row.isBanner) {
+            /* The agent read this row before mapping and judged it a line
+               item rather than a total. It is still NOT booked — the
+               arithmetic that dropped it may be right, and booking it would
+               double-count — but it stops being invisible: it reaches the
+               Review tab, the Exception Centre and the AI mapping pass, where
+               a preparer can assign it in one move. */
+            if (m.agentImportant && !m.row.isBanner) {
+              unmatched.push({
+                ...m.row, docId: m.docId, docName: m.docName, section: m.section,
+                reason: `Dropped before mapping — ${m.skipReason} — but the agent judged it a line item, not a total: ${m.agentImportant}. Confirm and assign it, or leave it out.`,
+              });
+            }
+            continue;
+          }
           const matched = matchWithTranslation(m.row.label);
           let target = matched.target;
           /* A caption's accounting meaning depends on the statement it is
@@ -2566,6 +2638,41 @@ export const actions = {
           // they only fill seed-only cases with no statements at all.
           const periodEndYear = cf?.periodEnd ? Number(cf.periodEnd.slice(-4)) : null;
           const fiscalSeed = !!cf?.periodEnd && isFiscalPeriod(cf.periodEnd);
+
+          /* FIRST: the period end the statements themselves print. They are
+             the current-year source of truth, they carry the DAY and MONTH,
+             and they need no assumption. Only when no statement states one
+             does a prior return's period (rolled forward) or, last, 12/31
+             have to stand in. A 30 June entity dated 12/31 pulls the wrong
+             FX tables and files the wrong period, and nothing on the face of
+             the work paper shows it. */
+          const stmtPeriod = (() => {
+            let best: { end: string; doc: string } | null = null;
+            for (const c of Object.values(fresh.docClasses || {}) as DocClass[]) {
+              const end = c.statementPeriodEnd;
+              if (!end || c.duplicateOf) continue;
+              if (c.kind !== "cfc-financial-statements" && c.kind !== "cfc-tax-return") continue;
+              if (caseYears.cy && Number(end.slice(-4)) !== caseYears.cy) continue;
+              if (!best) best = { end, doc: c.fileName };
+            }
+            return best;
+          })();
+          if (stmtPeriod) {
+            propose(profile, "cyEnd", shortPeriod(stmtPeriod.end), `${stmtPeriod.doc} · period end printed on the statements`);
+            const prior = periodMinusOneYear(stmtPeriod.end);
+            if (prior) propose(profile, "pyEnd", shortPeriod(prior), `${stmtPeriod.doc} · the year before the period the statements report on`);
+            /* Two documents stating two different period ends is a real
+               question, not a preference: one of them is not this year's. */
+            if (cf?.periodEnd && shortPeriod(cf.periodEnd) !== shortPeriod(periodMinusOneYear(stmtPeriod.end) || "")
+                && shortPeriod(cf.periodEnd) !== shortPeriod(stmtPeriod.end)) {
+              rv({
+                id: "period-end-disagreement", level: "warn", category: "consistency",
+                message: `${stmtPeriod.doc} reports on the period ended ${stmtPeriod.end}, but the prior 5471 in ${cfSource} states an annual accounting period ending ${cf.periodEnd}. The statements were used. If the entity changed its year end, say so in Basic Information; otherwise check that both documents belong to this entity.`,
+                source: stmtPeriod.doc,
+              });
+            }
+          }
+
           if (fiscalSeed && periodEndYear && caseYears.cy && caseYears.cy !== periodEndYear + 1) {
             rv({
               id: "cf-period-year-mismatch", level: "warn", category: "consistency",
@@ -2575,18 +2682,34 @@ export const actions = {
           } else if (fiscalSeed) {
             const nextEnd = periodPlusOneYear(cf!.periodEnd!);
             if (nextEnd) {
-              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period`);
+              /* Provenance that says what actually happened. This value was
+                 NOT read from the return — the return states the year before
+                 it. A citation naming only the document reads as a quotation
+                 and gets reviewed as one. */
+              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period ended ${cf!.periodEnd}, rolled forward one year`);
               propose(profile, "pyEnd", shortPeriod(cf!.periodEnd!), `${cfSource} · annual accounting period`);
             }
           }
-          if (caseYears.cy) propose(profile, "cyEnd", `12/31/${String(caseYears.cy).slice(2)}`, "statement year");
-          if (caseYears.py) propose(profile, "pyEnd", `12/31/${String(caseYears.py).slice(2)}`, "statement year");
+          if (caseYears.cy) propose(profile, "cyEnd", `12/31/${String(caseYears.cy).slice(2)}`, `statement year ${caseYears.cy} — no period end stated, 31 December assumed`);
+          if (caseYears.py) propose(profile, "pyEnd", `12/31/${String(caseYears.py).slice(2)}`, `statement year ${caseYears.py} — no period end stated, 31 December assumed`);
           if (cf?.periodEnd && !fiscalSeed) {
             const nextEnd = periodPlusOneYear(cf.periodEnd);
             if (nextEnd) {
-              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period`);
+              propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period ended ${cf.periodEnd}, rolled forward one year`);
               propose(profile, "pyEnd", shortPeriod(cf.periodEnd), `${cfSource} · annual accounting period`);
             }
+          }
+
+          /* The year end decides the FX tables, Schedule E and J dates and the
+             period the work paper is filed for. When no document stated one,
+             say so plainly rather than letting an AUTO badge imply it was
+             read from a document. */
+          if (profile.cyEnd && /assumed/i.test(detected.cyEnd?.sourceLabel || "")) {
+            rv({
+              id: "period-end-assumed", level: "warn", category: "consistency",
+              message: `No document states the period end, so 31 December was assumed and Basic Information reads ${profile.cyEnd}. If this entity has a fiscal year end — 30 June and 31 March are the common ones — correct B1 and B2 before generating: the year end selects the exchange-rate tables and dates Schedules E and J.`,
+              target: `${SHEET.basic}!B1`,
+            });
           }
           if (cf && !cf.periodEnd) {
             rv({
@@ -2806,6 +2929,24 @@ export const actions = {
             seenCand.add(cand.norm);
             if (matchRule(cand.caption, state.rules) !== null) continue;
             unmatchedProfile.push(cand);
+          }
+
+  /* The engagement year the preparer entered against the year the documents
+             are for. The column routing follows the DOCUMENTS -- a set of accounts
+             headed "year ended 31 March 2025" books its 2025 column as the current
+             year whatever Basic Information says -- so a year end typed over the
+             detected one produces a work paper dated one year and filled with
+             another's figures. Nothing about that is visible on the face of it, which
+             is why it blocks rather than warns. */
+          {
+            const typed = yearOfShortPeriod(profile.cyEnd);
+            if (typed && caseYears.cy && typed !== caseYears.cy) {
+              rv({
+                id: "profile-year-vs-documents", level: "block", category: "consistency",
+                message: `Basic Information gives the current year end as ${profile.cyEnd} — year ${typed} — but every figure booked here comes from documents reporting on ${caseYears.cy}. The work paper would be dated ${typed} and filled with ${caseYears.cy} figures. Either set the year end back to the documents' year, or supply the ${typed} statements and re-process.`,
+                target: `${SHEET.basic}!B1`,
+              });
+            }
           }
 
           updateEntity(entityId, { profile, ownership, categories, detected, unmatchedProfile, ...nameSync });
@@ -3077,6 +3218,14 @@ export const actions = {
          deterministic answer is already fixed before it runs, and failure-safe
          because a work paper without the AI pass is still a work paper. */
       if (step === 5) {
+        /* The agent first: it reads the cached extraction, proposes with
+           evidence, and routes what it is unsure of to the Exception Centre.
+           The AI mapping pass then takes only what the agent did not read. */
+        try {
+          await agentRun(entityId, log);
+        } catch (err) {
+          log.push(`AI agent did not run — ${(err as Error).message}`);
+        }
         try {
           await aiRun(entityId, log);
         } catch (err) {
@@ -3119,6 +3268,11 @@ export const actions = {
 
   /* ---------------- Groq ---------------- */
   setGroq(patch: Partial<GroqState>) { set({ groq: { ...state.groq, ...patch } }); },
+
+  /** The agent's only setting: whether it runs during processing. It has no
+      key of its own — it uses the Groq credential above. */
+  setAgent(patch: Partial<AgentSettings>) { set({ agent: { ...state.agent, ...patch } }); },
+  agentInfo: () => agentInfo(),
 
   async testGroq() {
     if (!state.groq.key) { toast("Add a Groq API key first", "bad"); return; }
@@ -5551,6 +5705,438 @@ const targetLabel = (target: string) => {
    evidence of the same thing. */
 const BANK_ACCOUNT = /\biban\b|account\s*(?:#|no\.?\s|number)|\(#\d+\)|\b[a-z]{2}\d{2}[a-z]{4}\d{6,}\b|\b(?:cheque|savings|transaction|cash management)\s+account\b/i;
 
+/** Translate a list of captions with the configured model and write them onto
+    the entity. Extracted from the Translate action so the agent can run the
+    same code BEFORE mapping instead of duplicating it — one translator, one
+    set of guards, one place where a bad answer is refused. Returns how many
+    captions were translated. */
+async function translateCaptions(entityId: string, labels: string[]): Promise<number> {
+  const ent = state.entities.find((e) => e.id === entityId);
+  if (!ent || !labels.length) return 0;
+  const raw = await groqCall([
+    { role: "system", content: "You translate accounting captions into English. Reply with JSON only." },
+    {
+      role: "user",
+      content: `Translate each caption to English. Keep accounting terminology. If already English, repeat it unchanged.\n\n${labels.map((l, i) => `${i}. ${l}`).join("\n")}\n\nReturn {"t":{"<index>":"<english>"}}`,
+    },
+  ], true);
+  const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+  const translations = { ...ent.translations };
+  const failures = { ...ent.translationFailures };
+  let n = 0;
+  labels.forEach((label, i) => {
+    const v = parsed?.t?.[String(i)];
+    const value = typeof v === "string" ? v.trim() : "";
+    if (value && !isServiceErrorText(value) && !(isMostlyNonLatin(label) && isMostlyNonLatin(value))) {
+      translations[label] = value;
+      delete failures[label];
+      n++;
+    } else {
+      failures[label] = value
+        ? "Unreadable characters or unsupported text — the model stayed in the source script."
+        : "The model returned no translation — unsupported text or missing context.";
+    }
+  });
+  updateEntity(entityId, { translations, translationFailures: failures });
+  if (n) logEvent("Captions translated", `${n} caption(s) via ${state.groq.model}`, ent.name, "groq");
+  return n;
+}
+
+/* ---------------- the AI Mapping & Review Agent ---------------- */
+/**
+ * The understanding phase — the agent's first pass, BEFORE any mapping.
+ *
+ * It reads what extraction and classification already produced (no document is
+ * opened again), works out what each document is and what language it is in,
+ * and picks out the figures that the keyword rules and the structure pass
+ * would let past. Those become `agentBrief.important`, and the ones that were
+ * dropped as structure are marked so step 3 surfaces them in Review instead of
+ * discarding them silently.
+ *
+ * It decides nothing. The 5471 rules, the FX policy, the calculations and the
+ * validations are untouched by it; all it changes is what they are given the
+ * chance to see.
+ */
+async function agentUnderstand(
+  entityId: string,
+  mapRows: MapRow[],
+  log: string[],
+): Promise<AgentBrief | null> {
+  if (state.agent?.enabled === false) return null;
+  const ent = state.entities.find((e) => e.id === entityId);
+  if (!ent) return null;
+
+  /* ---- what the documents are ---- */
+  const byDoc = new Map<string, MapRow[]>();
+  for (const m of mapRows) {
+    if (!byDoc.has(m.docId)) byDoc.set(m.docId, []);
+    byDoc.get(m.docId)!.push(m);
+  }
+  const docs: DocBrief[] = [];
+  for (const [docId, cls] of Object.entries(ent.docClasses || {})) {
+    const rows = byDoc.get(docId) || [];
+    const langs = new Map<string, number>();
+    for (const m of rows) {
+      const name = detectLanguage(m.row.label || "");
+      langs.set(name, (langs.get(name) || 0) + 1);
+    }
+    docs.push({
+      docId, name: cls.fileName, kind: cls.kind, pages: (cls.pages || []).length,
+      statementYear: cls.statementYear ?? null,
+      periodEnd: cls.statementPeriodEnd ?? null,
+      periodStart: cls.statementPeriodStart ?? null,
+      rowsRead: rows.length,
+      rowsWithFigures: rows.filter((m) => (m.row.values || []).some((v) => typeof v === "number" && isFinite(v))).length,
+      rowsDropped: rows.filter((m) => !!m.skipReason).length,
+      sections: [...new Set(rows.map((m) => m.section).filter(Boolean) as string[])],
+      language: [...langs.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "English",
+      ocr: (ent.files || []).some((f) => f.id === docId && !!f.ocr),
+      feedsLineItems: ["cfc-financial-statements", "cfc-tax-return", "trial-balance"].includes(cls.kind),
+    });
+  }
+
+  /* ---- what the pipeline is about to do with each figure ---- */
+  const rows: AgentRow[] = mapRows
+    .filter((m) => !m.row.isBanner)
+    .map((m) => ({
+      key: norm(m.row.label), label: m.row.label,
+      english: ent.translations?.[m.row.label],
+      values: (m.row.values || []) as Array<number | null>,
+      years: (m.row.years || []) as Array<number | null>,
+      section: m.section || undefined,
+      docName: m.docName, page: m.row.page ?? null,
+      dropped: m.skipReason,
+      ruleMatched: matchRule(m.row.label, state.rules) !== null,
+    }));
+
+  const haveModel = aiReady();
+  const nodes: string[] = [];
+  let result;
+  try {
+    result = await runAgent(
+      { phase: "understand", rows, docs, haveModel, requiredYear: deriveCaseYears(Object.values(ent.docClasses || {})).cy },
+      { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS }, (n) => nodes.push(n.node),
+    );
+  } catch (err) {
+    log.push(`${AGENT_NAME}: the understanding pass did not finish — ${(err as Error)?.message || String(err)}`);
+    return null;
+  }
+  for (const note of result.notes) log.push(note);
+
+  /* ---- translate before mapping, not after ----
+     Mapping reads the English; a translation that arrives after the rules have
+     run is a translation nobody mapped through. */
+  const failures: AgentFailure[] = [...result.failures];
+  let translated = 0;
+  const language = docs.length ? (docs.find((d) => d.language !== "English")?.language || "English") : "English";
+  if (language !== "English") {
+    const todo = rows.map((r) => r.label).filter((l) => l && !ent.translations?.[l]);
+    if (todo.length && haveModel) {
+      try {
+        translated = await translateCaptions(entityId, [...new Set(todo)]);
+        log.push(`${AGENT_NAME}: ${translated} ${language} caption(s) translated before mapping, so the rules read the English`);
+      } catch (err) {
+        failures.push({
+          stage: "translate", what: `${todo.length} ${language} caption(s) could not be translated`,
+          reason: (err as Error)?.message || String(err),
+          action: "Use the Translate buttons on the Multilingual evidence tab, then re-process. Until then these captions are matched in their own language only.",
+        });
+      }
+    } else if (todo.length) {
+      failures.push({
+        stage: "translate", what: `${todo.length} ${language} caption(s) were not translated`,
+        reason: "no AI key is configured, and translation before mapping needs one",
+        action: "Add a Groq key on Settings ▸ AI platform, or translate on the Multilingual evidence tab and re-process.",
+      });
+    }
+  }
+
+  /* ---- tell the rules engine what not to throw away ---- */
+  let surfaced = 0;
+  for (const item of result.important) {
+    if (item.risk !== "dropped-as-structure") continue;
+    for (const m of mapRows) {
+      if (norm(m.row.label) !== item.key || !m.skipReason) continue;
+      m.agentImportant = item.why;
+      surfaced++;
+    }
+  }
+  if (surfaced) log.push(`${AGENT_NAME}: ${surfaced} row(s) dropped as structure are carried into Review instead — the agent reads them as line items`);
+
+  const brief: AgentBrief = {
+    at: new Date().toLocaleString(),
+    requiredYear: result.requiredYear,
+    docs: result.docs, language, important: result.important, failures,
+    notes: result.notes, steps: nodes, translated,
+  };
+  updateEntity(entityId, { agentBrief: brief });
+  return brief;
+}
+
+
+
+/** Everything the Settings panel shows about the agent, from the graph and
+    the constants that define it rather than from prose typed into a view. */
+export const agentInfo = () => ({
+  name: AGENT_NAME,
+  framework: AGENT_FRAMEWORK,
+  provider: AGENT_PROVIDER,
+  /* The agent shares the Groq credential — there is no second key anywhere in
+     this application, and the key itself is never read back into the panel. */
+  connected: aiReady(),
+  keySource: useProxy() ? "this deployment's server key" : state.groq.key ? "your key in Settings ▸ AI platform" : "none configured",
+  model: state.groq.model,
+  enabled: state.agent?.enabled !== false,
+  can: AGENT_CAN,
+  cannot: AGENT_CANNOT,
+  steps: AGENT_GRAPH.nodes,
+  lastRun: state.agent?.lastRun,
+});
+
+export type AgentRunResult = { considered: number; accepted: number; exceptions: number; findings: number; ranModel: boolean };
+
+/**
+ * Run the agent over the captions the deterministic rules could not place.
+ *
+ * It sits between translation and the 5471 rules: it reads only what earlier
+ * stages already cached, and it finishes with suggestions and findings. Every
+ * accepted suggestion is then offered to `manualApply` — the same gate a
+ * preparer's own assignment passes, with the same two document vetoes the AI
+ * pass uses — so the rules, the FX policy, the calculations and the
+ * validations all still decide. Everything else becomes a review item with
+ * its document, page and figures attached.
+ */
+async function agentRun(entityId: string, log?: string[]): Promise<AgentRunResult> {
+  const messages = log || [];
+  const nothing: AgentRunResult = { considered: 0, accepted: 0, exceptions: 0, findings: 0, ranModel: false };
+  const ent = state.entities.find((e) => e.id === entityId);
+  if (!ent) return nothing;
+  if (state.agent?.enabled === false) return nothing;
+
+  const candidates = ent.unmatched.filter(
+    (row) => /No mapping rule matches/.test(row.reason || "") && !(ent.mapOverrides && ent.mapOverrides[norm(row.label)]),
+  );
+  /* No early return on an empty list: a balance sheet can be out by a figure
+     with every caption mapped, and the review phase below is the only thing
+     that reads it back. With no candidates the mapping phase costs nothing —
+     the graph's router sends an empty row list straight past the model. */
+
+  const rows: AgentRow[] = candidates.map((row) => ({
+    key: norm(row.label),
+    label: row.label,
+    english: ent.translations?.[row.label],
+    values: (row.values || []) as Array<number | null>,
+    years: (row.years || []) as Array<number | null>,
+    section: row.section || undefined,
+    docName: row.docName,
+    docKind: row.docId && ent.docClasses?.[row.docId] ? ent.docClasses[row.docId].kind : undefined,
+    page: row.page ?? null,
+  }));
+
+  const catalogue = [
+    ...IS_LINES.map((l) => `IS:${l.row} = ${l.label}${l.row === 12 ? " (cost of goods sold ONLY — operating overheads belong on IS:34-50 other deductions)" : ""}`),
+    ...BS_LINES.map((l) => `BS:${l.row} = ${l.label}`),
+  ].join("\n");
+
+  const haveModel = aiReady();
+  if (!haveModel && rows.length) {
+    messages.push(`${AGENT_NAME}: running its document checks only — no AI key available, so no mapping is suggested (add one in Settings ▸ AI platform)`);
+  }
+
+  const nodes: string[] = [];
+  let result;
+  try {
+    result = await runAgent(
+      { rows, catalogue, targets: [...VALID_TARGETS], occupied: Object.keys(ent.lines || {}), haveModel },
+      { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS },
+      (note) => nodes.push(note.node),
+    );
+  } catch (err) {
+    messages.push(`${AGENT_NAME} did not finish — ${(err as Error)?.message || String(err)}`);
+    return nothing;
+  }
+  for (const note of result.notes) messages.push(note);
+  if (result.failure) messages.push(`${AGENT_NAME}: the model stopped answering — ${result.failure}`);
+
+  /* ---- hand the accepted suggestions to the existing mapping gate ---- */
+  const fresh = state.entities.find((e) => e.id === entityId);
+  if (!fresh) return nothing;
+  const lines = { ...fresh.lines };
+  const sourceLabels = { ...fresh.sourceLabels };
+  const contributions = { ...fresh.contributions };
+  const relabels = { ...fresh.relabels };
+  const mapOverrides = { ...fresh.mapOverrides };
+  const byKey = new Map<string, AgentSuggestion>(result.suggestions.map((sg) => [sg.key, sg]));
+  const stillUnmatched: Entity["unmatched"] = [];
+  const flags: ReviewItem[] = [];
+  let accepted = 0, exceptions = 0;
+
+  /* Every candidate the agent read is marked, whether or not it produced an
+     answer: the AI mapping pass that follows uses the same two prompts, so
+     re-asking the same caption would spend the tokens twice to reach the
+     answer the agent already has. */
+  const readKeys = new Set(rows.map((r) => r.key));
+  for (const row of fresh.unmatched) {
+    const key = norm(row.label);
+    const sg = /No mapping rule matches/.test(row.reason || "") ? byKey.get(key) : undefined;
+    if (!sg) {
+      stillUnmatched.push(haveModel && readKeys.has(key) ? { ...row, agentSeen: true } : row);
+      continue;
+    }
+    const seen = { ...row, agentSeen: haveModel };
+
+    const refuse = (why: string) => {
+      exceptions++;
+      const original = row.originalReason || row.reason;
+      stillUnmatched.push({
+        ...seen,
+        originalReason: original,
+        aiProposal: sg.target ? { to: sg.target, confidence: sg.confidence, reason: sg.rationale, refused: true } : undefined,
+        reason: `${original} · ${why}`,
+      });
+    };
+
+    if (sg.status !== "accepted" || !sg.target) {
+      refuse(sg.target
+        ? `the agent suggested ${targetLabel(sg.target)} but ${sg.issue || "was not confident"} — left for you to assign.`
+        : `the agent read it as “${sg.rationale || "not a work paper line"}” and named no line — left for you to assign.`);
+      continue;
+    }
+    /* The two document vetoes. A caption naming a bank account is a balance
+       whatever the model says, and a caption printed under a banner cannot
+       cross to the other side of the accounts. The document wins. */
+    if (/^IS:/.test(sg.target) && BANK_ACCOUNT.test(row.label || "")) {
+      refuse(`the agent suggested ${targetLabel(sg.target)}, but the caption names a bank account — a balance, not income or expense; refused.`);
+      continue;
+    }
+    if (row.section && !sectionOk(row.section, sg.target)) {
+      refuse(`the agent suggested ${targetLabel(sg.target)} but the caption was printed under the "${row.section}" banner — refused as a documentary contradiction.`);
+      continue;
+    }
+    if (!manualApply(fresh, lines, contributions, relabels, sg.target, row, "groq")) {
+      refuse(VALID_TARGETS.has(sg.target)
+        ? `the agent suggested ${targetLabel(sg.target)} but the row has no single unambiguous current-year figure to book — enter it on the line directly.`
+        : `the agent named a line id that does not exist (${sg.target}) — ignored.`);
+      continue;
+    }
+    sourceLabels[sg.target] = { label: row.label, values: row.values, years: row.years };
+    mapOverrides[key] = { to: sg.target };
+    accepted++;
+    if (sg.confidence !== "high") {
+      flags.push({
+        id: `agent-medium-${key}`, level: "warn", category: "mapping", applied: true, sourceLabel: row.label,
+        message: `${AGENT_NAME}: “${row.label}” was placed on ${targetLabel(sg.target)} with MEDIUM confidence${sg.rationale ? ` — ${sg.rationale}` : ""}. Evidence: ${citeEvidence(sg.evidence)}. The figure is booked; check the line before filing or remap it on Mapping & adjustments.`,
+        source: row.docName,
+      });
+    }
+  }
+
+  /* ---- findings go to the Review / Exception Centre ---- */
+  /* One caption can raise two findings of a kind (unsure AND landing on a
+     line the rules already filled). Review items are keyed by id and merged
+     by id across re-processing, so a collision would silently drop one. */
+  const usedIds = new Set(flags.map((f) => f.id));
+  for (const f of result.findings) {
+    let id = `agent-${f.kind}-${f.key || "x"}`;
+    for (let n = 2; usedIds.has(id); n++) id = `agent-${f.kind}-${f.key || "x"}-${n}`;
+    usedIds.add(id);
+    flags.push({
+      id,
+      level: f.kind === "missing" ? "info" : "warn",
+      category: f.kind === "terminology" ? "consistency" : "mapping",
+      applied: false,
+      sourceLabel: f.caption,
+      message: `${AGENT_NAME}: ${f.message}${f.evidence ? ` Evidence: ${citeEvidence(f.evidence)}.` : ""}`,
+    });
+  }
+  /* ---- the review phase: read the booked balance sheet back ----
+     Deterministic, so it runs with or without a key. This is where a missing
+     cash line, fixed assets with no depreciation, an equity that does not tie
+     and an assumed period end are caught — and named with the caption or the
+     figure behind them, rather than left as "out by N". */
+  const leftovers: AgentRow[] = stillUnmatched.map((row) => ({
+    key: norm(row.label), label: row.label,
+    english: fresh.translations?.[row.label],
+    values: (row.values || []) as Array<number | null>,
+    years: (row.years || []) as Array<number | null>,
+    section: row.section || undefined, docName: row.docName, page: row.page ?? null,
+  }));
+  let assetsEoy = 0, liabEquityEoy = 0, equityEoy = 0;
+  const filledTargets: string[] = [];
+  for (const spec of BS_LINES) {
+    const target = `BS:${spec.row}`;
+    const v = lines[target];
+    const eoy = typeof v?.eoy === "number" ? v.eoy : typeof v?.amount === "number" ? v.amount : null;
+    if (eoy === null || !isFinite(eoy)) continue;
+    filledTargets.push(target);
+    if (/assets/i.test(spec.group)) assetsEoy += eoy;
+    else {
+      liabEquityEoy += eoy;
+      if (spec.row >= 58) equityEoy += eoy;
+    }
+  }
+  for (const key of Object.keys(lines)) if (/^IS:/.test(key)) filledTargets.push(key);
+  const stmtDoc = Object.values(fresh.docClasses || {}).find((c) => c.statementPeriodEnd && !c.duplicateOf);
+  const brief = fresh.agentBrief;
+  const facts = {
+    cyEnd: fresh.profile.cyEnd,
+    cyEndSource: fresh.detected?.cyEnd?.sourceLabel,
+    statementPeriodEnd: stmtDoc?.statementPeriodEnd ?? null,
+    statementDoc: stmtDoc?.fileName,
+    assetsEoy: r2(assetsEoy), liabEquityEoy: r2(liabEquityEoy), equityEoy: r2(equityEoy),
+    filled: filledTargets,
+    /* Closing the loop on the understanding phase: what it said mattered,
+       against what the run actually did with it. */
+    important: brief?.important || [],
+    bookedKeys: [...new Set(Object.values(contributions).flat().map((c) => norm(c.label || "")))],
+    unmatchedKeys: stillUnmatched.map((u) => norm(u.label)),
+    failures: brief?.failures || [],
+  };
+  try {
+    const review = await runAgent({ phase: "review", rows: leftovers, facts }, { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS }, (n) => nodes.push(n.node));
+    for (const note of review.notes) messages.push(note);
+    // The brief carries the outcomes back, so the activity view shows what
+    // happened to each item rather than only what was flagged.
+    if (brief) updateEntity(entityId, { agentBrief: { ...brief, important: review.important } });
+    for (const f of review.findings) {
+      let id = `agent-${f.kind}-${f.key || "x"}`;
+      for (let n = 2; usedIds.has(id); n++) id = `agent-${f.kind}-${f.key || "x"}-${n}`;
+      usedIds.add(id);
+      flags.push({
+        id, level: "warn",
+        category: f.kind === "period" ? "consistency" : f.kind === "failure" || f.kind === "unused" ? "process" : "tie-out",
+        applied: false, sourceLabel: f.caption,
+        message: `${AGENT_NAME}: ${f.message}${f.evidence ? ` Evidence: ${citeEvidence(f.evidence)}.` : ""}`,
+      });
+      result.findings.push(f);
+    }
+  } catch (err) {
+    messages.push(`${AGENT_NAME}: the balance review did not run — ${(err as Error)?.message || String(err)}`);
+  }
+
+  const flagIds = new Set(flags.map((f) => f.id));
+  updateEntity(entityId, {
+    lines, relabels, sourceLabels, contributions, mapOverrides,
+    unmatched: stillUnmatched,
+    reviewItems: [...fresh.reviewItems.filter((r) => !flagIds.has(r.id)), ...flags],
+  });
+  messages.push(`${AGENT_NAME}: ${accepted} caption(s) accepted by the 5471 mapping rules · ${exceptions} sent to Review & exceptions · ${result.findings.length} finding(s)`);
+  if (accepted || result.findings.length) {
+    logEvent("AI agent review", `${accepted} caption(s) mapped · ${exceptions} exception(s) · ${result.findings.length} finding(s) (${AGENT_FRAMEWORK} · ${state.groq.model})`, fresh.name, "groq");
+  }
+  set({
+    agent: {
+      ...state.agent,
+      lastRun: {
+        at: new Date().toLocaleString(), entity: fresh.name,
+        considered: rows.length, accepted, exceptions: exceptions,
+        findings: result.findings.length, nodes,
+      },
+    },
+  });
+  return { considered: rows.length, accepted, exceptions: exceptions, findings: result.findings.length, ranModel: haveModel };
+}
+
 export type AiRunResult = { applied: number; considered: number; low: number; left: number };
 
 /**
@@ -5574,7 +6160,7 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
      would undo their work on every re-process. */
   const rows = ent.unmatched
     .map((row) => ({ row }))
-    .filter((x) => /No mapping rule matches/.test(x.row.reason || "") && !(ent.mapOverrides && ent.mapOverrides[norm(x.row.label)]));
+    .filter((x) => /No mapping rule matches/.test(x.row.reason || "") && !x.row.agentSeen && !(ent.mapOverrides && ent.mapOverrides[norm(x.row.label)]));
   if (!rows.length && !profileCands.length) return nothing;
 
   if (!aiReady()) {

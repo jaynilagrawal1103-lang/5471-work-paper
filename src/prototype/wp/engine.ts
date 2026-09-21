@@ -386,7 +386,9 @@ export const DEFAULT_RULES: MappingRule[] = [
          "de los ingresos"], t: "IS:OD" },
   { kw: ["income tax - current", "current tax", "corporation tax", "tax on profit", "tax on ordinary activities", "income tax revenue", "income tax expense", "impot sur les societes"], t: "IS:62" },
   { kw: ["deferred tax"], t: "IS:63" },
-  { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "efectivo", "disponibilidades", "caja y bancos", "货币资金", "merchant account", "undeposited funds", "petty cash", "checking account", "savings account"], t: "BS:10" },
+  { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "efectivo", "disponibilidades", "caja y bancos", "货币资金", "merchant account", "undeposited funds", "petty cash", "checking account", "savings account",
+         /* Xero/MYOB ship these names in the Commonwealth chart of accounts. */
+         "cheque account", "cheque acct", "everyday account", "business bank account", "transaction account"], t: "BS:10" },
   { kw: ["trade receivable", "accounts receivable", "debtor", "trade debtor", "cr\u00e9ances clients", "deudores", "cuentas por cobrar", "contas a receber", "应收账款"], t: "BS:11" },
   { kw: ["allowance for bad debt", "provision for doubtful"], t: "BS:12" },
 
@@ -409,7 +411,14 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["owner investment", "owner's investment", "owners investment",
          "member capital", "members capital", "member's capital",
          "owner contribution", "owners contribution",
-         "capital contribution", "partner capital", "partners capital"], t: "BS:60" },
+         "capital contribution", "partner capital", "partners capital",
+         /* "Capital - Ashley Elliott". A capital account in a named person's
+            name is that person's stake, which Schedule F carries on line 21
+            (paid-in or capital surplus) -- never on line 20b, which is stock
+            the corporation issued. The bare "capital" keyword on the BS:59
+            group would otherwise claim it. */
+         "capital -", "capital \u2013", "owners capital", "owner's capital",
+         "members capital", "member's capital", "partners' capital", "proprietor capital"], t: "BS:60" },
   /* "Opening balance equity" is QuickBooks' setup suspense account, not
      contributed capital: a preparer clears it to retained earnings, which is
      what the hand-prepared SHORI 2024 paper does (243,156.64 - 104,008.71 -
@@ -439,7 +448,15 @@ export const DEFAULT_RULES: MappingRule[] = [
        absence sent every English balance sheet's fixed assets into the
        other-assets pool, where the prior-return carry-forward then filled the
        empty lines 9a/9b with the SAME asset and counted it twice. */
-    "property, plant and equipment", "property plant and equipment", "plant and equipment"], t: "BS:28" },
+    "property, plant and equipment", "property plant and equipment", "plant and equipment",
+    /* An accounting package names the asset, not its class: "Computer
+       Equipment", "Office Equipment", "Motor Vehicles". None of those words
+       appeared here, so a whole fixed-asset register stayed unmapped while its
+       accumulated depreciation booked on 9b -- a balance sheet out by the cost
+       of every asset the entity owns. */
+    "computer equipment", "office equipment", "furniture and fixtures", "furniture and fittings",
+    "furniture & fixtures", "furniture & fittings", "fixtures and fittings", "leasehold improvement",
+    "plant and machinery", "motor vehicle", "machinery"], t: "BS:28" },
   { kw: ["accumulated depreciation", "amortissements cumul\u00e9s", "depr. acumulada", "depreciacion acumulada", "depreciaci\u00f3n acumulada", "deprec. acumulada"], t: "BS:29" },
   { kw: ["land"], t: "BS:32" },
   { kw: ["goodwill", "fonds de commerce"], t: "BS:34" },
@@ -1529,7 +1546,16 @@ export async function readDocument(
   const rows: string[][] = [];
   for (const rm of sx.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
     const cells: string[] = [];
-    for (const cm of rm[1].matchAll(/<c r="([A-Z]+)\d+"([^>]*)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+    /* The attribute group is LAZY on purpose. Greedy, it swallows the "/" of
+       a self-closing cell -- `<c r="A9" s="1"/>` leaves attrs as ` s="1"/`,
+       the alternation then takes the ">" branch, and the body runs on to the
+       next `</c>`, which belongs to a later cell. Every cell in between is
+       lost and its value is reported against the wrong column. A styled but
+       empty cell is written exactly that way by any workbook that formats a
+       blank grid, so a client questionnaire came through as a column of
+       shared-string INDEXES ("35" where "Taxpayer Name:" should have been)
+       and was classified as a trial balance with nothing on it. */
+    for (const cm of rm[1].matchAll(/<c r="([A-Z]+)\d+"([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
       const attrs = cm[2] || "";
       const body = cm[3] || "";
       const tm = /t="([^"]+)"/.exec(attrs);

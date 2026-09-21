@@ -31,7 +31,8 @@ All of that work, and the 2026-09-14 OCR rebuild, is merged. `main` is at
 - `scripts/` — build, bundle, and local-serve scripts (`serve-local.mjs` also
   proxies `/api/ocr/*`).
 - `tests/` — plain `node` `.cjs` tests, one npm script each; `tests/e2e/` holds
-  the Chromium end-to-end OCR run; `tests/fixtures/ocr/` the OCR PDFs.
+  the Chromium end-to-end OCR and AI-agent runs; `tests/fixtures/ocr/` the OCR
+  PDFs.
 
 ## Commands
 
@@ -41,7 +42,8 @@ All of that work, and the 2026-09-14 OCR rebuild, is merged. `main` is at
   server, `start.sh`, `start.cmd`, `README.txt`. `dist-bundle/` is gitignored.
 - `npm run build` — intentionally a no-op that keeps the reviewed `dist/`. Use
   `build:full-DESTRUCTIVE` only after porting fixes to `src/`.
-- `npm run test:all` — the full test chain (56 suites, 1,367 assertions).
+- `npm run test:all` — the full test chain (57 suites). `test:peg` is the one
+  known failure; see Open issues.
   Needs `npm i` first, and `npm run build:server` once (test:aikey reads
   `dist-server/server.cjs`).
 - `npm run start:ocr` (or `python -m ocr_service` inside `ocr-service/`) —
@@ -49,7 +51,9 @@ All of that work, and the 2026-09-14 OCR rebuild, is merged. `main` is at
   Python deps from `ocr-service/requirements.txt`, and Tesseract for the
   fallback engine). `npm run test:e2e-ocr` drives Chromium through
   upload → detect → OCR → process → generate against `serve-local` + the
-  service; not part of `test:all`.
+  service; not part of `test:all`. `npm run test:e2e-agent` drives Chromium
+  through the AI agent in the shipped file (Settings card + a full processing
+  run with the model stubbed at the network boundary); also not in `test:all`.
 
 Node 18 or newer. Verified on Node 22.
 
@@ -476,6 +480,217 @@ column truncation as the trust.
 register, the directors, the address lines and the acknowledgement rule in
 both trees. `test:sections` is 49 and `test:notes` 21. `test:all` 1336,
 the one failure still `test:peg`.
+
+### src-only defect fixed 2026-09-21
+
+The `profile-year-vs-documents` block added on 2026-09-18 had landed inside
+`pruneRemovedDocData` in `src/prototype/wp/store.ts`, where neither `caseYears`
+nor `rv` exists — `npm run typecheck` failed and a src build would have thrown.
+Moved to the detection block beside `updateEntity(... unmatchedProfile ...)`,
+which is where dist's `EN9YEARVSDOCS` already had it. dist was correct
+throughout, so no shipped behaviour changed.
+
+## AI Mapping & Review Agent (2026-09-21)
+
+Added; nothing existing was rewritten.
+
+- Where it sits: documents → OCR/extraction → translation → **agent** → the
+  existing 5471 rules and mapping → validation → review/exceptions → work
+  paper. It runs at processing step 6, BEFORE `aiRun`, on rows the rules could
+  not place. It reads only cached extraction — no document is re-read.
+- It never books anything itself. Every confident suggestion goes through
+  `manualApply` (src) / `bF` (dist) with the same two document vetoes the AI
+  pass uses (bank-account caption, section banner). Low confidence, a conflict
+  and an invalid line id are refused and land in the Exception Centre with
+  document, page, caption and figures (`citeEvidence`).
+- Framework: the LangGraph state-graph API — `StateGraph`, channels with
+  reducers, `addNode`/`addEdge`/`addConditionalEdges`, `START`/`END`, a
+  recursion limit, a step callback. The runtime is local
+  (`src/prototype/wp/agentGraph.ts`, ~90 lines) because `dist/index.html` is a
+  single offline file that is patched and never rebuilt, and the npm package
+  needs a bundler and a Node runtime. The graph itself is the published shape,
+  so it can be moved onto the real library if a server is ever added.
+- Nodes: `gather` → `understand` → (model? `suggest` : `critique`) →
+  (translated? `terminology` : `critique`) → `critique` → `route`.
+  `understand` and `critique` are deterministic, so a key-less deployment
+  still gets gap and conflict findings.
+- Credentials: the existing Groq key only. No second key system anywhere.
+  Settings ▸ AI platform shows connection status, never the key.
+- Files: `src/prototype/wp/agentGraph.ts`, `src/prototype/wp/agent.ts`,
+  `agentRun`/`agentInfo`/`setAgent` in `store.ts`, `AgentCard` in
+  `SettingsView.tsx`, `enhanceAgentSettings()` in `layer-src/enhance.js`
+  (+ `.en9-agent` CSS), dist sentinels `EN9AGENT`, `EN9AGENTCALL`,
+  `EN9AGENTACT`, markers `EN9AGENTDEF` and `EN9AGENTSEEN`.
+- `aiRun` now skips rows carrying `agentSeen` / `EN9agentSeen`: the agent uses
+  the same two prompts, so re-asking would spend the tokens twice and would
+  book what the agent deliberately held back. The profile pass is unchanged.
+- State: `state.agent` (src) / `te.EN9agent` (dist) — `{enabled?, lastRun}`.
+  Defaults to on; a project saved before this loads with `{}`.
+- Tests: `npm run test:agent` (29 checks, src vs dist parity included),
+  `npm run test:e2e-agent` (22 checks in Chromium). `test:aiparity` gained the
+  `agentSeen` pin; `test:integrity` gained the three sentinels and four
+  wiring guards.
+
+## Period end and the agent's balance review (2026-09-21)
+
+Raised by a live client (Rise Digital Marketing, 30 June year end): the tax
+period was wrong, cash and fixed assets were missing from Schedule F, and
+equity did not tie. Fixed generally, not for that client.
+
+- **The statements' own period end is now read.** `detectStatementPeriodEnd`
+  (classify.ts / `EN9stmtPeriodEnd`) parses "for the year ended 30 June 2024",
+  "as at 31 March 2025", "as of December 31, 2023" — both date orders, ordinal
+  suffixes — from the head of every `fs-`/`ato-` page, and prefers the date
+  agreeing with the detected statement year, because every set of accounts
+  prints the comparative beside it. `DocClass.statementPeriodEnd` carries it.
+- **Seeding priority for B1/B2 changed**: the statements' printed period end
+  first, then a prior 5471's period rolled forward, then 12/31 last. Before
+  this the day and month could only come from a prior 5471, so a fiscal entity
+  with no prior return was silently dated 12/31 — wrong FX tables, wrong
+  Schedule E and J dates, wrong period filed.
+- **Provenance no longer implies a quotation.** A rolled-forward year end now
+  cites "… annual accounting period ended 06/30/2023, rolled forward one year",
+  and the 12/31 fallback says "no period end stated, 31 December assumed".
+  New review items `period-end-assumed` and `period-end-disagreement`.
+- **The agent gained a review phase.** `reconcile` is a seventh node reached by
+  a router at START (`phase: "review"`): the store runs the graph a second time
+  after booking, with `BookFacts` (period end and its provenance, EOY assets /
+  liabilities+equity / equity, the filled targets) and the still-unmatched
+  captions. Deterministic — it needs no key. It reports an empty Cash line, a
+  fixed-asset caption never booked, cost without accumulated depreciation, an
+  assumed or contradicted period end, and an out-of-balance sheet **naming the
+  unbooked caption (or pair) whose figure equals the gap exactly**.
+- `agentRun` no longer returns early when nothing is unmatched: a balance sheet
+  can be out with every caption mapped, and the review is the only thing that
+  reads it back.
+- Tests: `npm run test:period` (33 checks, src vs dist), `test:agent` now 49,
+  `test:e2e-agent` 26 including a real balance-sheet run in Chromium.
+- Still dist-only: the `EN9-fiscal-title` grid scan that reads a year end from
+  a CSV/Excel title row. It now runs as a fallback behind the PDF reader.
+
+## Tax-year check and the agent dashboard (2026-09-21, third pass)
+
+**Root cause of wrong-year selection.** Year detection and period detection
+were two separate anchor lists, and only the year list fed `deriveCaseYears`.
+Xero heads a P&L "For the 12 months ended 31 December 2024" — which says
+neither "year ended" nor a bare year — so `detectStatementYear` returned NULL
+and the document voted for no year at all. With only a P&L uploaded the case
+year is null, Basic Information falls back to 31 December, and the whole work
+paper is dated on an assumption. Verified live on Ashley Elliott: `pl.pdf` read
+as year `null` before the fix, `2024` after.
+
+Fixed at the root:
+- `YEAR_ANCHORS` gained the "N months ended" shape.
+- `detectStatementPeriod` reads a printed RANGE whole ("for the period 1 July
+  2023 to 30 June 2024") and returns both ends; a single-date reader would
+  take the first date, which is the period START, and date the work paper a
+  year early. `DocClass.statementPeriodStart` carries it.
+- When no year anchor matches, the year is taken from the period end. A
+  document can no longer be read for its figures while reporting no year.
+
+**Tax year check** is a new node (`yearCheck`) between `survey` and
+`spotlight`, so it runs before mapping, carry-forward and generation. Each
+document gets `role` (current-year / prior-year-input / reference / unclear),
+`supportsYear` and `match` (match / mismatch / unclear / unchecked). A
+mismatch or an unreadable year is a named failure with the document and the
+action; nothing is used silently. Graph is 12 nodes.
+
+**Agent dashboard.** The activity card was a wall of text; it is now a compact
+dashboard: status badge, five counts (documents, items reviewed, issues, sent
+to Review, could not process), activity chips, the tax-year table, document
+cards with View details and Open document, finding cards (title, one short
+line, source, impact, status, View source + Evidence), a separate "Important
+information not used" block, failure cards (what, source, stage, reason,
+action), and the workflow strip. "AI Mapping & Review Agent:" is no longer
+printed on every line, and no paragraph exceeds ~200 characters (asserted).
+**View source / Open document opens the real file** — the project holds the
+bytes, so it is a blob URL with `#page=N`, which PDF viewers honour.
+
+Not re-tested: Rodney W. Claycomb, whose documents are not in this session.
+The defect class was the same (year read from a prior return rather than from
+the statements' own period) and is covered by the same fix.
+
+## Agent across the whole lifecycle (2026-09-21, second pass)
+
+The agent was a post-pass; it is now three phases of one graph, entered by a
+router at START.
+
+  documents → reading/OCR → language → translation → **understand** → the
+  existing 5471 rules and mapping → validation → **map (leftovers)** →
+  **review** → work paper
+
+- **understand** (end of step 2, before any mapping): `survey` → `spotlight` →
+  (model? `interpret`) → `handoff`. It reads only what extraction already
+  cached. It records a `DocBrief` per document (kind, pages, figures, rows
+  dropped as structure, language, period end, OCR), detects the language and,
+  when it is not English and a key exists, **translates before mapping** so the
+  rules read the English rather than a translation that arrives too late.
+  `spotlight` names every figure the pipeline would let past: no rule and no
+  heading, dropped as structure although the caption does not call itself a
+  total, or non-Latin with no translation. `interpret` asks the model what
+  those are; a low-confidence answer becomes a FAILURE, never a guess.
+- **Acting on it without overriding anything**: a row the structure pass
+  dropped that the agent reads as a line item is marked `agentImportant` and
+  step 3 pushes it into `unmatched` with the agent's reason. It is never
+  booked — the arithmetic that dropped it may be right — but it stops being
+  invisible and reaches Review, the Exception Centre and the AI pass.
+- **review** closes the loop: every important item is marked `booked`,
+  `unmatched` or `unused`, and an `unused` one is a finding. Every earlier
+  failure is re-stated there with stage, what, source, page, reason and the
+  action required. Nothing the agent could not do is dropped quietly.
+- `translateCaptions()` is now shared by the agent and the Translate action —
+  one translator, one set of guards.
+- New state: `Entity.agentBrief` / `EN9agentBrief`.
+- **AI Agent activity** card (layer) on the entity's Review & log tab and in the
+  Entity workspace: steps run, what was read, what was translated, what was
+  flagged and what happened to it, what needs review, what failed and why.
+  Settings ▸ AI platform gained where the agent sits in the lifecycle, that it
+  runs twice, where to watch it, and what happens when it cannot do something.
+- Graph is 11 nodes. Tests: `test:agent` 71, `test:e2e-agent` 38.
+- A blind string replace damaged `enhanceCategoryAuthority` in the layer (its
+  `if(!host)` guard became `if(!seat)`), which silently killed the whole
+  enhancement pass. Caught by the browser e2e, not by any unit test — anchor
+  layer edits on their enclosing function, not on a line that repeats.
+
+## Rise Digital Marketing — live test (2026-09-21)
+
+Four real documents (Xero balance sheet, Xero P&L, the 2023 US return, the
+Bright!Tax questionnaire). Before the fixes below: period 06/30/24 (rolled
+forward from the prior return), 4 captions unmapped, Schedule F out by
+44,660.64. After: period 12/31/24 read from the statements, **0 unmatched**,
+Schedule F ties to the client's own totals (assets 44,933.33, equity
+32,940.38), 147 cells written.
+
+What the documents exposed, all fixed generally:
+
+- **A bare "Bank" heading.** Xero prints the group as "Bank" (QuickBooks prints
+  "Bank Accounts", which was the only pattern in the lexicon) and names the
+  accounts after the product — "Cheque Account", "Remote Boss Lifestyle". No
+  keyword can reach the second; the heading is the only evidence. New banner.
+- **"Cheque Account".** The cash rule knew "checking account" (US) but not the
+  Commonwealth spelling. Added with four more package defaults.
+- **A "Fixed Assets" heading was only "assets".** New `fixedAssets` section,
+  vetoed to the non-current asset lines, routing to BS:28 by default. Its
+  accumulated depreciation booked on 9b while the assets themselves stayed
+  unmapped, so the balance sheet was out by the cost of everything the entity
+  owns. The rule catalogue also gained the account names a package prints
+  ("Computer Equipment", "Office Equipment", "Motor Vehicles", ...).
+- **"Equity" was routed as "liabilities".** So Drawings, Current Year Earnings
+  and Opening Balances fell to the current-liability catch-all (BS:50) — money
+  owed within twelve months. New `equity` section, vetoed to BS:58-62.
+- **"Capital - <person>" claimed by the bare "capital" keyword** on the
+  common-stock group. A capital account in a named person's name is line 21
+  (paid-in or capital surplus), not line 20b. Added to the BS:60 group, which
+  precedes BS:59.
+- Rule catalogue **v7 → v8**; `RULES_ADDED_SINCE[7]` registers the three new
+  keyword groups so saved projects receive them.
+- Banner lexicon 29 → 34 patterns, both trees.
+
+Judgement call left alone: "Paypal Fees" (20.87) books to cost of goods sold
+by the payment-processor rule, although this P&L prints it under Operating
+Expenses. Changing that rule would push genuine cost-of-sales captions off the
+COGS lines for statements with a single "Expenses" banner, so it stays and is
+reported to the owner instead.
 
 ## Rule catalogue upgrades
 

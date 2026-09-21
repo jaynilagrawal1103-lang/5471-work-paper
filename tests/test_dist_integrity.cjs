@@ -20,11 +20,32 @@ a(dist.includes('<style id="en9-theme">') && dist.includes('<style id="en9-css">
 a(dist.length > 3_000_000, `bundle size plausible (${(dist.length / 1e6).toFixed(2)}MB — a src rebuild + layer is ~2.98MB)`);
 
 // sentinel pairs
-for (const s of ["EN9AIMODE", "EN9FX", "EN9GROQ", "EN9POP", "EN9PRUNE", "EN9ROUND", "EN9SANI", "EN9SCHE", "EN9STRUCT", "EN9TASKS", "EN9TIE", "EN9AI-PURE"]) {
+for (const s of ["EN9AIMODE", "EN9FX", "EN9GROQ", "EN9POP", "EN9PRUNE", "EN9ROUND", "EN9SANI", "EN9SCHE", "EN9STRUCT", "EN9TASKS", "EN9TIE", "EN9AI-PURE", "EN9AGENT", "EN9AGENTCALL", "EN9AGENTACT", "EN9PERIOD", "EN9STMTPERIOD", "EN9UNDERSTANDCALL"]) {
   const b = dist.includes(`/*${s}-BEGIN*/`) || dist.includes(`/*${s}-START*/`);
   const e = dist.includes(`/*${s}-END*/`);
   a(b && e, `sentinel pair ${s} balanced`);
 }
+// the agent is wired, not merely present: the graph, the processing call and
+// the action the Settings panel binds to.
+for (const [needle, what] of [
+  ["EN9buildAgent", "the agent graph"],
+  ["await EN9agentRun(", "the agent runs during processing"],
+  ["EN9agentSeen", "the AI pass leaves the agent's captions alone"],
+  ["EN9setAgent", "the Settings panel can turn the agent off"],
+  ["EN9agReconcile", "the agent reads the booked balance sheet back"],
+  ["EN9agentUnderstand", "the agent reads the documents before mapping"],
+  ["await EN9agentUnderstand(", "the understanding pass is wired into processing"],
+  ["EN9agSpotlight", "it picks out what the rules would let past"],
+  ["EN9agYearCheck", "every document is placed against the work paper year"],
+  ["EN9stmtPeriod(", "a printed period range is read whole, start and end"],
+  ["EN9YEARFROMPERIOD", "a document with no year anchor takes its year from its period"],
+  ["EN9agentImportant", "and an important row the structure pass dropped reaches Review"],
+  ["EN9translateCaptions", "translation runs before mapping, through one translator"],
+  ["statementPeriodEnd:EN9stmtPeriodEnd(", "the classifier reads the period the statements print"],
+  ["period end printed on the statements", "the statements' own period end seeds Basic Information"],
+  ["rolled forward one year", "a rolled-forward year end says so in its provenance"],
+]) a(dist.includes(needle), `${what} (${needle})`);
+
 // the guard itself must stay in the builder
 const build = fs.readFileSync(path.join(__dirname, "..", "scripts", "build.mjs"), "utf8");
 a(build.includes("FORCE_REBUILD"), "build.mjs refuses to overwrite a fixed dist without FORCE_REBUILD=1");

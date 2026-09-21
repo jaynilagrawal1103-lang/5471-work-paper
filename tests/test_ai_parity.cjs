@@ -339,7 +339,15 @@ const err = (kind, status) => Object.assign(new Error(kind + " failure"), { kind
   });
 
   t("only captions the RULES could not place are sent, and never over an override", () => {
-    assert.ok(store.includes("/No mapping rule matches/.test(x.row.reason || \"\") && !(ent.mapOverrides && ent.mapOverrides[norm(x.row.label)])"));
+    assert.ok(store.includes("/No mapping rule matches/.test(x.row.reason || \"\") && !x.row.agentSeen && !(ent.mapOverrides && ent.mapOverrides[norm(x.row.label)])"));
+  });
+
+  t("captions the agent already read are not asked a second time", () => {
+    // The agent runs first with the same two prompts; re-asking would spend
+    // the tokens twice to reach the answer it already has -- and would book
+    // what the agent deliberately sent to the Exception Centre.
+    assert.ok(store.includes("!x.row.agentSeen"), "src skips them");
+    assert.ok(dist.includes("!x.row.EN9agentSeen"), "dist skips them");
   });
 
   t("pass two is only for what pass one could not settle", () => {

@@ -312,5 +312,32 @@ t("the filer's director status is proposed from the accounts when Item H cannot 
   assert.ok(dist.includes("/*EN9OFFICER-BEGIN*/"), "the shipped file proposes it");
 });
 
+/* ---- the engagement year ---- */
+
+t("a value the preparer typed is never overwritten by a re-process", () => {
+  /* The shipped build's propose had no "already set" guard, so processing
+     wrote the detected year end straight over a year end the preparer had
+     typed. The panel promises the opposite: "typing over a value makes it
+     yours". src always had the guard; dist did not. */
+  const store = fs.readFileSync(path.join(root, "src/prototype/wp/store.ts"), "utf8");
+  assert.ok(store.includes('if (!value || (bucket[key] !== undefined && bucket[key] !== "")) return;'),
+    "src keeps what is already there");
+  assert.ok(dist.includes("/*EN9KEEPTYPED*/"), "and now so does the shipped file");
+});
+
+t("a year end that disagrees with the documents blocks", () => {
+  // The column routing follows the DOCUMENTS. A year end typed over the
+  // detected one therefore dates the work paper one year and fills it with
+  // another's figures, and nothing on the face of it shows that.
+  assert.strictEqual(STORE.yearOfShortPeriod("03/31/24"), 2024);
+  assert.strictEqual(STORE.yearOfShortPeriod("12/31/2025"), 2025);
+  assert.strictEqual(STORE.yearOfShortPeriod("not a date"), null);
+  assert.strictEqual(STORE.yearOfShortPeriod(undefined), null);
+  const store = fs.readFileSync(path.join(root, "src/prototype/wp/store.ts"), "utf8");
+  assert.ok(/id: "profile-year-vs-documents", level: "block"/.test(store), "src blocks");
+  assert.ok(dist.includes("/*EN9YEARVSDOCS-BEGIN*/"), "the shipped file blocks");
+  assert.ok(dist.includes('id:"profile-year-vs-documents",level:"block"'));
+});
+
 if (fail) process.exit(1);
 console.log(`\n${pass} passed`);

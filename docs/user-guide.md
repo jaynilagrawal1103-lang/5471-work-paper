@@ -71,6 +71,74 @@ review exceptions; only captions the model rejects twice come back for manual
 assignment. Structural subtotal/total rows detected in PDFs are dropped before
 mapping so they are never double-booked.
 
+### The AI Mapping & Review Agent
+
+The leftovers go first to the **AI Mapping & Review Agent** — a LangGraph
+state graph (gather → understand → suggest → terminology → critique → route)
+running on the Groq key already configured in Settings ▸ AI platform. There is
+no second key: the agent shares that one, and the Settings ▸ AI platform tab
+shows only whether a key is present, never the key itself.
+
+The agent reads what the earlier stages cached — the extracted text, the
+section banners and any translations — and never re-reads a document. It
+suggests a work paper line for each caption, with the document, page, figures
+and its confidence attached; it checks the English used for translated
+captions; and it reports information that is missing, conflicting or
+ambiguous. Its confident suggestions are handed to the ordinary mapping gate,
+which can still refuse them. Everything else — a low-confidence answer, two
+captions proposed for one line, a caption with no figure — goes to the
+Exception center with its evidence.
+
+The agent reads the documents **before** the rules run: it records what each
+document is, how much of it carried figures, what language it is in, and it
+translates when translation is needed, so the rules map through the English
+rather than a translation that arrives afterwards. It then names every figure
+the pipeline would otherwise let past — one with no rule and no heading, or one
+dropped as a subtotal although the caption never calls itself a total. Those
+reach the Review tab with the agent's reason instead of disappearing; the
+agent never books them itself.
+
+After the mapping is booked the agent reads the balance sheet back and reports
+what is missing: an empty Cash line, fixed assets that were read but never
+booked, cost carried with no accumulated depreciation, and a balance sheet that
+does not tie — naming the unbooked caption whose figure equals the difference,
+so it can be fixed in one move. It also checks the period: a year end that was
+assumed, or rolled forward from last year's return, or that contradicts the
+period printed on the statements, is raised rather than left to be noticed.
+This half needs no key.
+
+Every item the agent flagged before mapping is then accounted for: booked,
+waiting in Review, or — if neither — reported. Anything the agent could not
+read, translate, understand or check is listed with the document, the page,
+the reason and what you need to do about it. The **AI Agent activity** card on
+an entity's Review & log tab shows all of it in order.
+
+The agent never changes a figure, an exchange rate, a calculation or a
+validation, and it cannot sign anything off. With no key configured it still
+runs its document checks and reports the gaps it can find without a model.
+Switch it off on the same Settings tab.
+
+### The tax year check
+
+Before anything is mapped the agent places every document against the year the
+work paper is for: the year it reports on, the period it covers, whether it is
+this year's figures or the prior-year input the opening balances come from, and
+which work paper year it supports. A document whose year does not fit, or whose
+year cannot be read, is flagged with its name and what to do — it is never used
+on the quiet. The check is on the **AI Agent activity** card of an entity's
+Review & log tab.
+
+### The period the work paper is filed for
+
+Basic Information B1 and B2 take the period end from the statements themselves
+("for the year ended 30 June 2024", "as at 31 March 2025" — both date orders).
+Only when no document states one does the tool fall back to a prior-year
+5471's accounting period rolled forward, and only then to 31 December. Which
+of the three was used is written in the field's own provenance line, and a
+year end that was assumed or that contradicts the statements is raised as a
+review item. The year end selects the exchange-rate tables and dates Schedules
+E and J, so a fiscal entity dated 31 December is wrong throughout.
+
 ## Exchange rates
 
 Rates follow a fixed chain: bundled IRS yearly-average and US Treasury 12/31
