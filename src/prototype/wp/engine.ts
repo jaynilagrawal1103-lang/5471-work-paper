@@ -534,6 +534,20 @@ function kwHit(label: string, kw: string): boolean {
 
 /** Longest matching keyword wins, so "accumulated depreciation" beats "depreciation". */
 export function matchRule(label: string, rules: MappingRule[]): string | null {
+  return matchRuleScoped(label, rules, null);
+}
+
+/** The same scan, restricted to rules that can land on one sheet.
+
+    Two rules may own the same words for different statements: "Motor Vehicle"
+    is a depreciable asset on a balance sheet and a running cost on a P&L, and
+    both catalogues carry the caption. The unrestricted scan can only return
+    one of them, so the loser used to be dropped by feed scoping and the line
+    fell through to the banner fallback or to the unmatched list. Scoping the
+    scan to the sheet the page belongs to lets the right rule win instead of
+    merely letting the wrong one lose. SKIP stays reachable from either sheet:
+    a total is a total wherever it is printed. */
+export function matchRuleScoped(label: string, rules: MappingRule[], sheet: "IS" | "BS" | null): string | null {
   const l = String(label).toLowerCase();
   /* "Total for Current Liabilities", "Total for Assets", "Subtotal of …":
      a total is a total whatever it totals, and the keyword list cannot
@@ -555,6 +569,7 @@ export function matchRule(label: string, rules: MappingRule[]): string | null {
   let best: string | null = null;
   let bestLen = 0;
   for (const r of rules) {
+    if (sheet && r.t !== "SKIP" && !r.t.startsWith(sheet)) continue;
     for (const k of r.kw) {
       const kk = String(k).toLowerCase();
       if (kk.length > bestLen && kwHit(l, kk)) {

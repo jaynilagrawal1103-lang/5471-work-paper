@@ -215,6 +215,8 @@ ok(/AI Agent/.test(act) && /Mapping & Review/.test(act), "the agent dashboard is
 ok(/Documents\s*Items reviewed|Documents/.test(act) && /Items reviewed/.test(act), "it leads with the numbers");
 ok(/Agent activity/.test(act), "it lists the steps that ran");
 ok(/Tax year check/.test(act), "it shows the tax year check");
+ok(/Detected/.test(act) && /Work paper year/.test(act) && /Chosen by/.test(act),
+  "the year chain reads detected, selected, current, prior and who chose");
 ok(/Documents understood/.test(act), "it lists the documents it understood");
 ok(/agent_grid\.csv/.test(act), "it names the document");
 ok(/How the agent helped/.test(act) && /Understood/.test(act), "it shows where the agent sat in the workflow");

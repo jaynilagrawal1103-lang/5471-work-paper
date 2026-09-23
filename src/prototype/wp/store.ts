@@ -3,7 +3,7 @@
 import {
   BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES, REPLACEABLE_FORMULA_REFS,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
-  detectRulers, explainUnreadable, extractPositionedRows, extractRows, fixedAssetSplit, matchRule, noteLookthrough, numeric, readDocument, signForLabel, statementNotes,
+  detectRulers, explainUnreadable, extractPositionedRows, extractRows, fixedAssetSplit, matchRule, matchRuleScoped, noteLookthrough, numeric, readDocument, signForLabel, statementNotes,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
@@ -338,6 +338,10 @@ export type Entity = {
   /** What the agent understood about the documents BEFORE mapping, kept so the
       activity view, the review phase and the log all read one record. */
   agentBrief?: AgentBrief;
+  /** The year end was changed after this entity was processed, so every line,
+      rate and validation on it belongs to the previous year. Cleared by the
+      next run. Nothing derived may be trusted, or generated, while it is set. */
+  yearStale?: boolean;
 };
 
 export type GroqState = {
@@ -507,6 +511,82 @@ export function yearOfShortPeriod(p: string | undefined): number | null {
   const y = Number(m[3]);
   return m[3].length === 4 ? y : 2000 + y;
 }
+
+/** The period end one year before a short `m/d/yy` period end, or null when
+    the value is not a period end. 29 February has no counterpart in a common
+    year, so it steps back to the 28th rather than rolling into March. */
+export function priorPeriodEnd(p: string | undefined): string | null {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(String(p || "").trim());
+  if (!m) return null;
+  const mm = Number(m[1]);
+  const dd = Number(m[2]);
+  const y = m[3].length === 4 ? Number(m[3]) : 2000 + Number(m[3]);
+  const py = y - 1;
+  const leap = (py % 4 === 0 && py % 100 !== 0) || py % 400 === 0;
+  const day = mm === 2 && dd === 29 && !leap ? 28 : dd;
+  return `${String(mm).padStart(2, "0")}/${String(day).padStart(2, "0")}/${String(py).slice(2)}`;
+}
+
+/* ---------------- the one controlling year ---------------- */
+
+/** Every year the documents themselves report on, newest first. */
+export const detectedYears = (ent: Entity): number[] =>
+  [...new Set(Object.values(ent.docClasses || {})
+    .filter((c) => !c.duplicateOf && c.statementYear)
+    .map((c) => c.statementYear as number))].sort((a, b) => b - a);
+
+/** The year the PREPARER set, or null when the year end on the profile is the
+    one the tool proposed. `detected[key]` holds what was proposed, and
+    `setField` deletes it the moment a value is typed over — so the two
+    together are the record of who chose. */
+export function selectedYear(ent: Entity): number | null {
+  const typed = yearOfShortPeriod(ent.profile?.cyEnd);
+  if (!typed) return null;
+  const auto = ent.detected?.cyEnd;
+  if (auto && auto.value === ent.profile.cyEnd) return null;
+  return typed;
+}
+
+export type CaseYears = {
+  cy: number | null;
+  py: number | null;
+  dissent: number[];
+  /** Who decided: the preparer, the documents, or nobody yet. */
+  source: "selected" | "documents" | "none";
+  detected: number[];
+};
+
+/**
+ * The year the whole run obeys.
+ *
+ * A work paper is prepared FOR a year; the documents are evidence about it,
+ * not the choice of it. Before this, `deriveCaseYears` took the newest year
+ * any document reported and that year drove column routing, carry-forward
+ * selection, validation and the agent — so a set of accounts one year ahead
+ * of the engagement silently became the current year, and correcting the year
+ * end in Basic Information changed nothing but the date printed on the form.
+ *
+ * The preparer's year wins when they set one. Otherwise the documents vote,
+ * exactly as before, so nothing changes for a run where nobody has typed a
+ * year end.
+ */
+export function resolveCaseYears(ent: Entity): CaseYears {
+  const seen = detectedYears(ent);
+  const chosen = selectedYear(ent);
+  if (chosen) {
+    return { cy: chosen, py: chosen - 1, dissent: seen.filter((y) => y !== chosen), source: "selected", detected: seen };
+  }
+  const voted = deriveCaseYears(Object.values(ent.docClasses || {}));
+  return { ...voted, source: voted.cy ? "documents" : "none", detected: seen };
+}
+
+/** One line of plain English for the log, the brief and the activity card. */
+export const caseYearReason = (y: CaseYears): string =>
+  y.source === "selected"
+    ? `${y.cy} — you set the year end in Basic Information${y.detected.length ? `; the documents report on ${y.detected.join(", ")}` : ""}`
+    : y.source === "documents"
+      ? `${y.cy} — taken from the documents (${y.detected.join(", ")}); set the year end in Basic Information to prepare a different year`
+      : "not established — no document states a year and no year end has been entered";
 
 /* ---------------- store ---------------- */
 const initialStakeholder = "New stakeholder";
@@ -768,6 +848,14 @@ async function fanOutSiblings(parentId: string, plans: CfCandidate[]): Promise<v
     const sib = makeEntity(plan.cfcName, state.stakeholder);
     sib.profile.legalName = plan.cfcName;   // drives the sibling's own block selection + backend naming
     if (plan.refIds[0]) sib.profile.refId = plan.refIds[0];
+    /* A sibling is another work paper for the SAME engagement year. Carrying
+       the parent's year end means the sibling obeys the preparer's choice too,
+       instead of re-deriving a year from the shared documents and quietly
+       preparing a different one. */
+    if (selectedYear(parent)) {
+      sib.profile.cyEnd = parent.profile.cyEnd;
+      sib.profile.pyEnd = parent.profile.pyEnd;
+    }
     // Share the parent's documents: same file ids, same blob references.
     // Storage counts per entity copy — consistent with removeEntity's refund.
     sib.files = parent.files.map((f) => ({ ...f }));
@@ -1098,6 +1186,50 @@ export const actions = {
       const detected = { ...ent.detected };
       delete detected[key];                       // now a manual value
       updateEntity(entityId, { detected });
+    }
+    /* The year end decides which column is booked, which prior return opens
+       the balances, which rates apply and what the validations compare. A
+       change to it after a run leaves every one of those belonging to the
+       year before — so say so, and drop the rates that were fetched for it,
+       rather than letting the old figures stand under the new date. */
+    if (bucket === "profile" && (key === "cyEnd" || key === "pyEnd") && ent.profile[key] !== value) {
+      const before = yearOfShortPeriod(ent.profile.cyEnd);
+      const after = yearOfShortPeriod(key === "cyEnd" ? value : ent.profile.cyEnd);
+      /* Changing the work paper year moves the opening date with it. Without
+         this the edit was real for the closing column and cosmetic for the
+         opening one: the prior year end kept the value proposed for the year
+         the documents report on. A prior year end the preparer typed by hand
+         is never moved — `detected.pyEnd` is present only while the value is
+         the tool's own proposal. */
+      if (key === "cyEnd") {
+        const cur = state.entities.find((e) => e.id === entityId);
+        const want = priorPeriodEnd(value);
+        const pyTyped = !!cur?.profile.pyEnd && !cur?.detected?.pyEnd;
+        if (cur && want && !pyTyped && cur.profile.pyEnd !== want) {
+          updateEntity(entityId, {
+            profile: { ...cur.profile, pyEnd: want },
+            detected: {
+              ...cur.detected,
+              pyEnd: {
+                key: "pyEnd", value: want, confidence: "high",
+                sourceLabel: `the year before ${value}, the period this work paper is prepared for`,
+              },
+            },
+          });
+        }
+      }
+      if (ent.processedAt && before !== after) {
+        updateEntity(entityId, {
+          yearStale: true,
+          ...(ent.fxAuto ? { fx: {}, fxMeta: {} } : {}),
+        });
+        logEvent(
+          "Work paper year changed",
+          `${before ?? "not set"} → ${after ?? "not set"} — the lines, rates and checks on this entity were produced for ${before ?? "the previous year"}; re-process before generating`,
+          ent.name, "user",
+        );
+        toast(`Year changed to ${after ?? "—"} — re-process the entity`, "");
+      }
     }
     // Typing the currency by hand IS the confirmation (C-01).
     if (bucket === "profile" && key === "currency" && value.trim()) {
@@ -1974,12 +2106,24 @@ export const actions = {
           }
         }
         markDuplicates(bundles.map((b) => b.cls), parsedByFile);
-        const derived = deriveCaseYears(bundles.map((b) => b.cls));
+        /* The preparer's year end wins over the documents. A work paper is
+           prepared FOR a year; the documents are evidence about it. */
+        const entNow = state.entities.find((e) => e.id === entityId);
+        const derived = entNow
+          ? resolveCaseYears({ ...entNow, docClasses: Object.fromEntries(bundles.map((b) => [b.cls.fileId, b.cls])) } as Entity)
+          : { ...deriveCaseYears(bundles.map((b) => b.cls)), source: "documents" as const, detected: [] as number[] };
         caseYears = { cy: derived.cy, py: derived.py };
-        if (derived.dissent.length) {
+        log.push(`Work paper year: ${caseYearReason(derived as CaseYears)}`);
+        if (derived.source === "selected" && derived.dissent.length) {
+          rv({
+            id: "case-year-selected", level: "info", category: "consistency",
+            message: `This work paper is being prepared for ${derived.cy}, as entered in Basic Information. The documents report on ${derived.detected.join(", ")}: the ${derived.cy} column is booked as the current year and ${derived.py} as the opening column. Any other year in them is reference only. Clear the year end in Basic Information to let the documents decide again.`,
+            target: `${SHEET.basic}!B1`,
+          });
+        } else if (derived.dissent.length) {
           rv({
             id: "case-year-dissent", level: "warn", category: "consistency",
-            message: `Documents report on different years: ${derived.cy} was taken as the case year; ${derived.dissent.join(", ")} document(s) were treated as reference material. Confirm the engagement year.`,
+            message: `Documents report on different years: ${derived.cy} was taken as the case year; ${derived.dissent.join(", ")} document(s) were treated as reference material. Enter the year end in Basic Information to choose the year yourself.`,
           });
         }
         for (const b of bundles) {
@@ -2300,6 +2444,21 @@ export const actions = {
           if (selected) {
             cf = selected.cf;
             cfSource = selected.source;
+            /* The return states its own accounting period on the 5471 face
+               ("beginning APR 1, 2022, and ending MAR 31, 2023"). The page
+               reader never sees it — it only scans statement pages — so the
+               return was placed by its label year alone. Record the period it
+               actually states, so the opening balances can be checked against
+               the year being prepared. */
+            if (cf.periodEnd) {
+              const host = state.entities.find((e) => e.id === entityId);
+              const cls = host?.docClasses?.[selected.fileId];
+              if (cls && !cls.statementPeriodEnd) {
+                updateEntity(entityId, {
+                  docClasses: { ...host!.docClasses, [selected.fileId]: { ...cls, statementPeriodEnd: cf.periodEnd } },
+                });
+              }
+            }
             // A reference copy OLDER than the immediately prior year: its
             // Schedule J line 14 opens the WRONG year — flag, never adjust.
             if (caseYears.cy && selected.statementYear && selected.statementYear < caseYears.cy - 1) {
@@ -2433,8 +2592,22 @@ export const actions = {
             // Feed scoping: a P&L page may only hit IS lines, a balance-sheet
             // page only BS lines. A related-party balance is recognized by the
             // group name in its caption.
-            if (target && m.feed === "is" && !target.startsWith("IS")) target = null;
-            if (target && m.feed === "bs" && !target.startsWith("BS")) target = null;
+            /* A rule that lands on the wrong sheet for this page loses — but
+               losing is not the same as there being no rule. Two catalogues
+               can own the same words for different statements ("Motor
+               Vehicle" is a depreciable asset on a balance sheet and a running
+               cost on a P&L), and whichever one the unrestricted scan returns,
+               the other is the right answer on the other page. Ask the
+               catalogue again with the sheet fixed before falling back to the
+               banner. */
+            if (target && m.feed === "is" && !target.startsWith("IS")) {
+              target = matchRuleScoped(m.row.label, state.rules, "IS");
+              if (target === "SKIP") target = null;
+            }
+            if (target && m.feed === "bs" && !target.startsWith("BS")) {
+              target = matchRuleScoped(m.row.label, state.rules, "BS");
+              if (target === "SKIP") target = null;
+            }
             if (!target && m.feed === "bs") {
               const rp = relatedPartyTarget(m.row.label, groupStems);
               if (rp) {
@@ -2533,9 +2706,7 @@ export const actions = {
           const resolved = isOverride ? { target, relabel: undefined, overflowNote: undefined } : resolvePool(pools, target, m.row.label);
           if (isOverride && specFor(target)?.relabel && !relabels[target]) relabels[target] = m.row.label;
           if (resolved.relabel) relabels[resolved.target] = resolved.relabel;
-          if (resolved.overflowNote) {
-            rv({ id: `pool-overflow-${resolved.target}`, level: "info", category: "mapping", message: resolved.overflowNote, source: m.docName });
-          }
+
 
           for (const r of routed) {
             // Summary and detailed statements in one document repeat the same
@@ -2612,6 +2783,50 @@ export const actions = {
           }
         }
 
+        /* Rows that ended up carrying several different accounts.
+           Raised once, AFTER the loop, from the final pool state: raised
+           inside it, the first caption to overflow won the review id and the
+           message froze at the count it had then — a row holding three
+           accounts was reported as holding two. */
+        for (const [poolKey, pool] of Object.entries(POOLS)) {
+          const shared = sharedPoolCaptions(pools, poolKey);
+          if (shared.length < 2) continue;
+          const row = pool.rows[pool.rows.length - 1];
+          const target = `${pool.sheet === "is" ? "IS" : "BS"}:${row}`;
+          const sheetName = pool.sheet === "is" ? SHEET.is : SHEET.bs;
+          rv({
+            id: `pool-overflow-${target}`, level: "warn", category: "mapping", applied: true,
+            message: `${shared.length} separate accounts share one "${poolKey}" row because the template offers ${pool.rows.length}: ${shared.join(" · ")}. The row's total is correct and each account is listed on the generated workbook's "Attached schedules" sheet and in Provenance — but the work paper itself shows one caption for several accounts, so use the attached schedule where the return needs the line itemised.`,
+            target: `${sheetName}!${row}`,
+          });
+          log.push(`${poolKey}: ${shared.length} accounts share row ${row} — listed on the Attached schedules sheet`);
+        }
+
+        /* A column that belongs to neither the current nor the opening year is
+           correctly not booked — but it was read, and dropping it without
+           saying so is how a set of accounts one year ahead of the engagement
+           passes unnoticed. Name the year and how many figures it carried. */
+        {
+          const seenByYear = new Map<number, number>();
+          for (const list of Object.values(contributions)) {
+            for (const c of list) {
+              for (const y of c.srcYears || []) {
+                if (typeof y === "number") seenByYear.set(y, (seenByYear.get(y) || 0) + 1);
+              }
+            }
+          }
+          const spare = [...seenByYear.entries()]
+            .filter(([y]) => y !== caseYears.cy && y !== caseYears.py)
+            .sort((a, b) => b[0] - a[0]);
+          if (spare.length && caseYears.cy) {
+            rv({
+              id: "year-columns-unused", level: "info", category: "consistency",
+              message: `${spare.map(([y, n]) => `${n} figure(s) dated ${y}`).join(", ")} ${spare.length === 1 ? "was" : "were"} read from the documents and NOT booked: this work paper is for ${caseYears.cy}, so only the ${caseYears.cy} and ${caseYears.py} columns are used. Nothing was discarded quietly — if one of those years is the year you are preparing, set the year end in Basic Information and process again.`,
+              target: `${SHEET.basic}!B1`,
+            });
+            log.push(`Columns not booked: ${spare.map(([y, n]) => `${y} (${n} figure(s))`).join(", ")} — outside the ${caseYears.cy}/${caseYears.py} pair`);
+          }
+        }
         log.push(`${Object.keys(lines).length} schedule lines populated · ${unmatched.length} unmatched`);
         updateEntity(entityId, { lines, relabels, sourceLabels, contributions, unmatched, log: [...log] });
 
@@ -2697,6 +2912,36 @@ export const actions = {
             if (nextEnd) {
               propose(profile, "cyEnd", shortPeriod(nextEnd), `${cfSource} · annual accounting period ended ${cf.periodEnd}, rolled forward one year`);
               propose(profile, "pyEnd", shortPeriod(cf.periodEnd), `${cfSource} · annual accounting period`);
+            }
+          }
+
+          /* The prior year end is one year before the current one — always,
+             for every year pair. Each proposal above already derives it that
+             way, but a proposal only fills a BLANK field, so a prior year end
+             proposed for the year the documents report on survived a later
+             change of the work paper year: a 2024 work paper built from 2025
+             statements kept 03/31/24 as its OPENING date, which is its closing
+             date. The prior year end therefore follows the current one
+             whenever the preparer has not typed it by hand. */
+          {
+            const want = priorPeriodEnd(profile.cyEnd);
+            const pyTyped = !!profile.pyEnd && !detected.pyEnd;
+            if (want && !pyTyped && profile.pyEnd !== want) {
+              const was = profile.pyEnd;
+              profile.pyEnd = want;
+              detected.pyEnd = {
+                key: "pyEnd", value: want, confidence: "high",
+                sourceLabel: `the year before ${profile.cyEnd}, the period this work paper is prepared for`,
+              };
+              filled++;
+              if (was) {
+                log.push(`Prior year end moved ${was} → ${want} to follow the work paper year ${profile.cyEnd}`);
+                rv({
+                  id: "prior-year-end-followed", level: "info", category: "consistency", applied: true,
+                  message: `The prior year end was ${was}, which belongs to a different work paper year. This work paper closes ${profile.cyEnd}, so it opens ${want}. Type a different date in Basic Information B2 only if the entity changed its year end.`,
+                  target: `${SHEET.basic}!B2`,
+                });
+              }
             }
           }
 
@@ -3239,6 +3484,8 @@ export const actions = {
       progress: PROCESS_STEPS.length,
       status: "ready",
       processedAt: new Date().toLocaleString(),
+      // Everything on the entity was just rebuilt under the current year.
+      yearStale: false,
       log: [...log],
     });
     const done = state.entities.find((e) => e.id === entityId);
@@ -3723,7 +3970,7 @@ export function entityCaseCy(ent: Entity): number | null {
     const n = Number(y);
     if (isFinite(n) && n > 1990) return n;
   }
-  return deriveCaseYears(Object.values(ent.docClasses)).cy;
+  return resolveCaseYears(ent).cy;
 }
 
 /** First matching policy rule decides; "suppress" removes the item. Pure. */
@@ -3831,23 +4078,33 @@ function routeRow(
   return "ambiguous";
 }
 
-/* Pool allocation: one relabel row per distinct caption, in document order;
-   overflow aggregates into the pool's last row. */
-type PoolState = Record<string, { byLabel: Map<string, number>; free: number[]; overflow: string[] }>;
+/* Pool allocation: one relabel row per distinct caption, in document order.
+   The template gives each "attach schedule" line a fixed number of relabel
+   rows (three on Schedule F line 16, twenty-five on Schedule C line 17), and a
+   statement with more accounts than that has to share the last one. Sharing is
+   allowed — the form line is a single line and the total stays right — but it
+   is never silent: every caption that lands on a shared row is recorded here,
+   named on the row, listed with its amount in an exception, and written out in
+   full on the generated workbook's "Attached schedules" sheet. */
+type PoolState = Record<string, { byLabel: Map<string, number>; free: number[]; shared: string[] }>;
 
 function makePoolState(): PoolState {
   const s: PoolState = {};
   for (const [key, pool] of Object.entries(POOLS)) {
-    s[key] = { byLabel: new Map(), free: [...pool.rows], overflow: [] };
+    s[key] = { byLabel: new Map(), free: [...pool.rows], shared: [] };
   }
   return s;
 }
+
+/** Every caption sharing one aggregated row, in the order they were read. */
+export const sharedPoolCaptions = (pools: PoolState, poolKey: string): string[] =>
+  [...(pools[poolKey]?.shared || [])];
 
 export function resolvePool(
   pools: PoolState,
   target: string,
   label: string,
-): { target: string; relabel?: string; overflowNote?: string } {
+): { target: string; relabel?: string; overflowNote?: string; shared?: string[] } {
   const pool = POOLS[target];
   if (!pool) return { target };
   const st = pools[target];
@@ -3860,16 +4117,21 @@ export function resolvePool(
     st.byLabel.set(key, row);
     return { target: `${prefix}:${row}`, relabel: label };
   }
-  // Last slot aggregates everything that no longer fits.
+  /* The last slot takes everything that no longer fits. The caption that got
+     there first is part of the sharing too — counting only the ones that
+     arrived after it under-reported the row by one and left the preparer
+     looking for two accounts in a row that held three. */
   const row = st.free[0];
-  st.overflow.push(label);
-  const note = st.overflow.length > 1
-    ? `${st.overflow.length} captions aggregated into one "${target}" slot: ${st.overflow.join(" · ")}`
-    : undefined;
+  st.byLabel.set(key, row);
+  if (!st.shared) st.shared = [];
+  st.shared.push(label);
+  const shared = [...st.shared];
+  if (shared.length < 2) return { target: `${prefix}:${row}`, relabel: label };
   return {
     target: `${prefix}:${row}`,
-    relabel: st.overflow.length > 1 ? `Other (${st.overflow.length} items — see exceptions)` : label,
-    overflowNote: note,
+    relabel: `Other (${shared.length} accounts — see Attached schedules)`,
+    overflowNote: `${shared.length} separate accounts share one "${target}" row because the template offers ${pool.rows.length}: ${shared.join(" · ")}`,
+    shared,
   };
 }
 
@@ -4147,7 +4409,7 @@ export function manualApply(
   if (!VALID_TARGETS.has(target)) return false;
   // Year identity survives into unmatched rows — honour it, never guess the
   // prior-year column into the current year.
-  const caseYears = deriveCaseYears(Object.values(ent.docClasses));
+  const caseYears = resolveCaseYears(ent);
   const routed = routeRow(row, target.startsWith("BS"), caseYears, row.years?.some((y) => y !== null) ? "pdf" : "grid");
   if (routed === "ambiguous" || !routed.length) return false;
   for (const r of routed) {
@@ -5011,6 +5273,7 @@ export async function materializeCaseWrites(
     if (ent.profile.cyEnd) {
       w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
+      nonCalendarTaxYear(ent, rv);
     }
     w({
       sheet: SHEET.schE, ref: "O16", value: 0, reviewId: "sch-e-nil",
@@ -5054,6 +5317,7 @@ export async function materializeCaseWrites(
     if (ent.profile.cyEnd) {
       w({ sheet: SHEET.schE, ref: "I16", value: ent.profile.cyEnd, source: "foreign tax year" });
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
+      nonCalendarTaxYear(ent, rv);
     }
     w({ sheet: SHEET.schE, ref: "O16", value: 0, source: "placeholder — P&L tax expense is not payment/accrual evidence", reviewId: "sch-e-current-tax" });
     if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, dp: 6, source: "average rate" });
@@ -5227,6 +5491,18 @@ export type Blocker = ReviewItem;
 /** Derived validation — merged with the stored review items via allReviewItems. */
 export function validateEntity(ent: Entity): ReviewItem[] {
   const out: ReviewItem[] = [];
+
+  /* The year end was changed after the run that produced these figures. Every
+     line, rate and check on the entity belongs to the year before it, so the
+     work paper would be dated one year and filled from another. */
+  if (ent.yearStale) {
+    out.push({
+      id: "year-changed-reprocess", level: "block", category: "consistency",
+      message: `The year end was changed to ${ent.profile.cyEnd || "a new value"} after this entity was processed. Every mapped line, exchange rate and check still belongs to the previous year. Process the entity again before generating — nothing here has been recalculated for ${ent.profile.cyEnd || "the new year"}.`,
+      target: `${SHEET.basic}!B1`,
+    });
+  }
+
   const rate = (k: string) => {
     const v = ent.fx[k];
     const n = v === undefined || v === "" ? NaN : Number(v);
@@ -5477,6 +5753,84 @@ export function safeName(s: string): string {
  * an AI-placed figure reaches a filed return unchecked. Rule-mapped
  * contributions are listed too, because "the keyword rules put it there" is
  * itself a fact worth being able to see next to the AI ones. */
+/* The itemisation a shared row cannot show on its face.
+
+   Schedule F line 16 offers three relabel rows and Schedule C line 17 twenty-
+   five; a statement with more accounts than that has to put several on one
+   row. The form line is genuinely one line, so the total is right — but the
+   return's attached schedule still has to name each account, and a work paper
+   that prints one caption over three balances cannot support it. This sheet
+   is that attached schedule: every row of the work paper that carries more
+   than one source caption, with each caption's own figures. */
+function attachedScheduleRows(ent: Entity): CellValue[][] | null {
+  type Cap = { label: string; boy: number | null; eoy: number | null; amount: number | null; docs: Set<string>; pages: Set<number> };
+  const groups: { target: string; line: string; shown: string; caps: Cap[] }[] = [];
+  for (const [target, list] of Object.entries(ent.contributions || {})) {
+    const spec = specFor(target);
+    if (!spec?.relabel) continue;                    // fixed form lines are not "attach schedule" rows
+    const byCap = new Map<string, Cap>();
+    for (const c of list) {
+      const name = String(c.label || "").trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      let cap = byCap.get(key);
+      if (!cap) { cap = { label: name, boy: null, eoy: null, amount: null, docs: new Set(), pages: new Set() }; byCap.set(key, cap); }
+      if (typeof c.value === "number") {
+        const f = c.field as "boy" | "eoy" | "amount";
+        cap[f] = (cap[f] ?? 0) + c.value;
+      }
+      if (c.docName) cap.docs.add(c.docName);
+      if (typeof c.page === "number") cap.pages.add(c.page);
+    }
+    if (byCap.size < 2) continue;                    // one account on its own row needs no schedule
+    const sheetName = target.startsWith("IS") ? SHEET.is : SHEET.bs;
+    groups.push({
+      target,
+      line: `${sheetName} row ${target.split(":")[1]} · ${spec.label} (form line ${spec.ref})`,
+      shown: displayLabel(ent.translations, ent.relabels[target] || spec.label),
+      caps: [...byCap.values()],
+    });
+  }
+  if (!groups.length) return null;
+
+  const rows: CellValue[][] = [];
+  rows.push(["FORM 5471 WORK PAPER — ATTACHED SCHEDULES"]);
+  rows.push(["Generated", new Date().toISOString(), "App", "5471 Work Paper 2.1.0"]);
+  rows.push(["Each block below is one work-paper row that carries more than one account from the source statements. The row's total is the sum shown here. Use this list where the return asks for the line to be itemised — nothing was dropped and nothing was renamed."]);
+  for (const g of groups) {
+    rows.push([]);
+    rows.push([g.line]);
+    rows.push(["Shown on the work paper as", g.shown]);
+    rows.push(["Source caption", "Beginning of year", "End of year", "Amount", "Document", "Page(s)"]);
+    const tot = { boy: 0, eoy: 0, amount: 0 };
+    for (const c of g.caps) {
+      tot.boy += c.boy ?? 0; tot.eoy += c.eoy ?? 0; tot.amount += c.amount ?? 0;
+      rows.push([c.label, c.boy ?? "", c.eoy ?? "", c.amount ?? "",
+                 [...c.docs].join(", "), [...c.pages].sort((a, b) => a - b).join(", ")]);
+    }
+    rows.push([`Total (${g.caps.length} accounts)`, tot.boy || "", tot.eoy || "", tot.amount || "", "", ""]);
+  }
+  return rows;
+}
+
+/* Schedule E asks for TWO periods: the foreign tax year the tax relates to
+   (column d) and the U.S. tax year it is claimed in (column e). They are the
+   same date only when the corporation keeps a calendar year. The work paper
+   writes the corporation's own accounting period into both because that is
+   the one fact the documents state — which is right for a 31 December CFC and
+   an assumption for every other year end, so a fiscal year end says so rather
+   than letting the two columns agree by default. */
+function nonCalendarTaxYear(ent: Entity, rv: (item: ReviewItem) => void): void {
+  const p = String(ent.profile.cyEnd || "").trim();
+  const m = /^(\d{1,2})\/(\d{1,2})\//.exec(p);
+  if (!m || (Number(m[1]) === 12 && Number(m[2]) === 31)) return;
+  rv({
+    id: "sch-e-tax-year-pair", level: "warn", category: "consistency", applied: true,
+    message: `Schedule E columns (d) and (e) both read ${p}. Column (d) is the FOREIGN tax year the tax relates to, which is this corporation's accounting period; column (e) is the U.S. tax year of the shareholder claiming it. This corporation does not keep a calendar year, so the two are not necessarily the same period — confirm column (e) against the shareholder's return before filing.`,
+    target: `${SHEET.schE}!K16`,
+  });
+}
+
 function provenanceRows(ent: Entity): CellValue[][] {
   const rows: CellValue[][] = [];
   const label = (target: string) => {
@@ -5659,6 +6013,10 @@ export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffe
   try {
     await addWorksheet(zip, "Provenance", provenanceRows(ent));
   } catch { /* the workbook is still correct without it */ }
+  try {
+    const attached = attachedScheduleRows(ent);
+    if (attached) await addWorksheet(zip, "Attached schedules", attached);
+  } catch { /* the workbook is still correct without it */ }
 
   // arraybuffer + explicit Blob rather than JSZip's blob writer: it is the
   // portable path and keeps the MIME type under our control.
@@ -5813,8 +6171,9 @@ async function agentUnderstand(
   const nodes: string[] = [];
   let result;
   try {
+    const years = resolveCaseYears(ent);
     result = await runAgent(
-      { phase: "understand", rows, docs, haveModel, requiredYear: deriveCaseYears(Object.values(ent.docClasses || {})).cy },
+      { phase: "understand", rows, docs, haveModel, requiredYear: years.cy, yearSource: years.source, detectedYears: years.detected },
       { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS }, (n) => nodes.push(n.node),
     );
   } catch (err) {
@@ -5866,6 +6225,9 @@ async function agentUnderstand(
   const brief: AgentBrief = {
     at: new Date().toLocaleString(),
     requiredYear: result.requiredYear,
+    yearSource: result.yearSource,
+    detectedYears: result.detectedYears,
+    yearReason: caseYearReason(resolveCaseYears(ent)),
     docs: result.docs, language, important: result.important, failures,
     notes: result.notes, steps: nodes, translated,
   };

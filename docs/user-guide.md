@@ -118,6 +118,23 @@ validation, and it cannot sign anything off. With no key configured it still
 runs its document checks and reports the gaps it can find without a model.
 Switch it off on the same Settings tab.
 
+### Which year the work paper is for
+
+The year end in Basic Information decides it. Enter one and the whole run obeys
+it: which column of the statements is booked as the current year, which prior
+return opens the balances, which exchange rates apply and what the checks
+compare. Leave it blank and the documents decide, as before — the newest year
+they report on.
+
+A set of accounts one year ahead is not a problem: its comparative column is
+this year's closing balance sheet, and the agent labels it as that. Any column
+belonging to neither the current nor the prior year is reported with the year
+and how many figures it held, never dropped in silence.
+
+Change the year after processing and the tool says so: the lines, rates and
+checks on the entity were produced for the previous year, so generation is
+blocked until you process the entity again.
+
 ### The tax year check
 
 Before anything is mapped the agent places every document against the year the

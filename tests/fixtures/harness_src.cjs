@@ -50,7 +50,7 @@ function toRows(raw, meta) {
 
 function newSlots() {
   const S = {};
-  for (const k of Object.keys(ENG.POOLS)) S[k] = { byLabel: new Map(), free: ENG.POOLS[k].rows.slice(), overflow: [] };
+  for (const k of Object.keys(ENG.POOLS)) S[k] = { byLabel: new Map(), free: ENG.POOLS[k].rows.slice(), shared: [] };
   return S;
 }
 

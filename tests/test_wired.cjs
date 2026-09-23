@@ -23,7 +23,11 @@ a(dist.includes("EN9section:F.section"), "unmatched rows carry the section banne
 a(dist.includes("EN9bkSeen"), "cross-document booking dedupe is present in stage 3");
 a(dist.includes("structural subtotal/total row(s) dropped before mapping"),
   "structurally-skipped rows are logged per document");
-a(dist.includes('if(F.EN9skip||F.row&&F.row.EN9banner)continue'), "the booking loop honors structural skips and section banners");
+/* Structure is never booked. It is no longer always DISCARDED: a row the
+   agent read as a line item is carried into Review with its reason, which is
+   a different thing from being mapped. */
+a(dist.includes('if(F.EN9skip||F.row&&F.row.EN9banner){'), "the booking loop honors structural skips and section banners");
+a(dist.includes('if(F.EN9agentImportant&&!(F.row&&F.row.EN9banner))w.push('), "an important structural row reaches Review instead of vanishing");
 a(!dist.includes("function EN9sumSide"), "the dead-and-broken EN9sumSide helper is gone");
 a(dist.includes('target:Ce.bs+"!F62"'), "tie-out items carry a navigable target");
 

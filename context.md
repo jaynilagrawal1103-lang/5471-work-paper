@@ -568,6 +568,45 @@ equity did not tie. Fixed generally, not for that client.
 - Still dist-only: the `EN9-fiscal-title` grid scan that reads a year end from
   a CSV/Excel title row. It now runs as a fallback behind the PDF reader.
 
+## The work paper year controls the run (2026-09-22)
+
+Raised by a 12-gap diagnostic on Rodney W. Claycomb: 2025 statements (with a
+2024 comparative) and a 2023 return, for a 2024 work paper. The tool took 2025
+because it was the newest year in a document, and correcting the year end in
+Basic Information changed nothing downstream.
+
+- **`resolveCaseYears(ent)` is now the one source.** The year the preparer
+  entered wins; the documents vote only when nobody has entered one.
+  `selectedYear()` distinguishes a typed year from one the tool proposed by
+  comparing `profile.cyEnd` with `detected.cyEnd` — the record of who chose.
+  Every consumer reads it: step 1's `caseYears`, `entityYear`,
+  `materializeCaseWrites`, `manualApply`'s column routing and the agent.
+  `deriveCaseYears` keeps its old meaning as the document vote.
+- **A year change after a run invalidates what the old year produced.**
+  `setField` sets `yearStale`, drops auto-fetched rates, logs the change;
+  `validateEntity` blocks generation until the entity is processed again;
+  a completed run clears the flag.
+- **A column outside the current/prior pair is named, not dropped quietly**
+  (`year-columns-unused`), with the year and how many figures it carried.
+- **Next year's accounts are the comparative source, not a stray.** The agent
+  gives a document reporting `required + 1` the role `comparative`: its prior
+  column is this year's closing balance sheet. `required - 1` is
+  `prior-year-input`, and nothing covering `required - 1` is a named failure.
+- The prior return's own accounting period is copied onto its `DocClass`, so
+  it is placed by the period it states rather than by its label year.
+- A sibling entity created from a prior return inherits the chosen year.
+- The activity card shows the chain: detected years, work paper year, current,
+  prior, who chose.
+- Evidence, Claycomb, one run with 2024 selected: current year `BS:10` 110,171
+  (the 31 Mar 2024 column, was 41,165), `IS:7` 1,120,054 (was 1,044,522), the
+  2023 return accepted as prior-year input (the `cf-year-gap` block is gone),
+  and "Columns not booked: 2025 (46 figure(s))". Ashley Elliott, where
+  detection already worked, is unchanged: 2024 from the documents, 0 unmatched.
+- Tests: `npm run test:caseyear` (19, src vs dist), `test:agent` 91,
+  `test:e2e-agent` 45.
+- Two stale text pins were found failing and fixed: `test:wired` and
+  `test_sections`. `test:wired` prints `FAIL:`, not `FAILED:` — grep for both.
+
 ## Tax-year check and the agent dashboard (2026-09-21, third pass)
 
 **Root cause of wrong-year selection.** Year detection and period detection
@@ -702,6 +741,84 @@ dist had no upgrade path at all until 2026-09-11. `tests/test_rule_upgrade.cjs`
 now fails if it recurs, comparing against the baseline in
 `tests/fixtures/rules_v3.json` — refresh that file and bump the version when
 cutting a release.
+
+### 2026-09-22 — gap-report remediation (uncommitted)
+
+Driven by the HMC FY2024 reconciliation and the earlier
+`OCR_Workpaper_Gap_Report.xlsx`. Both trees patched, no rebuild.
+
+Verified first, then fixed. Re-running HMC through the shipped file showed
+that most of the 14-finding gap report is already closed: gross receipts
+1,044,522 (page-7 rows no longer flip to income), statement subtotals dropped,
+the page-11 movement schedule dropped with a reason, Motor Vehicle
+Contribution on other income, income tax positive on line 21a, 25
+other-deduction rows, three direct shareholders read, `cf-year-gap` already a
+BLOCK, Schedule E M16/O16/Q16 carrying formulas, the 8992/Worksheet cells
+already pointing at `Shareholding Details!N16`, and Retained Earnings opening
+already `='Balance Sheet'!D61`. The gap report's "reject a note under 15
+characters" is deliberately NOT implemented — see the comment in
+`dismissReviewItem`, which records why that check was removed.
+
+Reconciliation finding 1 ("Income Tax Expense 5,235 booked to Other deduction
+21") does NOT reproduce on this build: `matchRule("Income Tax Expense")`
+returns `IS:62`, only one rule in the catalogue hits that caption, and the
+rule has been in `engine.ts` since its first commit, so no saved catalogue can
+lack it. The workbook that showed it came from an older build. Re-run
+generates 21a = 5,235 and net per books 4,514 against the manual's 4,509.46.
+
+What actually changed:
+
+1. **Prior year end follows the work paper year.** `priorPeriodEnd()`
+   (`EN9priorEnd` in dist) plus a step at the end of the period-proposal chain
+   and in `setField`. Period proposals only fill BLANK fields, so a prior year
+   end proposed for the year the documents report on survived a change of the
+   work paper year: a 2024 work paper built from FY2025 statements kept
+   03/31/24 — its own closing date — as its opening date. The prior year end
+   now follows the current one unless the preparer typed it (`detected.pyEnd`
+   is present exactly while the value is the tool's proposal). Verified live:
+   selecting 03/31/24 gives 03/31/23; changing the year after a run moves it
+   immediately, sets `yearStale`, and re-processing switches gross receipts
+   1,044,522 → 1,120,054, cash 41,165 → 110,171 and tax 179 → 5,235.
+   The dist-only `EN9-fiscal-title` notice no longer claims the statements'
+   period was adopted when the preparer chose a different one.
+
+2. **A shared "attach schedule" row names every account on it.** `resolvePool`
+   used to count only the captions that arrived AFTER the first occupant of the
+   last slot, so a row holding three accounts was reported as holding two; the
+   notice was `info` and raised inside the loop, where the first message won
+   the review id and froze the count. The allocator now records the first
+   occupant too (`shared`, was `overflow`), the notice is raised once after the
+   loop from the final pool state at `warn`, and generation writes an
+   **"Attached schedules"** worksheet listing every caption with its own BOY /
+   EOY / amount, document and pages. The row's total is unchanged — Form 5471
+   line 16 is one line — but it is no longer silent. Pool state key renamed, so
+   `tests/fixtures/harness*.cjs` were updated; `resolvePool` tolerates the old
+   shape.
+
+3. **A rule on the wrong sheet is re-asked, not dropped.** `matchRuleScoped`
+   (`Tv(label, rules, sheet)` in dist) restricts the scan to rules that can
+   land on one sheet; feed scoping calls it instead of setting the target to
+   null. "Motor Vehicle" is a depreciable asset on a balance sheet and a
+   running cost on a P&L and both catalogues own the words, so the loser used
+   to fall through to the banner fallback or the unmatched list. SKIP stays
+   reachable from either sheet.
+
+4. **Schedule E (d) and (e).** Both cells take the corporation's accounting
+   period, which is right for a 31 December CFC and an assumption otherwise.
+   A non-calendar year end now raises `sch-e-tax-year-pair` naming the
+   difference between the foreign tax year and the U.S. tax year.
+
+Deliberately NOT changed (presentation, no effect on net income): the wages
+split between line 11 and other deductions, netting the loss on sale into
+other income, and merging non-deductible expenses into donations. The opening
+column rebuilt from the prior return is a document problem, not a code one —
+supply the FY2024 statements, whose comparative column IS 31/03/2023, and the
+agent already says so. The fiscal-period average rate (OFX daily, cited in
+Provenance) is a house-convention choice, not a defect.
+
+Tests: `test:poolshare` is new (10 assertions); `test:caseyear` gained four
+groups including a step-back over every year 2000-2099. `test:all` is 60
+suites / 1,500 assertions, `test:peg` still the one known failure.
 
 ## Open issues
 

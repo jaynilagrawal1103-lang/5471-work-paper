@@ -2003,7 +2003,22 @@ function enhanceAgentActivity(){
 
   /* tax year check */
   if(brief&&brief.docs&&brief.docs.length){
-    card.appendChild(el("h4","en9-ag-h","Tax year check"+(brief.requiredYear?" · work paper year "+brief.requiredYear:"")));
+    card.appendChild(el("h4","en9-ag-h","Tax year check"));
+    /* Detected years, the year chosen, current and prior, and who chose. */
+    var chain=el("div","en9-ag-chain");
+    [["Detected", (brief.detectedYears&&brief.detectedYears.length?brief.detectedYears.join(", "):"none")],
+     ["Work paper year", String(brief.requiredYear||"\u2014")],
+     ["Current", String(brief.requiredYear||"\u2014")],
+     ["Prior", brief.requiredYear?String(brief.requiredYear-1):"\u2014"],
+     ["Chosen by", brief.yearSource==="selected"?"you, in Basic Information":brief.yearSource==="documents"?"the documents":"nobody yet"]
+    ].forEach(function(p2,i){
+      if(i) chain.appendChild(el("span","en9-ag-flowsep","\u203a"));
+      var cs=el("span","en9-ag-chainstep");
+      cs.appendChild(el("span","en9-ag-chainlab",p2[0]));
+      cs.appendChild(el("span","en9-ag-chainval",p2[1]));
+      chain.appendChild(cs);
+    });
+    card.appendChild(chain);
     var tb=el("div","en9-ag-table");
     var hr=el("div","en9-ag-tr en9-ag-th");
     ["Document","Identified","Required","Result","Role"].forEach(function(h){ hr.appendChild(el("span",null,h)); });
@@ -2016,7 +2031,7 @@ function enhanceAgentActivity(){
       r.appendChild(el("span",null,String(d.supportsYear||brief.requiredYear||"—")));
       var mm=MATCH[d.match||"unchecked"];
       var c=el("span"); c.setAttribute("data-en9",""); c.appendChild(en9AgBadge(mm[0],mm[1])); r.appendChild(c);
-      r.appendChild(el("span",null,d.role==="current-year"?"Current year":d.role==="prior-year-input"?"Prior-year input":d.role==="unclear"?"Unknown":"Reference"));
+      r.appendChild(el("span",null,d.role==="current-year"?"Current year":d.role==="prior-year-input"?"Prior-year input":d.role==="comparative"?"Comparative column":d.role==="unclear"?"Unknown":"Reference"));
       tb.appendChild(r);
     });
     card.appendChild(tb);

@@ -20,7 +20,7 @@ a(dist.includes('<style id="en9-theme">') && dist.includes('<style id="en9-css">
 a(dist.length > 3_000_000, `bundle size plausible (${(dist.length / 1e6).toFixed(2)}MB — a src rebuild + layer is ~2.98MB)`);
 
 // sentinel pairs
-for (const s of ["EN9AIMODE", "EN9FX", "EN9GROQ", "EN9POP", "EN9PRUNE", "EN9ROUND", "EN9SANI", "EN9SCHE", "EN9STRUCT", "EN9TASKS", "EN9TIE", "EN9AI-PURE", "EN9AGENT", "EN9AGENTCALL", "EN9AGENTACT", "EN9PERIOD", "EN9STMTPERIOD", "EN9UNDERSTANDCALL"]) {
+for (const s of ["EN9AIMODE", "EN9FX", "EN9GROQ", "EN9POP", "EN9PRUNE", "EN9ROUND", "EN9SANI", "EN9SCHE", "EN9STRUCT", "EN9TASKS", "EN9TIE", "EN9AI-PURE", "EN9AGENT", "EN9AGENTCALL", "EN9AGENTACT", "EN9PERIOD", "EN9STMTPERIOD", "EN9UNDERSTANDCALL", "EN9CASEYEAR", "EN9PRIOREND", "EN9PYFOLLOW", "EN9PYFOLLOWRUN", "EN9POOLSHARE", "EN9POOLSHARED", "EN9ATTSCH", "EN9TAXYEARPAIR"]) {
   const b = dist.includes(`/*${s}-BEGIN*/`) || dist.includes(`/*${s}-START*/`);
   const e = dist.includes(`/*${s}-END*/`);
   a(b && e, `sentinel pair ${s} balanced`);
@@ -41,7 +41,12 @@ for (const [needle, what] of [
   ["EN9YEARFROMPERIOD", "a document with no year anchor takes its year from its period"],
   ["EN9agentImportant", "and an important row the structure pass dropped reaches Review"],
   ["EN9translateCaptions", "translation runs before mapping, through one translator"],
-  ["statementPeriodEnd:EN9stmtPeriodEnd(", "the classifier reads the period the statements print"],
+  ["EN9caseYears(", "one resolver decides the work paper year"],
+  ["EN9selectedYear(", "a year the preparer typed outranks the documents"],
+  ["EN9YEARSTALE", "changing the year after a run marks the results stale"],
+  ["year-changed-reprocess", "and blocks generation until it is re-processed"],
+  ["year-columns-unused", "a column outside the pair is named, not dropped quietly"],
+  ["statementPeriodEnd:EN9per.end", "the classifier reads the period the statements print"],
   ["period end printed on the statements", "the statements' own period end seeds Basic Information"],
   ["rolled forward one year", "a rolled-forward year end says so in its provenance"],
 ]) a(dist.includes(needle), `${what} (${needle})`);

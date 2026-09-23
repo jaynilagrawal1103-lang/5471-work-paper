@@ -441,13 +441,36 @@ for (const [tree, , A] of TREES) {
     const out = await check([DOC({})], 2024);
     assert.strictEqual(out.docs[0].role, "current-year");
     assert.strictEqual(out.docs[0].match, "match");
-    assert.deepStrictEqual(out.failures, []);
+    // The only failure is the missing prior year, which is true of this pile.
+    assert.deepStrictEqual(out.failures.map((f) => f.what), ["no document covers 2023, the year this work paper opens from"]);
+  });
+
+  await ta(`${tree}: nothing covering the prior year is named, not assumed away`, async () => {
+    const out = await check([DOC({})], 2024);
+    const f = out.failures.find((x) => /no document covers 2023/.test(x.what));
+    assert.ok(f, "missing prior year raised");
+    assert.match(f.action, /2023 Form 5471|2023 statements/);
+  });
+
+  await ta(`${tree}: a prior-year document present means no such failure`, async () => {
+    const out = await check([DOC({}), DOC({ name: "prior.pdf", statementYear: 2023 })], 2024);
+    assert.ok(!out.failures.some((x) => /no document covers/.test(x.what)));
   });
 
   await ta(`${tree}: last year's accounts are prior-year input, not this year's figures`, async () => {
     const out = await check([DOC({ statementYear: 2023, periodEnd: "12/31/2023" })], 2024);
     assert.strictEqual(out.docs[0].role, "prior-year-input");
     assert.strictEqual(out.docs[0].match, "match");
+  });
+
+  await ta(`${tree}: next year's accounts are the comparative source, not a stray`, async () => {
+    // A 2025 set of accounts prints the 2024 column beside its own; for a 2024
+    // work paper that column is the closing balance sheet.
+    const out = await check([DOC({ statementYear: 2025, periodEnd: "12/31/2025" }), DOC({ name: "p.pdf", statementYear: 2023 })], 2024);
+    assert.strictEqual(out.docs[0].role, "comparative");
+    assert.strictEqual(out.docs[0].match, "match");
+    assert.strictEqual(out.docs[0].supportsYear, 2024);
+    assert.ok(!out.failures.some((f) => /reports on 2025/.test(f.what)), "not reported as a stray year");
   });
 
   await ta(`${tree}: a document two years out is a mismatch, with the reason`, async () => {
@@ -476,7 +499,7 @@ for (const [tree, , A] of TREES) {
   await ta(`${tree}: a questionnaire is reference material, not a year mismatch`, async () => {
     const out = await check([DOC({ kind: "client-questionnaire", statementYear: null, feedsLineItems: false })], 2024);
     assert.strictEqual(out.docs[0].match, "unchecked");
-    assert.deepStrictEqual(out.failures, []);
+    assert.ok(!out.failures.some((f) => /could not be read|reports on/.test(f.what)), "no year complaint about a questionnaire");
   });
 
   await ta(`${tree}: every document says which work paper year it supports`, async () => {

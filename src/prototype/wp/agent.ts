@@ -132,7 +132,7 @@ export type DocBrief = {
   periodStart?: string | null;
   /** What this document is FOR, once its year is known against the year the
       work paper is being prepared for. */
-  role?: "current-year" | "prior-year-input" | "reference" | "unclear";
+  role?: "current-year" | "prior-year-input" | "comparative" | "reference" | "unclear";
   /** The work paper year this document supports. */
   supportsYear?: number | null;
   match?: "match" | "mismatch" | "unclear" | "unchecked";
@@ -180,6 +180,9 @@ export type AgentFailure = {
 export type AgentBrief = {
   at: string;
   requiredYear?: number | null;
+  yearSource?: "selected" | "documents" | "none";
+  detectedYears?: number[];
+  yearReason?: string;
   docs: DocBrief[];
   language: string;
   important: AgentImportant[];
@@ -200,6 +203,10 @@ export type AgentState = {
   /** The year the work paper is being prepared for, so every document can be
       placed against it before anything is mapped. */
   requiredYear: number | null;
+  /** Who chose that year, and every year the documents themselves state — so
+      the card can show the chain rather than a bare number. */
+  yearSource: "selected" | "documents" | "none";
+  detectedYears: number[];
   rows: AgentRow[];
   catalogue: string;                 // the legal target list, built by the store from IS_LINES/BS_LINES
   targets: string[];                 // every valid target id, for the invalid-id check
@@ -534,6 +541,13 @@ const yearCheck = (state: AgentState) => {
     if (required === null) return { ...d, role: "current-year", supportsYear: d.statementYear, match: "unchecked" };
     if (d.statementYear === required) return { ...d, role: "current-year", supportsYear: required, match: "match" };
     if (d.statementYear === required - 1) return { ...d, role: "prior-year-input", supportsYear: required, match: "match" };
+    /* A document one year AHEAD is not a stray: a set of accounts always
+       prints the year before beside its own, so next year's statements are
+       where this year's closing column comes from. Only that column is used,
+       and saying "remove it" would throw away the evidence. */
+    if (d.statementYear === required + 1) {
+      return { ...d, role: "comparative", supportsYear: required, match: "match" };
+    }
     failures.push({
       stage: "understand", what: `${d.name} reports on ${d.statementYear}, not ${required}`, doc: d.name,
       reason: `this work paper is for ${required}; a ${d.statementYear} document is neither the current year nor the prior year it opens from`,
@@ -542,11 +556,23 @@ const yearCheck = (state: AgentState) => {
     return { ...d, role: "reference", supportsYear: d.statementYear, match: "mismatch" };
   });
 
+  /* The opening column has to come from somewhere. When nothing in the pile
+     reports on the year before the one being prepared, the work paper opens
+     blank — and that is a fact about the evidence, not an error to hide. */
+  if (required !== null && !docs.some((d) => d.role === "prior-year-input")) {
+    failures.push({
+      stage: "understand",
+      what: `no document covers ${required - 1}, the year this work paper opens from`,
+      reason: `the opening column of a ${required} work paper is the close of ${required - 1}; nothing here reports on it`,
+      action: `Add the ${required - 1} Form 5471 or the ${required - 1} statements, or enter the opening balances by hand. Schedule F and Schedule J open blank without them.`,
+    });
+  }
+
   const mism = docs.filter((d) => d.match === "mismatch" || d.match === "unclear").length;
   return {
     docs, failures,
     notes: [required
-      ? `Agent: tax year check — the work paper is for ${required}; ${docs.filter((d) => d.match === "match").length} document(s) match, ${mism} need a decision`
+      ? `Agent: tax year check — documents report ${state.detectedYears.length ? state.detectedYears.join(", ") : "no year"}; work paper year ${required} (${state.yearSource === "selected" ? "you chose it" : "from the documents"}); current ${required}, prior ${required - 1}. ${docs.filter((d) => d.match === "match").length} document(s) match, ${mism} need a decision`
       : "Agent: tax year check — no year could be established from the documents, so nothing was placed against one"],
   };
 };
@@ -820,6 +846,8 @@ export function buildAgent() {
       facts: last<BookFacts | null>(null),
       docs: last<DocBrief[]>([]),
       requiredYear: last<number | null>(null),
+      yearSource: last<"selected" | "documents" | "none">("documents"),
+      detectedYears: last<number[]>([]),
       important: last<AgentImportant[]>([]),
       failures: append<AgentFailure>(),
       rows: last<AgentRow[]>([]),
@@ -897,6 +925,7 @@ export async function runAgent(
     rows: AgentRow[]; catalogue?: string; targets?: string[]; occupied?: string[]; haveModel?: boolean;
     phase?: "map" | "review" | "understand"; facts?: BookFacts | null;
     docs?: DocBrief[]; important?: AgentImportant[]; requiredYear?: number | null;
+    yearSource?: "selected" | "documents" | "none"; detectedYears?: number[];
   },
   deps: AgentDeps,
   onStep?: (note: { node: string; ms: number }) => void,
