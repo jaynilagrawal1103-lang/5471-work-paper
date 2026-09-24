@@ -265,6 +265,22 @@ export const DEMO_RELABELS: Record<string, string[]> = {
 
 export type MappingRule = { kw: string[]; t: string };
 
+/** What a payment processor charges to collect the money. Named once because
+    two places need the same list: the rule that books it as a deduction, and
+    the override that puts it back on cost of goods sold where the statement
+    itself files it there. */
+export const PROCESSOR_FEE_KW = [
+  "shopify fee", "paypal fee", "stripe fee", "merchant account fee",
+  "merchant fee", "payment processing fee", "payment fee",
+  "transaction fee", "processing fee",
+];
+
+/** Is this caption a payment processor's fee? */
+export const isProcessorFee = (label: string): boolean => {
+  const l = String(label || "").toLowerCase();
+  return PROCESSOR_FEE_KW.some((k) => l.includes(k));
+};
+
 export const DEFAULT_RULES: MappingRule[] = [
   /* Subtotals the template recomputes itself. SKIP beats fragment keywords
      ("Cost of Sales" would otherwise hit "sales") because the longest
@@ -302,6 +318,14 @@ export const DEFAULT_RULES: MappingRule[] = [
     "depreciacion tributaria", "depreciaci\u00f3n tributaria",
     "resultado financiero", "resultado del ejercicio", "utilidad del ejercicio",
     "perdida del ejercicio", "p\u00e9rdida del ejercicio",
+    /* How a Mexican P&L captions its bottom line and its financing subtotal.
+       Left unlisted, "Utilidad (o Pérdida)" was offered to the preparer as a
+       Schedule C line to assign — booking it would have doubled the loss.
+       On a BALANCE sheet the same caption is the year's result inside equity,
+       and equityOverride still routes it to retained earnings. */
+    "utilidad (o p\u00e9rdida)", "utilidad (o perdida)", "utilidad o p\u00e9rdida", "utilidad o perdida",
+    "utilidad o p\u00e9rdida del ejercicio", "utilidad o perdida del ejercicio",
+    "resultado integral de financiamiento", "resultado integral", "resultado neto",
     /* Statement subtotals the template recomputes. A Swiss client's accounts
        booked "Operating profit", "Net financial income" and "Profit before
        tax" as three DEDUCTIONS, and "Total revenue" a second time on top of
@@ -340,15 +364,20 @@ export const DEFAULT_RULES: MappingRule[] = [
          "existencias, insumos", "insumos y servicios"], t: "IS:11" },
   // "Cost of sales" totals are deliberately absent: the components map here
   // and the template's F9 subtotal recomputes the total — both would double-count.
-  /* Line 2 "Other costs". The payment-processor and carriage captions name
-     the supplier, not the cost, so no cost keyword reaches them; left
-     unmatched they fell to whatever banner was above them, and under an
-     income banner they became gross receipts. */
+  /* Line 2 "Other costs". The carriage captions name the supplier or the
+     movement, not the cost, so no cost keyword reaches them; left unmatched
+     they fell to whatever banner was above them, and under an income banner
+     they became gross receipts. */
   { kw: ["direct hotel", "direct meals", "direct car rental", "direct airfare", "direct fuel", "direct parking", "direct taxi", "uber", "job cost",
-         "freight", "carriage", "shipping and delivery", "delivery expense",
-         "shopify fee", "paypal fee", "stripe fee", "merchant account fee",
-         "merchant fee", "payment processing fee", "payment fee",
-         "transaction fee", "processing fee"], t: "IS:12" },
+         "freight", "carriage", "shipping and delivery", "delivery expense"], t: "IS:12" },
+  /* A payment processor's fee is what it costs to COLLECT the money, not what
+     the goods cost, so it is a deduction like any other bank charge and not
+     part of cost of goods sold. It kept the fee captions out of gross receipts
+     when it lived on line 2 and it still does — the rule matches either way,
+     so the banner above the caption never gets to claim it. "Bank fees" and
+     "bank charges" already sit in this pool; a card or wallet fee is the same
+     kind of cost and now lands beside them. */
+  { kw: [...PROCESSOR_FEE_KW], t: "IS:OD" },
   { kw: ["dividend income", "dividends received"], t: "IS:14" },
   { kw: ["interest income", "interest received", "produits financiers"], t: "IS:15" },
   { kw: ["rental income", "gross rent"], t: "IS:16" },
@@ -474,6 +503,33 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["investment", "inversiones", "inversi\u00f3n", "participation account", "cuenta de participaci\u00f3n"], t: "BS:OI" },
   { kw: ["retained earning", "retained profits", "accumulated profit", "profit and loss account", "report \u00e0 nouveau", "utilidades acumuladas", "excedentes acumulados", "resultados acumulados", "lucros acumulados", "未分配利润"], t: "BS:61" },
   { kw: ["treasury stock", "own shares"], t: "BS:62" },
+  /* ---- the Mexican chart of accounts ----
+
+     A CONTPAQ i statement names its accounts in Spanish, and in a wording the
+     Chilean and Colombian entries written earlier do not cover. Without these,
+     "Terrenos" — 94% of one client's total assets — matched nothing, and so
+     did the whole fixed-asset register, every tax account and the accumulated
+     result. Appended rather than merged into the groups above so a saved
+     catalogue receives them whole; the longest keyword still wins, so position
+     decides nothing. */
+  { kw: ["terrenos", "terreno"], t: "BS:32" },
+  { kw: ["equipo de transporte", "equipo de reparto", "autom\u00f3viles", "automoviles", "autobuses", "camiones",
+          "equipo de servicios", "equipo de servicio", "mobiliario y equipo", "muebles y enseres",
+          "maquinaria y equipo", "edificios", "edificio", "equipo de c\u00f3mputo", "equipo de computo"], t: "BS:28" },
+  { kw: ["depreciaci\u00f3n acumulada", "depreciacion acumulada"], t: "BS:29" },
+  { kw: ["amortizaci\u00f3n acumulada", "amortizacion acumulada"], t: "BS:37" },
+  /* An advance PAID to a supplier is an asset. Left to the payables keyword
+     "proveedores" it was booked as a liability, which moves the balance sheet
+     by twice the amount; the longer keyword here wins outright. */
+  { kw: ["anticipo a proveedores", "anticipos a proveedores", "pagos anticipados", "gastos pagados por anticipado",
+          "impuestos a favor", "impuestos acreditables", "impuestos anticipados", "impuestos por recuperar",
+          "saldo a favor de impuestos", "iva acreditable"], t: "BS:OCA" },
+  { kw: ["impuestos por pagar", "impuestos y derechos por pagar", "contribuciones por pagar", "iva trasladado"], t: "BS:OCL" },
+  { kw: ["resultado de ejercicios anteriores", "resultados de ejercicios anteriores", "resultado ejercicios anteriores",
+          "resultados ejercicios anteriores", "utilidades retenidas", "p\u00e9rdidas acumuladas", "perdidas acumuladas"], t: "BS:61" },
+  { kw: ["depreciaci\u00f3n contable", "depreciacion contable", "depreciaci\u00f3n del ejercicio", "depreciacion del ejercicio"], t: "IS:30" },
+  { kw: ["gastos de servicio", "gastos de servicios", "gastos de administraci\u00f3n", "gastos de administracion",
+          "gastos de venta", "gastos de ventas", "gastos generales", "gastos de operaci\u00f3n", "gastos de operacion"], t: "IS:OD" },
 ];
 
 /* ---------- numeric parsing ---------- */
@@ -548,13 +604,23 @@ export function matchRule(label: string, rules: MappingRule[]): string | null {
     merely letting the wrong one lose. SKIP stays reachable from either sheet:
     a total is a total wherever it is printed. */
 export function matchRuleScoped(label: string, rules: MappingRule[], sheet: "IS" | "BS" | null): string | null {
-  const l = String(label).toLowerCase();
+  /* A caption the accounting package itself cut short. CONTPAQ i prints
+     "Depreciación acumulada de Eq. de Se.." when the account name does not
+     fit the column; matched with the ellipsis attached, the visible stem
+     could not end a keyword and the account went unmapped. The original text
+     is what is stored, shown and cited — only the scan sees the stem. */
+  const l = String(label).toLowerCase().replace(/\s*(?:\.{2,}|\u2026)\s*$/, "").trim();
   /* "Total for Current Liabilities", "Total for Assets", "Subtotal of …":
      a total is a total whatever it totals, and the keyword list cannot
      enumerate every section name a report engine might put after "for".
      Checked before the keywords so that "Total for Assets" cannot fall
      through to the "assets" fragment. */
   if (/^(sub-?)?totals?\s+(for|of)\b/.test(l)) return "SKIP";
+  /* "SUMA DEL ACTIVO", "SUMA DEL PASIVO Y CAPITAL" — how a Spanish-language
+     package closes a side of the balance sheet. Nothing skipped it, so the
+     bare "capital" keyword claimed the equity total for common stock and
+     booked the whole accumulated deficit onto Schedule F line 20b. */
+  if (/^sumas?\s+de(l|\s+l[ao]s?)?\b/.test(l)) return "SKIP";
   // Spanish totals can put "total" at either end. Catch them before broad
   // ingresos/gastos keywords see a second revenue or deduction line.
   if (/^(?:total(?:es)?\s+(?:de\s+)?)?(?:ingresos|gastos|costos|activos|pasivos|patrimonio)(?:\s+totales?)?$/.test(l)) return "SKIP";
@@ -768,7 +834,13 @@ export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
   if (formLine && values.length === 1 && values[0] === Number(formLine.replace(/[a-c]$/, ""))) return null;
   if (formLine && FORM_CAPTIONS.has(normCaption(label))) return null;
   if (label.length > 64) return null;                    // captions are short
-  if (/[.!?]\s+\S/.test(label) || /\n/.test(label)) return null;  // prose, not a ledger line
+  /* Prose, not a ledger line — but an ABBREVIATION is not a sentence. A
+     CONTPAQ i statement shortens a long account name to "Depreciación
+     acumulada de Eq. de Se..", and the full stop after "Eq" read as the end
+     of a sentence, so the whole row was discarded before anything could map
+     it. A stop after a token of three letters or fewer is an abbreviation. */
+  const prose = label.replace(/\b([A-Za-z]{1,3})\.(?=\s)/g, "$1");
+  if (/[.!?]\s+\S/.test(prose) || /\n/.test(label)) return null;
   if (label.split(/\s+/).length > 9) return null;
   /* Unmatched brackets mean the caption is the tail (or head) of a sentence
      that wrapped across PDF lines, not a ledger line. A Chilean return's
@@ -781,9 +853,20 @@ export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
   return { ...row, label, values, years, formLine };
 }
 
+/* A value with TWO or more dot groups can only be dots-as-thousands:
+   "1.973.582.648" is not a number with two decimal points. One group on its
+   own ("622.624") is ambiguous and cannot settle anything, which is why a
+   document must be read as a whole before any of its figures are. Without
+   this the unambiguous values came out right and the ambiguous ones came out
+   a thousand times too small, in the same column. No vocabulary is involved,
+   so it holds for every language that writes numbers this way. */
+export const dotThousandsDocument = (text: string): boolean => /\d{1,3}(?:\.\d{3}){2,}/.test(text);
+
 export function extractRows(rows: string[][] | null): ExtractedRow[] {
   const out: ExtractedRow[] = [];
   if (!rows) return out;
+  const gridText = rows.map((r) => (r || []).join(" ")).join(" ");
+  const dotThousands = dotThousandsDocument(gridText);
   const colYears = detectGridYearHeader(rows);
   const roles = detectColumnRoles(rows);
   // Header-less documents still get line-number protection, by column shape.
@@ -800,7 +883,7 @@ export function extractRows(rows: string[][] | null): ExtractedRow[] {
       if (roles.lineNoCols.has(i)) continue;              // 行次/序号/Line No. — never money
       const cell = r[i];
       if (cell === "" || cell === undefined) continue;
-      const n = numericCell(String(cell));
+      const n = numericCell(String(cell), { dotThousands });
       if (n !== null) nums.push({ v: n, col: i });
       else if (label === null && textualCell(String(cell)) && String(cell).trim().length > 2) {
         label = String(cell).trim();
@@ -836,18 +919,101 @@ export function extractRows(rows: string[][] | null): ExtractedRow[] {
   return out;
 }
 
-/** A spreadsheet header row of bare years maps grid columns to years. */
+
+/* ---------- what a column header says the column is ----------
+
+   A statement does not always head its figure columns with a bare year. The
+   same balance sheet that prints "2025  2024" on the profit and loss prints
+   "31 MAR 2025  31 MAR 2024" over the balances, and a New Zealand or
+   Australian pack often prints "FY24" or "Current Year / Prior Year". Reading
+   only a bare year left those pages with no ruler at all: every row then
+   carried numbers with no year identity, the router refused all of them, and
+   a whole balance sheet went to review unbooked.
+
+   The reading is deliberately strict. A year is accepted only when, after the
+   date and period words are taken out, NOTHING else is left — so "2024 Budget"
+   and "Note 2024/25" are not years, and a figure such as "1,995.00" can never
+   become one. */
+
+const clampYear = (y: number): number | null => (y >= 1990 && y <= 2035 ? y : null);
+
+/** Headers that name the period by position rather than by year. Resolved
+    against the engagement's own years once those are known. */
+const CY_WORD = /^(current\s+(financial\s+)?year|this\s+year|cy)$/i;
+const PY_WORD = /^((prior|previous|last)\s+(financial\s+)?year|py)$/i;
+
+/* A three-letter word is dropped only when it is a currency code ("2024 NZD"),
+   never when it is something else the header happens to say. */
+let ccyCodes: Set<string> | null = null;
+const currencyToken = (word: string): string => {
+  if (ccyCodes === null) {
+    try { ccyCodes = new Set(Object.keys(FX_META)); } catch { ccyCodes = new Set(); }
+  }
+  return ccyCodes.has(word.toUpperCase()) ? " " : word;
+};
+
+const PERIOD_WORD = /\b(year|years|yr|period|ended|ending|end|as|at|on|of|for|the|to)\b/gi;
+const MONTH_WORD = /\b(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)\b/gi;
+
+/** The year a column header names, or null when it names none. */
+export function headerYear(text: string): number | null {
+  const t = String(text ?? "").trim();
+  let m: RegExpExecArray | null;
+  if (/^(19|20)\d{2}$/.test(t)) return parseInt(t, 10);
+  if ((m = /^fy\s*'?((19|20)\d{2})$/i.exec(t))) return clampYear(parseInt(m[1], 10));
+  if ((m = /^fy\s*'?(\d{2})$/i.exec(t))) return clampYear(2000 + parseInt(m[1], 10));
+  // A long caption is prose, and a two-decimal tail is money.
+  if (t.length > 30 || /[.,]\d{2}$/.test(t)) return null;
+  if (numericCell(t) !== null && /[()\-]|CR|DR/i.test(t)) return null;
+  // Exactly one four-digit year, and not part of a longer number.
+  const hits = [...t.matchAll(/(?:19|20)\d{2}/g)].filter((h) => {
+    const before = t[(h.index as number) - 1], after = t[(h.index as number) + 4];
+    return !(before >= "0" && before <= "9") && !(after >= "0" && after <= "9");
+  });
+  if (hits.length !== 1) return null;
+  const i = hits[0].index as number;
+  const rest = (t.slice(0, i) + t.slice(i + 4))
+    .replace(PERIOD_WORD, " ")
+    .replace(MONTH_WORD, " ")
+    .replace(/'0{3}s?|\b000s?\b/gi, " ")       // "2024 '000"
+    .replace(/\b[A-Za-z]{3}\b/g, currencyToken)
+    .replace(/\b\d{1,2}(st|nd|rd|th)?\b/gi, " ")
+    .replace(/[\s.,\/\-–—:;()'"$€£¥₹]+/g, "");
+  return rest === "" ? clampYear(parseInt(hits[0][0], 10)) : null;
+}
+
+/** A spreadsheet header row of years maps grid columns to years. A bare year
+    on its own is enough; a dated or worded header needs a second column to
+    agree, so a stray "2024" in a one-column sheet cannot rule it. */
 export function detectGridYearHeader(rows: string[][]): (number | null)[] | null {
   for (const r of rows.slice(0, 10)) {
     if (!r) continue;
     const filled = r.map((c, i) => ({ c: String(c ?? "").trim(), i })).filter((x) => x.c !== "");
     if (!filled.length) continue;
-    const yearCells = filled.filter((x) => /^(19|20)\d{2}$/.test(x.c));
-    const textCells = filled.filter((x) => !/^(19|20)\d{2}$/.test(x.c));
-    if (yearCells.length >= 1 && yearCells.length <= 4 &&
-        textCells.every((x) => x.c.length <= 14) && textCells.length <= 1) {
+    const years: Array<{ y: number; i: number; bare: boolean }> = [];
+    const worded: Array<{ y: number; i: number }> = [];
+    const rest: Array<{ c: string; i: number }> = [];
+    for (const x of filled) {
+      const bare = /^(19|20)\d{2}$/.test(x.c);
+      const y = bare ? parseInt(x.c, 10) : headerYear(x.c);
+      if (bare) years.push({ y: y as number, i: x.i, bare: true });
+      else if (y !== null) years.push({ y, i: x.i, bare: false });
+      else if (CY_WORD.test(x.c)) worded.push({ y: -1, i: x.i });
+      else if (PY_WORD.test(x.c)) worded.push({ y: -2, i: x.i });
+      else rest.push(x);
+    }
+    const quiet = rest.every((x) => x.c.length <= 14) && rest.length <= 1;
+    if (years.length >= 1 && years.length <= 4 && !worded.length && quiet &&
+        (years.every((x) => x.bare) || years.length >= 2)) {
       const map: (number | null)[] = [];
-      for (const y of yearCells) map[y.i] = parseInt(y.c, 10);
+      for (const y of years) map[y.i] = y.y;
+      return map;
+    }
+    if (!years.length && worded.length === 2 &&
+        worded.some((x) => x.y === -1) && worded.some((x) => x.y === -2) &&
+        quiet && rest.every((x) => numericCell(x.c) === null)) {
+      const map: (number | null)[] = [];
+      for (const w of worded) map[w.i] = w.y;
       return map;
     }
   }
@@ -860,29 +1026,261 @@ declare const JSZip: any;
 import { pdfToDoc } from "./pdfText";
 import { sanitize } from "./hygiene";
 import { isBannerLabel } from "./sectionBanners";
+import { FX_META } from "./fxRates";
 import type { PdfDoc, PdfRow, PdfCell } from "./pdfText";
+
+/* ---------- statements printed as two facing panels ----------
+
+   A Mexican, Spanish or Latin-American balance sheet is commonly printed as
+   two halves of one page: ACTIVO down the left, PASIVO and CAPITAL down the
+   right, with an account on each side sharing every print line. Read as
+   ordinary rows, the line
+
+       Bancos            71.89      Acreedores diversos a corto plazo  15,541,257.57
+
+   becomes ONE row captioned "Bancos" carrying two numbers, which the column
+   router then reads as two period columns of the same account. The liability
+   is attached to the asset, and the account that owned it is never emitted at
+   all — it is not booked, not unmatched and not in Review.
+
+   The layout is found from the page's own geometry rather than from any
+   wording, so it holds for a statement in any language. A vertical band that
+   no cell crosses divides the page; the test that makes it a PANEL divide
+   rather than the ordinary gap before a figures column is that BOTH sides
+   carry captions of their own, and that several print lines carry a caption
+   and a figure on each side at once. */
+
+type Panel = { x0: number; x1: number };
+
+const panelTextual = (t: string): boolean =>
+  /\p{L}/u.test(t) && t.trim().length >= 3 && numericCell(t) === null && !/^(19|20)\d{2}$/.test(t.trim());
+
+/** The x of a vertical band no cell crosses, splitting a page into two
+    caption-and-figure panels; null when the page is an ordinary statement. */
+export function panelSplitX(rows: PdfRow[]): number | null {
+  /* The bands are measured on the rows that carry a figure on EACH side —
+     never on the letterhead. A page header runs the client's name across the
+     middle of the page, and one such row bridges the very gap the two panels
+     are divided by, so a page that plainly has two panels appeared to have
+     none. Rows with two or more figures are the ones the layout question is
+     actually about. */
+  const body = rows.filter((r) => r.cells.filter((c) => numericCell(c.text) !== null).length >= 2);
+  if (body.length < 3) return null;
+  const cells = body.flatMap((r) => r.cells);
+  if (cells.length < 12) return null;
+  const left = Math.min(...cells.map((c) => c.x0));
+  const right = Math.max(...cells.map((c) => c.x1));
+  const width = right - left;
+  if (!(width > 0)) return null;
+
+  // Occupied x-ranges, merged; the holes between them are the candidate bands.
+  const spans = cells.map((c) => ({ a: c.x0, b: c.x1 })).sort((p, q) => p.a - q.a);
+  const merged: { a: number; b: number }[] = [];
+  for (const s of spans) {
+    const last = merged[merged.length - 1];
+    if (last && s.a <= last.b) last.b = Math.max(last.b, s.b);
+    else merged.push({ ...s });
+  }
+
+  let best: { x: number; w: number } | null = null;
+  for (let i = 1; i < merged.length; i++) {
+    const gap = merged[i].a - merged[i - 1].b;
+    if (gap < 12) continue;
+    const x = (merged[i - 1].b + merged[i].a) / 2;
+    // Both panels must be a real share of the page.
+    if (x - left < width * 0.25 || right - x < width * 0.25) continue;
+    if (!panelsQualify(rows, x)) continue;
+    if (!best || gap > best.w) best = { x, w: gap };
+  }
+  return best ? best.x : null;
+}
+
+/** Both sides carry their own captions with figures, and they do so on the
+    same lines — which a caption column followed by figure columns never does. */
+function panelsQualify(rows: PdfRow[], x: number): boolean {
+  let leftRows = 0, rightRows = 0, shared = 0;
+  for (const r of rows) {
+    const l = r.cells.filter((c) => c.x1 <= x);
+    const rt = r.cells.filter((c) => c.x0 >= x);
+    const pair = (cs: PdfCell[]) => {
+      const li = cs.findIndex((c) => panelTextual(c.text));
+      return li >= 0 && cs.slice(li + 1).some((c) => numericCell(c.text) !== null);
+    };
+    const lp = pair(l), rp = pair(rt);
+    if (lp) leftRows++;
+    if (rp) rightRows++;
+    if (lp && rp) shared++;
+  }
+  return leftRows >= 3 && rightRows >= 3 && shared >= 2;
+}
+
+/** Re-cut a document so each panel of a two-panel page is read on its own.
+    Pages that are not printed this way come back untouched, and so does the
+    order of everything on them. Left panel first, then right, so that a
+    section heading still precedes the rows it announces. Each panel's left
+    edge becomes its own zero, so indentation stays comparable between them. */
+export function splitSidePanels(doc: PdfDoc): PdfDoc {
+  const pages = new Map<number, PdfRow[]>();
+  for (const r of doc.rows) {
+    if (!pages.has(r.page)) pages.set(r.page, []);
+    pages.get(r.page)!.push(r);
+  }
+  let changed = false;
+  const out: PdfRow[] = [];
+  for (const [, rows] of [...pages.entries()].sort((a, b) => a[0] - b[0])) {
+    const x = panelSplitX(rows);
+    if (x === null) { out.push(...rows); continue; }
+    changed = true;
+    /* A cell that straddles the divide — a running header, a title — belongs
+       to whichever side holds more of it, so nothing printed on the page is
+       silently dropped by the cut. */
+    const sideOf = (c: PdfCell) => (c.x1 <= x ? "l" : c.x0 >= x ? "r" : (x - c.x0 >= c.x1 - x ? "l" : "r"));
+    const side = (want: "l" | "r") => {
+      const kept: PdfRow[] = [];
+      for (const r of rows) {
+        const cells = r.cells.filter((c) => sideOf(c) === want);
+        if (cells.length) kept.push({ page: r.page, y: r.y, cells });
+      }
+      if (!kept.length) return kept;
+      const edge = Math.min(...kept.flatMap((r) => r.cells.map((c) => c.x0)));
+      return kept.map((r) => ({ ...r, cells: r.cells.map((c) => ({ ...c, x0: c.x0 - edge, x1: c.x1 - edge })) }));
+    };
+    out.push(...side("l"), ...side("r"));
+  }
+  return changed ? { ...doc, rows: out } : doc;
+}
 
 /* ---------- positional extraction: column rulers and year snapping ---------- */
 
 export type ColumnRuler = { page: number; y: number; cols: { year: number; x0: number; x1: number }[] };
 
-/** A printed header row of bare years ("2024   2023") rules the rows below it. */
+/** A printed header row that names its columns' years rules the rows below it.
+    "2024   2023" and "31 MAR 2025   31 MAR 2024" are both read; so are
+    "Current Year / Prior Year", which carry -1 and -2 until the engagement
+    years resolve them (see resolveWordRulers).
+
+    A header cell that is not a bare year has to be confirmed by a second year
+    column, so a single dated caption cannot rule a page on its own. */
 export function detectRulers(doc: PdfDoc): ColumnRuler[] {
   const out: ColumnRuler[] = [];
   for (const r of doc.rows) {
-    const yearCells = r.cells.filter((c) => /^(19|20)\d{2}$/.test(c.text));
-    if (!yearCells.length || yearCells.length > 4) continue;
-    const others = r.cells.filter((c) => !/^(19|20)\d{2}$/.test(c.text));
-    if (others.length > 1) continue;
-    if (others.some((c) => c.text.length > 14 || numericCell(c.text) !== null)) continue;
+    const years: Array<{ year: number; x0: number; x1: number; bare: boolean }> = [];
+    const worded: Array<{ year: number; x0: number; x1: number }> = [];
+    const rest: PdfCell[] = [];
+    for (const c of r.cells) {
+      const bare = /^(19|20)\d{2}$/.test(c.text);
+      const y = bare ? parseInt(c.text, 10) : headerYear(c.text);
+      if (bare) years.push({ year: y as number, x0: c.x0, x1: c.x1, bare: true });
+      else if (y !== null) years.push({ year: y, x0: c.x0, x1: c.x1, bare: false });
+      else if (CY_WORD.test(c.text.trim())) worded.push({ year: -1, x0: c.x0, x1: c.x1 });
+      else if (PY_WORD.test(c.text.trim())) worded.push({ year: -2, x0: c.x0, x1: c.x1 });
+      else rest.push(c);
+    }
+    // Whatever else is on the line is the row's caption, never a figure.
+    const quiet = !(rest.length > 1 || rest.some((c) => c.text.length > 14 || numericCell(c.text) !== null));
+    if (years.length >= 1 && years.length <= 4 && !worded.length && quiet &&
+        (years.every((x) => x.bare) || years.length >= 2)) {
+      out.push({ page: r.page, y: r.y, cols: years.map((x) => ({ year: x.year, x0: x.x0, x1: x.x1 })) });
+    } else if (!years.length && worded.length === 2 &&
+               worded.some((x) => x.year === -1) && worded.some((x) => x.year === -2) && quiet) {
+      out.push({ page: r.page, y: r.y, cols: worded.map((x) => ({ year: x.year, x0: x.x0, x1: x.x1 })) });
+    }
+  }
+  return out;
+}
+
+/** "Current Year / Prior Year" only means a year once the engagement says
+    which years those are. A ruler still carrying a placeholder when they are
+    unknown is dropped rather than guessed. */
+export function resolveWordRulers(
+  rulers: ColumnRuler[],
+  years: { cy: number | null; py: number | null } | null | undefined,
+): ColumnRuler[] {
+  const out: ColumnRuler[] = [];
+  for (const r of rulers) {
+    if (!r.cols.some((c) => c.year < 0)) { out.push(r); continue; }
+    if (!years || !years.cy) continue;
     out.push({
-      page: r.page,
-      y: r.y,
-      cols: yearCells.map((c) => ({ year: parseInt(c.text, 10), x0: c.x0, x1: c.x1 })),
+      ...r,
+      cols: r.cols.map((c) => ({
+        ...c,
+        year: c.year === -1 ? (years.cy as number) : c.year === -2 ? (years.py ?? (years.cy as number) - 1) : c.year,
+      })),
     });
   }
   return out;
 }
+
+/** A statement that runs over a page break prints its column header once. The
+    pages that follow, up to three of them, are ruled by the last header above
+    them — and only pages in the same feed, so a balance sheet never inherits
+    the profit and loss's columns. */
+export function inheritRulers(rulers: ColumnRuler[], pages: Set<number>): Map<number, number> {
+  const from = new Map<number, number>();
+  const ruled = new Set(rulers.map((r) => r.page));
+  let last: number | null = null;
+  for (const p of [...pages].sort((a, b) => a - b)) {
+    if (ruled.has(p)) last = p;
+    else if (last !== null && p - last <= 3) from.set(p, last);
+  }
+  return from;
+}
+
+/* ---------- columns named by what they measure, not by a year ----------
+
+   A ledger export often heads its figure columns with the PERIOD TYPE rather
+   than a year: "Periodo | % | Acumulado | %" on a Mexican CONTPAQ i statement,
+   "本月数 | 本年累计数" on a Chinese one, "MTD | YTD" on an English one. The
+   year ruler cannot tag any of those, so every row arrived carrying four
+   numbers with no year identity and the router refused all of them — the whole
+   profit and loss went unbooked. Worse, a router that simply took the first
+   number would take the MONTH: 46.54 of finance cost where the year's figure
+   is 5,878.11.
+
+   The cumulative column is the year. The percentage columns are not money at
+   all and are dropped before anything can mistake one for an amount. */
+
+export type PeriodRuler = {
+  page: number;
+  y: number;
+  /** The year-to-date column(s), and their printed heading. */
+  cumulative: { x0: number; x1: number }[];
+  heading: string;
+  /** Columns that are not the year: this period alone, and percentages. */
+  other: { x0: number; x1: number }[];
+};
+
+const CUMULATIVE_HEAD = /^(acumulad[oa]s?|acumulado del ejercicio|ytd|year[\s-]*to[\s-]*date|cumulative(\s+amount)?|saldo acumulado|acumulat|本年累计数?|本年累計數?|年累计数?|累计数?|累計數?)$/i;
+const PERIOD_HEAD = /^(per[ií]odo|periodo actual|del per[ií]odo|mes|mes actual|del mes|month(ly)?(\s+(amount|total))?|mtd|current\s*month|本月数|本月數|当月数|本月发生额|本期发生额)$/i;
+const PERCENT_HEAD = /^(%|%\s*$|porcentaje|percent(age)?|pct)$/i;
+
+/** Rows that head their figure columns by period type rather than by year. */
+export function detectPeriodRulers(doc: PdfDoc): PeriodRuler[] {
+  const out: PeriodRuler[] = [];
+  for (const r of doc.rows) {
+    const cum: { x0: number; x1: number }[] = [];
+    const other: { x0: number; x1: number }[] = [];
+    let heading = "";
+    let foreign = 0;
+    for (const c of r.cells) {
+      const t = c.text.trim();
+      if (!t) continue;
+      if (CUMULATIVE_HEAD.test(t)) { cum.push({ x0: c.x0, x1: c.x1 }); heading = heading || t; }
+      else if (PERIOD_HEAD.test(t) || PERCENT_HEAD.test(t)) other.push({ x0: c.x0, x1: c.x1 });
+      else if (numericCell(t) !== null) foreign++;   // a figure: this is data, not a header
+      else if (t.length > 2) foreign++;
+    }
+    // A header row, not a data row: at least one cumulative column, at least
+    // one column that is not it, and nothing else on the line.
+    if (cum.length && other.length && !foreign) out.push({ page: r.page, y: r.y, cumulative: cum, heading, other });
+  }
+  return out;
+}
+
+/** Which column a printed figure sits in — by overlap, because a figure can
+    run wider than the word above it ("0.00" under "%"). */
+const colOverlap = (a: { x0: number; x1: number }, b: { x0: number; x1: number }): number =>
+  Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0));
 
 /** Extract ledger rows from a positional document, snapping each number to
     the year column it was printed under. Financial columns right-align, so
@@ -896,10 +1294,21 @@ export function extractPositionedRows(
     /** Skip ledger-line hygiene — for narrative pages (equity movements)
         where long captions still carry the values that matter. */
     raw?: boolean;
+    /** Columns headed by period type ("Periodo | % | Acumulado | %"). */
+    periodRulers?: PeriodRuler[];
   },
 ): ExtractedRow[] {
   const out: ExtractedRow[] = [];
   const byPage = new Map<number, ColumnRuler[]>();
+  const periodByPage = new Map<number, PeriodRuler[]>();
+  for (const pr of opts?.periodRulers || []) {
+    if (!periodByPage.has(pr.page)) periodByPage.set(pr.page, []);
+    periodByPage.get(pr.page)!.push(pr);
+  }
+  const periodRulerFor = (page: number, y: number): PeriodRuler | null => {
+    const own = (periodByPage.get(page) || []).filter((pr) => pr.y > y);
+    return own.length ? own.reduce((a, b) => (a.y < b.y ? a : b)) : null;
+  };
   for (const rl of rulers) {
     if (!byPage.has(rl.page)) byPage.set(rl.page, []);
     byPage.get(rl.page)!.push(rl);
@@ -926,8 +1335,9 @@ export function extractPositionedRows(
        from one ambiguous token, so ordinary decimal statements are unchanged. */
     const statementText = doc.rows.filter((r) => r.page === row.page)
       .map((r) => r.cells.map((c) => c.text).join(" ")).join(" ").toLowerCase();
-    const chileanStyle = /\b(balance|estado de resultados|ingresos|gastos|activos|pasivos|patrimonio)\b/.test(statementText)
-      && /\b\d{1,3}\.\d{3}\b/.test(statementText);
+    const chileanStyle = dotThousandsDocument(statementText)
+      || (/\b(balance|estado de resultados|ingresos|gastos|activos|pasivos|patrimonio)\b/.test(statementText)
+        && /\b\d{1,3}\.\d{3}\b/.test(statementText));
     for (let i = 0; i < row.cells.length; i++) {
       const c = row.cells[i];
       const n = numericCell(c.text, { dotThousands: chileanStyle });
@@ -941,7 +1351,19 @@ export function extractPositionedRows(
     // The caption's own left edge: the statement's indent hierarchy, which is
     // the only evidence structural-subtotal detection has to work from.
     const x0 = row.cells[labelIdx] ? row.cells[labelIdx].x0 : undefined;
-    const kept = nums.filter((x) => x.idx > labelIdx);
+    let kept = nums.filter((x) => x.idx > labelIdx);
+    /* Columns headed by period type rather than by year. The cumulative
+       column is the year's figure; the period column is one month of it and
+       the percentage columns are not money. Keeping all four left the row
+       with no single current-year value and nothing could be booked. */
+    let periodHeading: string | undefined;
+    const pr = periodRulerFor(row.page, row.y);
+    if (pr && kept.length > 1) {
+      const inCumulative = kept.filter((k) =>
+        pr.cumulative.some((c) => colOverlap(k, c) > 0)
+        && !pr.other.some((o) => colOverlap(k, o) > colOverlap(k, pr.cumulative.reduce((a, b) => (colOverlap(k, a) >= colOverlap(k, b) ? a : b)))));
+      if (inCumulative.length) { kept = inCumulative; periodHeading = pr.heading; }
+    }
     if (!kept.length) {
       /* No figure on the line. Usually noise — but a short caption that names
          a section is the banner the rows beneath it belong to, so it is
@@ -982,7 +1404,10 @@ export function extractPositionedRows(
       });
     }
 
-    const candidate: ExtractedRow = { label, values: kept.map((x) => x.v), years, page: row.page, x0 };
+    const candidate: ExtractedRow = {
+      label, values: kept.map((x) => x.v), years, page: row.page, x0,
+      ...(periodHeading ? { period: periodHeading } : {}),
+    };
     if (opts?.raw) { out.push(candidate); continue; }
     const cleaned = applyRowHygiene(candidate);
     if (cleaned) out.push(cleaned);

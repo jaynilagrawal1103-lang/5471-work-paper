@@ -521,7 +521,7 @@ t("the agent is named and framed identically in both trees", () => {
 t("both trees compile the same graph", () => {
   assert.deepStrictEqual(SHIPPED.AGENT_GRAPH, AGENT.AGENT_GRAPH);
   assert.deepStrictEqual(SHIPPED.AGENT_GRAPH.nodes,
-    ["gather", "understand", "suggest", "terminology", "critique", "route", "reconcile", "survey", "yearCheck", "spotlight", "interpret", "handoff"]);
+    ["gather", "understand", "suggest", "terminology", "critique", "route", "reconcile", "survey", "yearCheck", "risks", "spotlight", "interpret", "handoff"]);
 });
 
 await ta("both trees route an identical caption set the same way", async () => {

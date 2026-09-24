@@ -16,7 +16,7 @@ const a = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); fails++; } 
 // the compact historical snapshot and derive that one expected wrapper here,
 // so the executable test continues to pin the complete shipped function.
 const chunks = src.distChunks.map((c, i) => i !== src.distChunks.length - 1 ? c : c
-  .replace("function q1", `/*EN9CLNUM-BEGIN*/function EN9clNum(t,e,i){var s=String(i||"").trim();if(!/^-?\\d{1,3}\\.\\d{3}$/.test(s))return Oa(i);var n=t.rows.filter(function(a){return a.page===e}).map(function(a){return a.cells.map(function(A){return A.text}).join(" ")}).join(" ").toLowerCase();return /\\b(balance|estado de resultados|ingresos|gastos|activos|pasivos|patrimonio)\\b/.test(n)&&/\\b\\d{1,3}\\.\\d{3}\\b/.test(n)?Oa(s.replace(".","")):Oa(i)}/*EN9CLNUM-END*/function q1`)
+  .replace("function q1", `/*EN9CLNUM-BEGIN*/function EN9clNum(t,e,i){var s=String(i||"").trim();if(!/^-?\\d{1,3}\\.\\d{3}$/.test(s))return Oa(i);var n=t.rows.filter(function(a){return a.page===e}).map(function(a){return a.cells.map(function(A){return A.text}).join(" ")}).join(" ").toLowerCase();return /*EN9DOTDOC*/(/\\d{1,3}(?:\\.\\d{3}){2,}/.test(n)||(/\\b(balance|estado de resultados|ingresos|gastos|activos|pasivos|patrimonio)\\b/.test(n)&&/\\b\\d{1,3}\\.\\d{3}\\b/.test(n)))?Oa(s.replace(/\\./g,"")):Oa(i)}/*EN9CLNUM-END*/function q1`)
   .replace("I=Oa(C.text)", "I=EN9clNum(t,A.page,C.text)"));
 chunks.forEach((c, i) => a(dist.includes(c), `snapshot chunk ${i} is byte-identical to dist`));
 fs.readFileSync(path.join(__dirname, "vf_test_src.js"), "utf8").split("\n").map(l => l.trim()).filter(Boolean)

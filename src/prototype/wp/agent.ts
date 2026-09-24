@@ -22,6 +22,7 @@
 
 import { StateGraph, START, END, append, last, type RunConfig } from "./agentGraph";
 import { parseMap, norm1, ok as aiOk, askResume, maxTokensFor, type Proposal } from "./aiMapping";
+import { entitySimilarity } from "./classify";
 
 export const AGENT_NAME = "AI Mapping & Review Agent";
 export const AGENT_FRAMEWORK = "LangGraph";
@@ -128,6 +129,8 @@ export type DocBrief = {
   kind: string;
   pages: number;
   statementYear: number | null;
+  /** The corporation the document itself names, when it names one. */
+  entityName?: string | null;
   periodEnd: string | null;
   periodStart?: string | null;
   /** What this document is FOR, once its year is known against the year the
@@ -138,6 +141,14 @@ export type DocBrief = {
   match?: "match" | "mismatch" | "unclear" | "unchecked";
   rowsRead: number;
   rowsWithFigures: number;
+  /** Lines on the document that carry a figure, whether or not any of them
+      reached the mapper. A document can read perfectly, carry a hundred
+      amounts and still contribute nothing, and the agent has to be able to
+      tell that from a document that was simply empty. */
+  amountRows?: number;
+  /** Pages carrying figures that name no statement section, so nothing on
+      them was booked. Their rows are in Review. */
+  loosePages?: number;
   rowsDropped: number;
   sections: string[];
   language: string;
@@ -175,6 +186,40 @@ export type AgentFailure = {
   action: string;
 };
 
+/* ---------- risks the automation may be about to run past ----------
+
+   The agent is not a reviewer that reports afterwards. Anything on this list
+   is raised BEFORE the work paper is generated, carries the reason it matters
+   and the action that would resolve it, and says whether the tool is allowed
+   to take that action on its own. Where it is not, the recommendation goes to
+   the preparer and to the automation instead of the situation being passed
+   over in silence. */
+export type AgentRisk = {
+  id: string;
+  level: "critical" | "warn";
+  /** What the agent found. */
+  what: string;
+  /** Why it matters to the return. */
+  why: string;
+  /** The action that resolves it, in the preparer's words. */
+  action: string;
+  /** Whether the tool may take that action itself, or only recommend it. */
+  permitted: "tool" | "preparer";
+  /** The automation call the tool should make, when there is one. */
+  suggest?: { op: "create-entity" | "move-document" | "set-year" | "reclassify-document"; arg: string };
+  evidence?: string;
+};
+
+export type CaseContext = {
+  /** Every foreign corporation the documents name, and whether the case
+      already has an entity for it. */
+  corporations: { name: string; source: string; hasEntity: boolean; refId?: string | null }[];
+  /** This entity's own legal name, once anything has established it. */
+  entityName?: string | null;
+  /** Whether the tool is allowed to create an entity without being asked. */
+  mayCreateEntity?: boolean;
+};
+
 /** Everything the understanding phase produced, kept on the entity so the
     activity view, the review phase and the log all read the same record. */
 export type AgentBrief = {
@@ -187,6 +232,7 @@ export type AgentBrief = {
   language: string;
   important: AgentImportant[];
   failures: AgentFailure[];
+  risks: AgentRisk[];
   notes: string[];
   steps: string[];
   translated: number;
@@ -200,6 +246,8 @@ export type AgentState = {
   docs: DocBrief[];
   important: AgentImportant[];
   failures: AgentFailure[];
+  risks: AgentRisk[];
+  caseContext: CaseContext | null;
   /** The year the work paper is being prepared for, so every document can be
       placed against it before anything is mapped. */
   requiredYear: number | null;
@@ -473,9 +521,13 @@ const figuresText = (row: AgentRow) => amountsOf(row);
     figure, and how much the structure pass dropped. */
 const survey = (state: AgentState) => {
   const docs = state.docs;
+  /* One non-English document makes the set non-English. A majority vote said
+     "English" over a set whose statements were Spanish, while the translate
+     step of the same run reported Spanish captions it could not translate. */
   const langs = new Map<string, number>();
   for (const d of docs) langs.set(d.language, (langs.get(d.language) || 0) + d.rowsRead);
-  const language = [...langs.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "English";
+  const foreign = [...langs.entries()].filter(([n]) => n !== "English").sort((a, b) => b[1] - a[1]);
+  const language = foreign.length ? foreign[0][0] : ([...langs.keys()][0] || "English");
   const notes = [
     `Agent: read ${docs.length} document(s) before mapping — ${docs.map((d) => `${d.name} (${d.kind}, ${d.pages} page(s), ${d.rowsWithFigures} figure(s)${d.rowsDropped ? `, ${d.rowsDropped} dropped as structure` : ""}${d.ocr ? ", OCR" : ""})`).join("; ")}`,
     `Agent: document language read as ${language}`,
@@ -837,6 +889,169 @@ const reconcile = (state: AgentState) => {
   };
 };
 
+/** Situations where the automation may be about to produce a wrong or
+    incomplete work paper, found before anything is generated.
+
+    Each one is a PATTERN, not a client: a corporation the documents name that
+    the case has no entity for; a document that belongs to a different
+    corporation from the one being prepared; a set of accounts that was read
+    and contributed nothing; documents that disagree about the period. The
+    agent has no authority to create or move anything, so each risk carries the
+    action that would resolve it and who is allowed to take it. */
+const risks = (state: AgentState) => {
+  const ctx = state.caseContext;
+  const out: AgentRisk[] = [];
+  const notes: string[] = [];
+  /* Names are compared the way the rest of the pipeline compares them:
+     stripped to letters and digits. A form prints "CECILIA GONZALEZ ACUNA
+     S P A" where the entity carries "CECILIA GONZALEZ ACUNA SPA", and a
+     plain string comparison reported the company as a different one. */
+  const nameKey = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const own = nameKey(ctx?.entityName || "");
+
+  /* A second corporation in the papers. One return can carry a Form 5471 for
+     each of a group's foreign corporations, and each one is its own filing. */
+  for (const c of ctx?.corporations || []) {
+    if (c.hasEntity) continue;
+    out.push({
+      id: `second-entity-${c.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      level: "critical",
+      what: `${c.source} covers a second foreign corporation, ${c.name}, and this case has no entity for it.`,
+      why: "A Form 5471 is filed per foreign corporation. Prepared inside another corporation's entity, its figures would either be mixed into that work paper or left out of the engagement altogether — and nothing downstream would say so.",
+      action: `Create an entity for ${c.name} and process ${c.source} against it.`,
+      permitted: "tool",
+      suggest: { op: "create-entity", arg: c.name },
+      evidence: c.refId ? `reference ID ${c.refId}` : undefined,
+    });
+  }
+
+  /* A document about a DIFFERENT corporation feeding this work paper. */
+  if (own) {
+    for (const d of state.docs) {
+      const name = (d as DocBrief & { entityName?: string | null }).entityName;
+      if (!name || !d.feedsLineItems || !d.rowsRead) continue;
+      const other = nameKey(name);
+      /* Same test the page scoping uses, so the agent and the tool can never
+         disagree about whether two documents are about the same company:
+         "CORP EDUCACIONAL CHARLIE BRAWN" on the form and "CORPORACION
+         EDUCACIONAL CHARLIE BRAWN LIMITADA" on the filing are one company,
+         and neither string contains the other. */
+      if (other === own || other.includes(own) || own.includes(other)) continue;
+      if (entitySimilarity(String(name), String(ctx?.entityName || "")) >= 0.5) continue;
+      out.push({
+        id: `cross-entity-${d.docId}`,
+        level: "critical",
+        what: `${d.name} names ${name} as the corporation it reports on, but this work paper is for ${ctx?.entityName}.`,
+        why: "Figures read from another corporation's accounts would be booked into this one's schedules, and the balance sheet would not tie for either of them.",
+        action: `Move ${d.name} to the ${name} entity, or correct the entity name in Basic Information if the two are the same corporation under different wording.`,
+        permitted: "preparer",
+        suggest: { op: "move-document", arg: d.docId },
+      });
+    }
+  }
+
+  /* Accounts that were read and produced nothing. A document that names a
+     DIFFERENT corporation is not one of these: it contributed nothing here
+     because page attribution kept it for the entity it belongs to, which is
+     the system working rather than failing. */
+  for (const d of state.docs) {
+    if (!d.feedsLineItems || d.rowsWithFigures) continue;
+    const named = nameKey((d as DocBrief & { entityName?: string | null }).entityName || "");
+    if (own && named && named !== own && !named.includes(own) && !own.includes(named)
+      && entitySimilarity(String((d as DocBrief & { entityName?: string | null }).entityName || ""), String(ctx?.entityName || "")) < 0.5) continue;
+    /* Figures on the document, and not one row read here: its pages were
+       kept for the company they name. That is the scoping working, and the
+       entity-scope item already says so — a second "produced nothing"
+       finding would read as a failure. A document that is genuinely empty
+       carries no figures at all and still reaches the finding below. */
+    if ((d.amountRows || 0) > 0 && !d.rowsRead) continue;
+    out.push({
+      id: `no-figures-${d.docId}`,
+      level: "critical",
+      what: `${d.name} was classified as ${d.kind} but not one caption on it carried a readable figure.`,
+      why: "A set of accounts that contributes nothing leaves the schedules to be filled from the prior return or by hand, and the run still completes.",
+      action: `Open ${d.name} on the Documents tab and set its type, or check that the file is the right one. If it is a scan, run it through OCR first.`,
+      permitted: "preparer",
+      suggest: { op: "reclassify-document", arg: d.docId },
+    });
+  }
+
+  /* Read, and carrying money, and nobody knows what it is.
+     The agent could not see this case at all: every check below was gated on
+     the document ALREADY having been identified as a set of accounts, which
+     is exactly what fails here. A document that reads perfectly and cannot be
+     placed is the failure the preparer is least likely to notice, because the
+     intake screen reports it green. */
+  for (const d of state.docs) {
+    if (d.kind !== "unknown" || !(d.amountRows || 0)) continue;
+    out.push({
+      id: `unidentified-${d.docId}`,
+      level: "critical",
+      what: `${d.name} was read — ${d.amountRows} line(s) on it carry figures — but the tool could not tell what kind of document it is, so NOTHING from it reached the work paper.`,
+      why: "Reading a document and using it are two different things. The schedules are filled from the documents the tool could place; one it could not place leaves a gap that nothing downstream reports, and the work paper still looks finished.",
+      action: `Set the document type for ${d.name} in Document intake (Type column) and re-process, or assign its rows in Review & exceptions — they are listed there unassigned.`,
+      permitted: "preparer",
+      suggest: { op: "reclassify-document", arg: d.docId },
+      evidence: `${d.rowsRead} line(s) read${d.language && d.language !== "English" ? `, ${d.language}` : ""}`,
+    });
+  }
+
+  /* Money read from pages that name no section. Booked nothing, visible in
+     Review — the agent says so rather than leaving it to be found. */
+  for (const d of state.docs) {
+    if (!(d.loosePages || 0) || d.kind === "unknown") continue;
+    out.push({
+      id: `loose-money-${d.docId}`,
+      level: "warn",
+      what: `${d.name} has ${d.loosePages} page(s) carrying figures that name no statement section, so nothing on them was booked.`,
+      why: "A supporting schedule can hold the detail a Form 5471 line needs — shareholder current accounts, fixed-asset movements, tax reconciliations. Dropped silently, the work paper is short and nothing says why.",
+      action: `Open Review & exceptions and assign anything from ${d.name} that belongs on the work paper.`,
+      permitted: "preparer",
+    });
+  }
+
+  /* A set of accounts that never says what period it covers. */
+  for (const d of state.docs) {
+    if (!d.feedsLineItems || !d.rowsWithFigures) continue;
+    if (d.periodEnd || d.statementYear) continue;
+    out.push({
+      id: `no-period-${d.docId}`,
+      level: "critical",
+      what: `${d.name} carries figures but states no accounting period the tool could read.`,
+      why: "A figure with no period cannot be placed in the current or the opening column. Booked against the wrong year it is wrong twice: once in this filing and once in the next one, which opens from it.",
+      action: `Check the period printed on ${d.name}, and set the year end in Basic Information so the columns are decided rather than guessed.`,
+      permitted: "preparer",
+      suggest: { op: "set-year", arg: d.docId },
+    });
+  }
+
+  /* Documents that disagree about the period they report on. */
+  const ends = new Map<string, string[]>();
+  for (const d of state.docs) {
+    if (!d.feedsLineItems || !d.periodEnd) continue;
+    if (!ends.has(d.periodEnd)) ends.set(d.periodEnd, []);
+    ends.get(d.periodEnd)!.push(d.name);
+  }
+  if (ends.size > 1) {
+    out.push({
+      id: "period-conflict",
+      level: "warn",
+      what: `The statements report on ${ends.size} different period ends: ${[...ends.entries()].map(([e, ds]) => `${e} (${ds.join(", ")})`).join("; ")}.`,
+      why: "Only one of them can be the period this work paper is filed for; figures from the others would be booked as if they were this year's.",
+      action: "Set the year end in Basic Information and re-process, or remove the documents that belong to another period.",
+      permitted: "preparer",
+      suggest: { op: "set-year", arg: [...ends.keys()][0] },
+    });
+  }
+
+  if (out.length) {
+    const critical = out.filter((r) => r.level === "critical").length;
+    notes.push(`Agent: ${out.length} risk(s) raised before the work paper is generated — ${critical} critical · ${out.length - critical} to review`);
+    for (const r of out) notes.push(`Agent risk (${r.level}): ${r.what} Recommended: ${r.action}`);
+  }
+  return { risks: out, notes };
+};
+
 /* ---------- the graph ---------- */
 
 export function buildAgent() {
@@ -850,6 +1065,8 @@ export function buildAgent() {
       detectedYears: last<number[]>([]),
       important: last<AgentImportant[]>([]),
       failures: append<AgentFailure>(),
+      risks: last<AgentRisk[]>([]),
+      caseContext: last<CaseContext | null>(null),
       rows: last<AgentRow[]>([]),
       catalogue: last(""),
       targets: last<string[]>([]),
@@ -874,6 +1091,7 @@ export function buildAgent() {
   graph.addNode("reconcile", reconcile);
   graph.addNode("survey", survey);
   graph.addNode("yearCheck", yearCheck);
+  graph.addNode("risks", risks);
   graph.addNode("spotlight", spotlight);
   graph.addNode("interpret", interpret);
   graph.addNode("handoff", handoff);
@@ -888,7 +1106,8 @@ export function buildAgent() {
   );
   graph.addEdge("reconcile", END);
   graph.addEdge("survey", "yearCheck");
-  graph.addEdge("yearCheck", "spotlight");
+  graph.addEdge("yearCheck", "risks");
+  graph.addEdge("risks", "spotlight");
   graph.addConditionalEdges(
     "spotlight",
     (s) => (s.haveModel && s.important.length ? "model" : "plain"),
@@ -926,6 +1145,7 @@ export async function runAgent(
     phase?: "map" | "review" | "understand"; facts?: BookFacts | null;
     docs?: DocBrief[]; important?: AgentImportant[]; requiredYear?: number | null;
     yearSource?: "selected" | "documents" | "none"; detectedYears?: number[];
+    caseContext?: CaseContext | null;
   },
   deps: AgentDeps,
   onStep?: (note: { node: string; ms: number }) => void,

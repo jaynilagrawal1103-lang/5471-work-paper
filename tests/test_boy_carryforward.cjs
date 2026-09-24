@@ -40,6 +40,15 @@ function seedBoy(priorClosingUSD, existingLines, rate) {
   const lines = { ...existingLines };
   const relabels = {};
   const seeded = [];
+  /* An asset is not negative unless it is a contra account, and the contra
+     accounts carry `negate` above. Anywhere else a negative filed asset means
+     the figure came out of the wrong column of the prior return. */
+  const suspect = [];
+  const ASSET_KEY = {
+    cash: "cash", ar: "trade receivables", inventories: "inventories",
+    oca: "other current assets", loansToShareholders: "loans to shareholders",
+    depreciable: "depreciable assets", land: "land", otherAssets: "other assets",
+  };
   for (const [key, rows, negate, aggregateLabel] of map) {
     const filed = priorClosingUSD[key]?.value;
     if (typeof filed !== "number") continue;
@@ -52,8 +61,9 @@ function seedBoy(priorClosingUSD, existingLines, rate) {
       relabels[k] = `${aggregateLabel} (per prior-year Form 5471)`;
     }
     seeded.push(k);
+    if (!negate && local < 0 && ASSET_KEY[key]) suspect.push({ what: ASSET_KEY[key], row, amount: local });
   }
-  return { lines, seeded, relabels };
+  return { lines, seeded, relabels, suspect };
 }
 
 /* The rows the generator actually exports (engine.ts BS_LINES). Every subtotal
@@ -248,6 +258,41 @@ t("contra lines carry the sign the template's totals expect", () => {
   const { lines } = seedBoy({ badDebts: { value: 500 }, treasuryStock: { value: 900 } }, {}, 1);
   assert.strictEqual(lines["BS:12"].boy, -500, "bad debts must be negative");
   assert.strictEqual(lines["BS:62"].boy, 900, "treasury stock must be positive");
+});
+
+/* Boating Made Easy 2024: the opening column carried −36,173.86 of "other
+   current assets", which made opening assets equal opening retained earnings
+   to the cent and left Schedule F out of balance by 0.01 with nothing to say
+   which line was wrong. The figure is still carried exactly as filed — it is
+   evidence, not ours to correct — but the line is named. */
+t("a negative opening ASSET is named, not carried in silence", () => {
+  const { lines, suspect } = seedBoy({ oca: { value: -36173.86 }, re: { value: 16834.10 } }, {}, 1);
+  assert.strictEqual(lines["BS:16"].boy, -36173.86, "the filed figure must still be carried");
+  assert.strictEqual(suspect.length, 1);
+  assert.strictEqual(suspect[0].what, "other current assets");
+  assert.strictEqual(suspect[0].row, 16);
+});
+
+t("the contra accounts are not reported as suspect", () => {
+  const { suspect } = seedBoy({ badDebts: { value: 500 }, accumDep: { value: 1274 } }, {}, 1);
+  assert.deepStrictEqual(suspect, [], JSON.stringify(suspect));
+});
+
+t("a negative LIABILITY or equity line is ordinary and says nothing", () => {
+  const { suspect } = seedBoy({ re: { value: -1920 }, ocl: { value: -40 } }, {}, 1);
+  assert.deepStrictEqual(suspect, [], JSON.stringify(suspect));
+});
+
+/* Both trees, because a guard that lives in only one of them is a guard the
+   shipped app does not have. */
+t("the guard is in the source tree and in the shipped bundle", () => {
+  const fs = require("fs"), path = require("path");
+  const root = path.join(__dirname, "..");
+  const src = fs.readFileSync(path.join(root, "src/prototype/wp/store.ts"), "utf8");
+  const dist = fs.readFileSync(path.join(root, "dist", "index.html"), "utf8");
+  assert.ok(src.includes("cf-negative-asset-"), "src");
+  assert.ok(dist.includes("cf-negative-asset-"), "dist");
+  assert.ok(dist.includes("/*EN9NEGASSET2-BEGIN*/") && dist.includes("/*EN9NEGASSET2-END*/"), "dist sentinel");
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -80,8 +80,11 @@ const CAPTIONS = [
   ["2960 Owner draws", "BS:61"],
   ["Opening balance equity", "BS:61"],
   ["3002 Shopify Discounts Given", "IS:8"],
-  ["4500 Shopify Payment Fees", "IS:12"],
-  ["4502 Paypal Fees", "IS:12"],
+  /* v10: a processor's fee is a deduction by default. It returns to line 2
+     only where the statement files it under cost of sales, which is a
+     SECTION override and not a rule — see the two cases below. */
+  ["4500 Shopify Payment Fees", "IS:OD"],
+  ["4502 Paypal Fees", "IS:OD"],
   ["4100 Freight and delivery - COS", "IS:12"],
   ["Payroll Expenses", "IS:OD"],
   ["Merchant Account", "BS:10"],
@@ -94,6 +97,18 @@ for (const [caption, target] of CAPTIONS) {
       "the fresh catalogue disagrees with the expectation");
   });
 }
+
+t("a processor fee printed under cost of sales still books to line 2", () => {
+  for (const c of ["4500 Shopify Payment Fees", "4502 Paypal Fees"]) {
+    assert.strictEqual(ENG.matchRule(c, upgraded), "IS:OD", "the rule alone is a deduction");
+    assert.ok(ENG.isProcessorFee(c), c);
+  }
+});
+
+t("a fee the statement does NOT file under cost of sales stays a deduction", () => {
+  assert.ok(!ENG.isProcessorFee("Bank Charges"), "an ordinary bank charge is not a processor fee");
+  assert.ok(ENG.isProcessorFee("Paypal Fees"), "Rise Digital Marketing's caption");
+});
 
 t("a rule the preparer wrote is never displaced by the upgrade", () => {
   const mine = { t: "IS:33", kw: ["shopify payment fees"] };

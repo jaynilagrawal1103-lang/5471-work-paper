@@ -126,14 +126,30 @@ t("merchant accounts and undeposited funds reach cash without a heading", () => 
 
 /* ---- 4. cost of sales never reaches income ---- */
 
-t("the carriage and payment-processor captions are line 2", () => {
-  for (const caption of [
-    "Freight", "Freight and delivery", "Shipping and delivery expense",
-    "Shopify fees", "PayPal fees", "Payment processing fees", "Merchant fees",
-  ]) {
+t("the carriage captions are line 2", () => {
+  for (const caption of ["Freight", "Freight and delivery", "Shipping and delivery expense"]) {
     assert.strictEqual(ENG.matchRule(caption, RULES), "IS:12", `src: ${caption}`);
     assert.strictEqual(M.Tv(caption, M.P1), "IS:12", `dist: ${caption}`);
   }
+});
+
+/* A processor's fee is the cost of COLLECTING the money, not the cost of the
+   goods, so the rule makes it a deduction. It goes back to line 2 only where
+   the statement itself prints it under cost of sales — a section override, in
+   both trees, tested against the live QuickBooks chart in test_fixture_shori. */
+t("the payment-processor captions are a deduction by rule", () => {
+  for (const caption of ["Shopify fees", "PayPal fees", "Payment processing fees", "Merchant fees"]) {
+    assert.strictEqual(ENG.matchRule(caption, RULES), "IS:OD", `src: ${caption}`);
+    assert.strictEqual(M.Tv(caption, M.P1), "IS:OD", `dist: ${caption}`);
+    assert.ok(ENG.isProcessorFee(caption), `src predicate: ${caption}`);
+    assert.ok(M.EN9isProcessorFee(caption), `dist predicate: ${caption}`);
+  }
+});
+
+t("a processor fee is still allowed on the cost-of-sales side", () => {
+  // The override can only fire where sectionOk lets IS:12 through.
+  assert.ok(SECT.sectionOk("cogs", "IS:12"));
+  assert.ok(SECT.sectionOk("cogs", "IS:OD"));
 });
 
 t("a caption under cost of sales can never take an income line", () => {

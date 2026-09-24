@@ -820,6 +820,85 @@ Tests: `test:poolshare` is new (10 assertions); `test:caseyear` gained four
 groups including a step-back over every year 2000-2099. `test:all` is 60
 suites / 1,500 assertions, `test:peg` still the one known failure.
 
+### 2026-09-23 — Wiener gap-report remediation (uncommitted)
+
+Driven by `Wiener_2024_Tool_vs_Manual_Gaps_and_Fixes.xlsx` (22 rows). Both
+trees patched, dist hand-patched as always. `test:all` 1,500+ assertions green
+except the pre-existing `test:peg`.
+
+Root causes fixed, each general rather than Wiener-specific:
+
+- **Two facing panels on one page.** `splitSidePanels` / `EN9splitPanels`
+  re-cuts a page whose geometry shows a vertical band no cell crosses with
+  captions AND figures on BOTH sides. The band is measured only on rows
+  carrying two or more figures, because the letterhead runs the client's name
+  straight across the gap. Straddling cells go to the side holding more of
+  them. Without it every liability on a Mexican balance sheet was swallowed as
+  a second period column of the asset printed beside it.
+- **Columns named by period type.** `detectPeriodRulers` reads a header row of
+  column TYPES ("Periodo | % | Acumulado | %", "MTD | YTD", the CJK
+  equivalents) and keeps only the cumulative column, dropping the percentage
+  columns. The year ruler cannot tag those headers, so every P&L row arrived
+  with four numbers and no year identity and nothing could book.
+- **Spanish dates and titles.** `MONTH_ALIASES` gives `parseLongDate` the
+  non-English month names, including the `dd/Mmm/yyyy` form; PERIOD_ANCHORS
+  and YEAR_ANCHORS read "al 31/Dic/2024" (and the "del … al …" range, anchored
+  on `al` so the range can never be read backwards). `STATEMENT_TITLE` allows a
+  short lead-in ending in a comma, colon or dash, so "Posición Financiera,
+  Balance General" classifies.
+- **Entity identity from the statements.** `COMPANY_SUFFIX` carries the
+  non-Anglo company forms and `findCompanyNames` tests each CELL as well as the
+  joined line, because a package prints its own name and the sheet number on
+  the client's line. `NAME_ROW_NOISE` rejects the form's own captions.
+- **`entitySimilarity` ignores legal-form words.** "S DE RL DE CV" is shared by
+  every Mexican corporation; counted as tokens, any two scored 1.0 similar. That
+  merged two different CFCs into one 5471 block AND one carry-forward candidate.
+  STOPWORDS now carries the international forms.
+- **Every Form 5471 face page is recognised.** The form prints Schedule A at the
+  foot of its own page 1, so the Schedule A test claimed every face and a
+  multi-CFC return had no face page to segment on. Two page-1 markers are
+  tested first. Carry-forward candidates are also deduplicated by NAME when both
+  are named, so a reference ID bleeding across scan bands cannot merge two
+  corporations.
+- **After the fan-out the parent is processed again**, so page attribution can
+  keep each corporation's pages to its own entity. The parent had been mapped
+  while it was the only entity in the case.
+- **Structure ranking when indent inverts.** A Spanish package indents the group
+  TOTAL one level in from its members. `EN9DEEPTOT` ranks by caption when the
+  arithmetic ties; a non-total row is never dropped as the "summary" of rows
+  that are all total-worded; a nil total is skipped; and a zero amount no longer
+  "proves" a zero sum.
+- **Abbreviations are not prose.** `applyRowHygiene` treated "…de Eq. de Se.." as
+  a sentence and discarded the row. A stop after a token of three letters or
+  fewer is an abbreviation.
+- **Mapping.** `SUMA DE(L) …` returns SKIP; a trailing ellipsis is stripped
+  before the scan; catalogue v9 adds the Mexican chart (terrenos, equipo de
+  transporte/servicios, edificios, maquinaria, the impuestos accounts,
+  resultado de ejercicios anteriores, depreciación contable, gastos de
+  servicio) and the Spanish result captions join the SKIP group. Seven Spanish
+  section banners (ACTIVO / PASIVO / CAPITAL, letter-spaced, plus corto/largo
+  plazo) route current versus non-current.
+
+**The agent now acts before generation.** A `risks` node runs between
+`yearCheck` and `spotlight` and returns `AgentRisk[]`: a corporation the
+documents name that the case has no entity for, a document belonging to a
+different corporation that is feeding this one, a set of accounts that produced
+no figure, and documents that disagree about the period. Each carries what, why,
+the recommended action and whether the tool may take it. Critical risks become
+BLOCKING exceptions before a line is booked; the second-entity block clears when
+the tool creates the entity, which is logged.
+
+Verified on the live Wiener documents: two entities created, each reading only
+its own two statements. Every amount agrees with the two manual work papers, and
+both Schedule Fs tie (0.00 and -0.01) where the manuals are out by 8.62 and
+35.24 of their own rounding. Remaining differences are line placement (trade
+receivables 2a vs 5, finance costs 13 vs 17, taxes payable 15 vs 16, prepaid
+taxes 5 vs 13) and the manual's whole-peso rounding.
+
+New sentinels: EN9PANEL, EN9MONTHALIAS, EN9SUFFIX, EN9AGRISK, EN9CASECTX,
+EN9DEEPTOT. The `test:detect` q1 snapshot was refreshed for the period-column
+filter; the agent node list gained `risks`; the banner lexicon is 41 patterns.
+
 ## Open issues
 
 - `test:peg` fails at "the approved prior-year end rate outranks a prior
@@ -873,3 +952,310 @@ suites / 1,500 assertions, `test:peg` still the one known failure.
 - The template formats Basic Information B17 as `mm-dd-yy`, so a correct date
   displays a two-digit year. The value is a real Excel date serial and the
   style survives the patch; do not log this as a difference again.
+
+**Found during the verification rerun, and fixed (2026-09-23, later):**
+
+- **`fanOutSiblings` asked the reference ID before the name.** A stapled
+  multi-CFC return prints both corporations' reference IDs inside one scan
+  band, so the sibling's `refIds` carried the parent's ID too; the freshness
+  test then matched the plan against the entity already being prepared and the
+  second corporation was never created. It now applies the same rule the
+  candidate dedupe does — when both are named the NAME decides, identifiers
+  only settle it when a name is missing, and a placeholder ("Entity 1") is not
+  a name. Sentinel `EN9FANNAME`.
+- **Page attribution existed only in `dist`.** `EN9_norm` / `EN9_vars` /
+  `EN9_attr` had never been back-ported, so a build from `src` added both
+  corporations' balance sheets together (accounts payable 69,525,052.97 =
+  53,983,795.40 + 15,541,257.57) while `dist` was correct. `src` now carries
+  `entityNameVariants` and `attributePagesToEntities` and filters the IS, BS,
+  equity, targeted-ATO and profile feeds through them, raising the same
+  `entity-scope` warning. `tests/test_entity_scope.cjs` (`test:entscope`) pins
+  the behaviour and asserts dist and src agree page for page.
+- **`DocBrief.entityName`** is populated in `src` as it already was in `dist`,
+  so the agent can tell a document kept for another corporation from one that
+  genuinely carried no figures.
+- **"produced ZERO mapped line items" is not raised** for a document whose
+  pages were all attributed to another corporation; the `entity-scope` item
+  already says where they went. Sentinels `EN9ZEROSCOPE`, `EN9ZEROSCOPE2`.
+
+After these, `src` and `dist` book identical lines for both corporations
+(TEZCATLIPOCA 12, EL KIJ 13) and the review lists carry no false failures.
+
+### 2026-09-23 (2) — document reading, identification and mapping (uncommitted)
+
+The diagnostic found one gate doing all the work: a document's type came only
+from a title matched against a written-down phrase list, and an unidentified
+document fed nothing. Both trees now carry the fixes.
+
+- **Identification by SHAPE, as a last pass.** `classifyPages` gains pass 4,
+  which runs only on pages every other pass left unknown — so a continuation
+  page still inherits its statement and nothing that booked before stops
+  booking. It asks what the page IS: `looksLikeBalanceSheetShape` and
+  `looksLikePnlShape` read the section-banner lexicon (six languages, already
+  trusted by the mapper) and require the statement's sides; `titleRowIndex`
+  finds a title anywhere on the page, accent-folded, when there are at least
+  three amount rows beneath it; `looksLikeQuestionnairePage` runs the
+  spreadsheet questionnaire test over a PDF page; `looksLikeSchedulePage`
+  catches a page of MONEY (grouping separator or two decimals — a mobile
+  number is not money) that names no section.
+- **New page kinds.** `fs-schedule` feeds `unassigned`: never booked, every
+  row surfaced in Review with the page it came from. Not on a US return —
+  those unnamed pages are the filer's own 1040 and 1120 schedules.
+  `questionnaire` feeds the profile, so the client worksheet reaches the work
+  paper whether it arrives as a spreadsheet or a PDF.
+- **An unidentified document that carried figures BLOCKS.** One that carries
+  none stays a warning: there is nothing to lose.
+- **Read status tells the truth.** `readDetail` prints characters, lines,
+  lines with figures and where they went ("NOT USED — type unknown"). The
+  status word is unchanged, so a document that read fine but could not be
+  placed still reads green — with the reason underneath it.
+- **The intake screen separates two questions**: which entity HOLDS the file,
+  and which company the document NAMES. They disagree in red.
+- **Page attribution is driven by the paper, not the entity count.** The scope
+  is built from entity names AND company names read from the documents. Two
+  companies in one pile are never added together, even with a single entity in
+  the case. A company the papers name that has no entity has its pages held
+  back with a blocking item. One company named throughout is never held back:
+  an entity called "Client 1" is a naming question, not a contamination risk.
+- **A heading with no legal form is a candidate, not a name**
+  (`entityNameGuess`). It takes part in attribution only once the case is
+  known to hold two or more companies.
+- **A form caption is never a company.** `isGenericCompanyName` rejects
+  "foreign corporation", "any corporation" and Schedule M's own title, which
+  had been read as corporation names and reported as second corporations to
+  prepare. The name scan also skips `fs-schedule` pages, so a US return's own
+  schedules cannot supply the CFC's name.
+- **The agent can see the failures now.** Three risks added: a document read
+  but unidentified (critical), money on pages that name no section (warn), and
+  a set of accounts with no readable period (critical). Its "produced nothing"
+  finding skips a document whose pages were kept for the company they name.
+
+Measured on the documents in this session: the questionnaire PDF that read
+2,440 characters and classified UNKNOWN is now a client questionnaire and
+names the corporation; HMC's Shareholder Current Accounts page reaches Review
+instead of vanishing; DELINK LIMITED no longer inherits HMC's 35 lines
+(it books 0 and says so). Wiener, HMC and Ashley Elliott book exactly the
+lines they booked before. `test:all` green except the pre-existing `test:peg`.
+
+New suite `test:entscope` (15 assertions) pins page attribution, the fan-out
+rule and the shape tests, and compares the shipped file with the source on the
+same pages. New sentinels: EN9SHAPE2, EN9SHAPEFALL, EN9PASS4, EN9FEEDLOOSE,
+EN9KINDPROMO, EN9NAMESCOPE, EN9GENERIC, EN9GENERICNAME, EN9COMPANYSCOPE,
+EN9LOOSE, EN9HOMELESS, EN9PDFQUEST, EN9UNCLASSBLOCK, EN9READDETAIL,
+EN9ENTCELL, EN9READCELL, EN9AGRISK2.
+
+### 2026-09-23 (3) — the remaining UNKNOWN: boxed tax forms (uncommitted)
+
+Two Chilean client documents still read perfectly and classified UNKNOWN. The
+cause was not the title gate fixed earlier — it was that the pipeline had no
+way to read the shape of document they are.
+
+- **A numbered-box form carries no caption-and-amount rows at all.** The SII
+  Form 22 prints the caption on one line and the box CODE and the AMOUNT on
+  the next, so every test that looks for a caption beside a figure returned
+  nothing: 6,249 characters read, `amountRows` 2, every shape test failed.
+- **The pairs were already being rebuilt and then thrown away.**
+  `stackedCaptionRows` has rebuilt them from page geometry since the Chilean
+  work in 2026-09-04, into `parsed.grid` — and only a `trial-balance`
+  document ever reads the grid. A PDF is never a trial balance, so the
+  figures existed and nothing could reach them.
+
+Fixed, generally:
+
+- **`src/prototype/wp/terms.ts` (new)** — the terminology layer. `DOC_TERMS`
+  says what a document calls itself in seven languages and what that MEANS;
+  `CAPTION_TERMS` gives 68 accounting captions their English, whole phrase
+  only. `detectTextLanguage` votes on function words. All offline: no key, no
+  network, nothing to wait for. Translation now happens BEFORE identification,
+  because identification is what needs it.
+- **`tax-form` page kind**, found two ways: the document says what it is
+  (terminology), or `boxedFormPairs` counts code-then-amount pairs and needs
+  no vocabulary at all. It is tested BEFORE the statement band, because a
+  return prints statement headings inside its own boxes.
+- **`boxed-form` feed.** The rebuilt pairs are mapped on the INCOME STATEMENT
+  side only. A return states balance-sheet totals that a statement itemises,
+  so those boxes go to Review — the 2026-09-04 decision not to auto-map them
+  stands.
+- **Tax year to income year.** "Año tributario 2025" is the 2024 income year.
+  Derived, and said out loud in a note.
+- **The company name on a form is a VALUE, not a heading.**
+  `boxedNameCandidate` reads the line under "razón social" / "denominación
+  social" / "company name"; single-letter runs are glued ("S P A" → "SPA");
+  a leading tax identifier is stripped.
+- **The document says whose it is, and that outranks the letterhead.** Page
+  attribution now takes the document's own company name first: a form printing
+  "CORP EDUCACIONAL CHARLIE BRAWN" against an entity called "CORPORACION
+  EDUCACIONAL CHARLIE BRAWN LIMITADA" shares no substring, so page-level
+  matching left every page unowned and both companies were read into both
+  work papers.
+- **Dots as thousands, decided per document.** A value with two or more dot
+  groups can only be dots-as-thousands, and that settles the ambiguous
+  single-group values in the same document: 622.624 was booked as 622.62.
+  `dotThousandsDocument` is language-free and now decides for the grid reader
+  and the positioned reader alike.
+- **One name comparison everywhere.** The agent compared names by substring
+  while the scoping used `entitySimilarity`, so it raised a cross-entity
+  block against a document the tool had correctly kept.
+
+Measured: both Chilean documents now classify `cfc-tax-return` (Spanish,
+identified by "impuestos anuales a la renta"), two entities are created and
+fully isolated, and 16 and 15 schedule lines book with the original caption,
+its English, the value and the source document all recorded. Wiener, HMC,
+Ashley Elliott and DELINK book exactly what they booked before. `test:all`
+green except the pre-existing `test:peg`; `test:entscope` is 21 assertions,
+eight of them comparing the shipped file with the source.
+
+New sentinels: EN9TERMS, EN9TAXFORM, EN9TERMSHAPE, EN9TAXMETA, EN9BOXED,
+EN9TERMWRITE, EN9DOTTHOU, EN9NAMEKEY, EN9BOXNAME, EN9GLUE, EN9FEEDBOX,
+EN9DOTDOC, EN9SAMECO.
+
+### 2026-09-24 — Documents and Review & log, UX only (uncommitted)
+
+No OCR or document-processing logic was touched. The changes are in
+`layer-src/enhance.js` (DOM structure) and `layer-src/enhance.css`, re-injected
+with `npm run inject:layer`.
+
+**What the OCR flow actually does, confirmed before changing anything.**
+`EN9ocrIntakeTick` probes every new PDF at upload and starts OCR on the pages
+with no text layer; `EN9autoOcrTick` is a second net for a scan that reached
+processing unread; `EN9OCRGATE` holds processing until the reading is done.
+The service address is discovered automatically (this server, then
+127.0.0.1:847/8472) and, failing that, PaddleOCR runs in the browser with
+Tesseract.js behind it. So the address field and the run-by-hand controls are a
+fallback, never a requirement — and the manual path is genuinely useful (a file
+detection missed, specific pages, another language, re-reading pages that
+already carry text). Nothing was removed.
+
+- **The OCR card is a status line first.** Heading, one status word
+  (Not needed / Processing / Completed / Needs review, from the jobs and the
+  OCR sidecars the app already holds), one sentence, and the live job list.
+  Everything else — engine names, the privacy model, the service address, the
+  entity/file/pages/language controls, the drop area and the result actions —
+  moved inside a closed `Advanced · run OCR by hand` disclosure. The card no
+  longer competes with the dropzone above it.
+- **Empty is empty.** The status line and the job list collapse when they have
+  nothing to say, instead of holding open a band of white space.
+- **The advanced controls are fluid.** Fixed pixel widths on the service
+  address and page inputs pushed them past the card on a phone.
+- **Documents understood.** The filename is a heading that wraps
+  (`overflow-wrap:anywhere`) and the badge keeps its size instead of being
+  squeezed out of the card; the meta line is one chip per fact.
+- **The year-check table measures ITSELF.** The panel lives in a column whose
+  width has nothing to do with the viewport, so the old viewport media query
+  left five columns wider than the card and `overflow:hidden` clipped the last
+  one. It is a container query now: above 558px the grid reads as a table,
+  below it the same markup stacks into labelled rows. No font size was reduced
+  and nothing is hidden. A `@supports` fallback scrolls instead.
+- **The tax-year chain had no CSS at all** — "Detected2025, 2024›Work paper
+  year2025". Labels and values are now spaced and weighted.
+
+Verified in Chromium against the shipped file at 2200, 1600, 1440, 1180, 1024,
+900, 768, 600, 414 and 360 px, with documents uploaded and processed: zero
+elements outside their container, zero clipped scroll areas, no console errors.
+The disclosure is closed by default and holds all 11 original controls.
+`test:layer` 29 groups pass.
+
+### 2026-09-24 — dated year headers and payment-processor fees (uncommitted)
+
+Two client-reported defects, both fixed at the root and in both trees.
+
+**1. A column header that names a year without printing it bare.**
+`detectRulers` accepted only `/^(19|20)\d{2}$/`, so the HMC balance sheet,
+headed `NOTES | 31 MAR 2025 | 31 MAR 2024`, got no ruler: every row reached
+`routeRow` with no year, returned `"ambiguous"` and went to Review. Twelve
+balance-sheet lines were unbooked, and the two rows whose comparative column
+printed a dash collapsed to one value and were booked as CURRENT year
+(Unearned Income 24,690 and Shareholder Current Accounts 1,385, both FY2024).
+
+This was a **src/dist parity gap, not a live defect**: `dist/index.html` has
+carried `EN9_HY` / `EN9_CYW` / `EN9_PYW` since commit `c18f5cd`, so the shipped
+app always read those headers. Only the source tree was behind, which made
+src-based testing report gaps the client never saw. Now back-ported:
+
+- `engine.ts` — `headerYear()` (bare year, `FY24`, `FY'24`, a dated caption
+  once the date, period and month words and a trailing currency code are taken
+  out; refuses anything with a remainder, two years, or a two-decimal tail),
+  `CY_WORD`/`PY_WORD`, `resolveWordRulers()` (turns the −1/−2 placeholders into
+  real years, and DROPS the ruler when the engagement years are unknown rather
+  than guessing), `inheritRulers()` (a continuation page up to three pages
+  below its header, within its own feed).
+- A non-bare header needs a second year column to agree, so a lone statement
+  title cannot rule a page.
+- `store.ts` — `resolveWordRulers(detectRulers(pdf), caseYears)` and
+  `inheritRulerFrom: inheritRulers(...)` on the is / bs / unassigned reads.
+- `tests/test_year_header.cjs` (`test:yearhdr`, 8 groups) pins the reading and
+  the src↔dist parity. NOTE: jsdom returns cross-realm arrays, so dist results
+  must be `JSON.parse(JSON.stringify(...))`-ed before `deepStrictEqual`.
+
+Claycomb FY2025 now books 46 lines, 9 unmatched (was 35 / 22). Schedule F
+column (b) carries all 13 figures and ties to the statement.
+
+**2. "Paypal Fees" booked as cost of goods sold.**
+The payment-processor keywords lived in the line-2 "other costs" group, so Rise
+Digital Marketing's $20.87 reached Schedule C line 2 instead of other
+deductions. A blanket move would have been wrong: the SHORI QuickBooks chart
+prints `4500 Shopify Payment Fees` INSIDE "Cost of Goods Sold" and the
+hand-prepared paper agrees. So the statement's own banner decides.
+
+- `engine.ts` — `PROCESSOR_FEE_KW` + `isProcessorFee()`, named once; the
+  catalogue group now targets `IS:OD`, carriage/freight keeps `IS:12`.
+- `store.ts` — beside the `patentes` override: a processor fee printed under a
+  cogs banner goes back to `IS:12`. Mirrored in `dist` as `EN9FEECOGS` and in
+  both test harnesses.
+- **Retargeting needs a migration, not just a version bump.** Adding a group
+  cannot fix a caption the saved catalogue already claims for the wrong line.
+  New `RULES_MOVED_SINCE` (dist `EN9RULESMOVED`) takes the keyword off the
+  group it is moving OFF and adds it to its new target, and is applicable only
+  while the keyword is still on the old line — so a current catalogue is
+  returned untouched, by reference. `RULE_CATALOGUE_VERSION` 9 → 10, with
+  `"paypal fee"` registered in `RULES_ADDED_SINCE[9]` for catalogues that never
+  had the group at all.
+
+New dist sentinels: `EN9FEEOD`, `EN9FEEFN`, `EN9FEECOGS`, `EN9RULEMOVED`,
+`EN9RULEMOVE`, `EN9RULEMOVE2`; `EN9_HY`, `EN9detectRulers`, `EN9isProcessorFee`
+and `EN9FEEKW` exposed on `window.__EN9MAP`.
+
+Suite: 64 scripts, all pass except the documented pre-existing `test:peg`
+("the approved prior-year end rate outranks a prior return's printed rate",
+0.833 !== 0.82 inside `openingRateFor`) — confirmed failing on the unmodified
+tree as well.
+
+### 2026-09-24 (2) — Thompson / Boating Made Easy findings (uncommitted)
+
+Tested the delivered Boating Made Easy Ltd. work paper against the QuickBooks
+exports and the reconciled manual paper. The current-year P&L and balance sheet
+are right to the cent (other deductions 254,161.06, net income 12,875.74, the
+balance sheet is a summary and the tool booked all of it). Two silences were
+not right, and both are now spoken.
+
+**Schedule M shipped blank with no reason.** The books-only inference is
+deliberately narrow — sole shareholder, majority filer — because with two
+holders the counterparty is a guess. Correct, but the work paper went out with
+an empty Schedule M and nothing to say why, and 72,067.40 of wages was booked
+on Schedule C line 11. New `schm-compensation-not-inferred` (warn): names the
+amount, converts it at the year-average rate, says whether the reason is the
+shareholder count or a missing questionnaire, and points at line 19 (what the
+corporation PAID) with line 6 as the alternative the preparer's paper may use.
+It never guesses the counterparty. Mirrored as `EN9SCHMBLANK`.
+
+**A negative opening ASSET carried in silence.** The prior return seeded
+−36,173.86 onto other current assets (Sch F line 16 column (a)), which made
+opening assets equal opening retained earnings and left the column out by 0.01
+— the only symptom was "Schedule F does not balance at the beginning of the
+year", with no indication which line was wrong. An asset is negative only in a
+contra account, and those already carry `negate` in `boyMap`; anywhere else it
+is a liability read from the wrong column of that return. New
+`cf-negative-asset-<row>` (warn) names the line and the figure. The value is
+still carried exactly as filed — a carried balance is evidence, not ours to
+correct. Mirrored as `EN9NEGASSET` / `EN9NEGASSET2`.
+
+Already handled, left alone: ownership 100% on Basic Information against 50%
+from the shareholder register raises `cf-ownership-mismatch` (both this client
+and Rise Digital Marketing), and Country of Incorporation reads correctly
+("Cayman Islands", KYD, pegged 0.833).
+
+Tests: `test:schm` 13 groups (the two-shareholder and minority-filer cases now
+assert the explanation, and a pre-filled schedule must NOT also complain),
+`test:boy` 24 groups (the negative-asset detection, the contra accounts and a
+negative liability, plus a src↔dist presence guard). Suite 64 scripts; only the
+documented `test:peg` failure remains, confirmed pre-existing.

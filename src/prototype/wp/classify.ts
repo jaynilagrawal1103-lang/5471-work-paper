@@ -10,6 +10,8 @@
 
 import type { PdfDoc } from "./pdfText";
 import { looksLikeQuestionnaire } from "./questionnaire";
+import { SECTION_BANNERS } from "./sectionBanners";
+import { detectTextLanguage, identifyByTerms } from "./terms";
 import { looksLikeSalarySchedule } from "./relatedPartyLedger";
 import type { ParsedDoc } from "./engine";
 import { numeric } from "./engine";
@@ -36,6 +38,20 @@ export type PageKind =
   | "us-5471-schF" | "us-5471-schJ" | "us-5471-schM" | "us-5471-schE" | "us-5471-schH"
   | "us-5471-schI" | "us-5471-schO" | "us-5471-schP" | "us-5471-schR"
   | "us-5472" | "us-8992" | "us-statements" | "us-other"
+  /** A page inside an identified document that carries caption-and-amount
+      rows but names no section the rules know. It is NOT booked; its rows are
+      surfaced in Review so money that was read can never disappear. */
+  | "fs-schedule"
+  /** The preparer's client questionnaire, sent as a PDF rather than a
+      spreadsheet. The same document, and it must reach the profile either
+      way. */
+  | "questionnaire"
+  /** A statutory tax RETURN printed as numbered boxes — the caption on one
+      line, the box code and the amount on the next. Not a set of accounts:
+      it states totals that a statement itemises, so only its income and
+      expense boxes are booked and its balance-sheet boxes are offered for
+      review. */
+  | "tax-form"
   | "tandc" | "unknown";
 
 export type PageInfo = { page: number; kind: PageKind; score: number };
@@ -56,7 +72,27 @@ export type DocClass = {
   statementPeriodEnd?: string | null;
   /** The period START, only when the document printed both ends. */
   statementPeriodStart?: string | null;
+  /** How much text came off the document, and how much of it reads as a
+      caption with an amount. "Text read" on its own says only that the reader
+      ran; these say whether it found anything, and the intake screen prints
+      them so a green status can never hide an empty document. */
+  textRows?: number;
+  textChars?: number;
+  amountRows?: number;
+  /** The language the document is written in, decided BEFORE it was
+      classified — the vocabulary that can identify a document is the
+      vocabulary of its own language, and learning it after mapping is
+      learning it too late. */
+  language?: string;
+  /** What the document called itself, in its own words, and the English for
+      it. Carried so the preparer can see WHY it was identified. */
+  identifiedBy?: { term: string; english: string; language: string } | null;
   entityName: string | null;              // primary subject entity
+  /** A company name read from the statement's own heading when no name
+      carried a legal form (Ltd, SpA, S de RL de CV). Small practices print
+      the trading name alone, and the document then had no owner at all. It is
+      a CANDIDATE: shown and confirmed, never used to scope pages. */
+  entityNameGuess?: string | null;
   foreignCorpName: string | null;         // "Name of foreign corporation" on 5471 pages
   entityIds: string[];                    // ABN / EIN / reference IDs found
   duplicateOf?: string;                   // fileId of the preferred near-duplicate
@@ -80,7 +116,12 @@ export type Block5471 = {
 
 export type FeedTarget =
   | "generic-is" | "generic-bs" | "equity" | "targeted-ato"
-  | "carry-forward" | "schM-ledger" | "profile" | "none";
+  | "carry-forward" | "schM-ledger" | "profile"
+  /** Read from the caption/amount pairs rebuilt out of a boxed form's
+      geometry, not from the page's own rows. */
+  | "boxed-form"
+  /** Read, shown in Review, never booked. */
+  | "unassigned" | "none";
 
 /* ---------- page classification ---------- */
 
@@ -103,8 +144,17 @@ const SCH_TITLES: [RegExp, PageKind][] = [
 
 /* Titles that open a financial statement, in the languages the rest of this
    file already reads. Anchored at the start of a line. */
+/* A statement titles itself at the start of a line — but not always at the
+   start of the TITLE. CONTPAQ i heads its balance sheet "Posición Financiera,
+   Balance General al 31/Dic/2024", so an anchored test never fired, the page
+   never entered the financial-statement band, and the whole balance sheet
+   classified as unknown and fed nothing into the work paper. A short lead-in
+   that ends in a comma, colon or dash is part of the heading; prose about a
+   statement ("…which includes the balance sheet") is not, and still fails. */
+const TITLE_LEAD_IN = "(?:[\\p{L} .]{0,34}[,:\u2013\u2014-]\\s*)?";
 const STATEMENT_TITLE = new RegExp(
-  "^(balance sheet|statement of financial position|balance general|balance de situaci\u00f3n|"
+  "^" + TITLE_LEAD_IN + "(balance sheet|statement of financial position|balance general|balance de situaci\u00f3n|"
+  + "posici\u00f3n financiera|posicion financiera|estado de posici\u00f3n financiera|estado de posicion financiera|"
   + "estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o|balanco|"
   + "bilan\\b|bilanz|bilancio|balans|"
   + "income statement|profit (and|or|&) loss|compte de profits et pertes|compte de r\u00e9sultat|"
@@ -112,7 +162,128 @@ const STATEMENT_TITLE = new RegExp(
   + "estado de resultados?|cuenta de resultados|demonstra\u00e7\u00e3o do resultado|"
   + "demonstracao do resultado|conto economico|winst- en verliesrekening|"
   + "gewinn- und verlustrechnung|erfolgsrechnung)\\b",
+  "u",
 );
+
+/* Accents are decoration, not meaning. A statement titled "POSICIÓN
+   FINANCIERA" and one titled "POSICION FINANCIERA" are the same document, and
+   every accented alternative written out by hand is one a client can still
+   spell differently. Folding is applied only in the tests below, so no
+   existing pattern changes behaviour. */
+const stripMarks = (s: string): string => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+export const foldAccents = (s: string): string => stripMarks(s).toLowerCase();
+
+/* The pattern is folded WITHOUT lowercasing: "\p{L}" is a Unicode property
+   escape and "\p{l}" is not one, so lowercasing the source would throw. */
+const STATEMENT_TITLE_FOLDED = new RegExp(stripMarks(STATEMENT_TITLE.source), "u");
+
+/** Every row of the page, lowercased, one string per row. */
+const pageRowTexts = (doc: PdfDoc, page: number): string[] =>
+  doc.rows.filter((r) => r.page === page).map((r) => r.cells.map((c) => c.text).join(" ").trim().toLowerCase());
+
+/** A title anywhere on the page, not only in the first fourteen rows.
+ *
+ * A long letterhead, a logo block or a covering paragraph pushes the title
+ * below the head band, and the page then classified as unknown however
+ * plainly it named itself. Position still decides between candidates: the
+ * FIRST title on the page is the page's own. */
+export function titleRowIndex(doc: PdfDoc, page: number): number {
+  const rows = pageRowTexts(doc, page);
+  for (let i = 0; i < rows.length; i++) {
+    if (STATEMENT_TITLE_FOLDED.test(foldAccents(rows[i]))) return i;
+  }
+  return -1;
+}
+
+/* ---------- identification by SHAPE ----------
+
+   The title test asks whether somebody wrote this document's wording down.
+   These ask what the page IS. They reuse the section-banner lexicon that the
+   mapper already trusts in six languages, so a statement in a language nobody
+   listed is still placed by the sides it prints. */
+
+type BannerSide = "assets" | "liabilities" | "equity" | "income" | "costs";
+
+function bannerSides(doc: PdfDoc, page: number): Set<BannerSide> {
+  const out = new Set<BannerSide>();
+  for (const text of pageRowTexts(doc, page)) {
+    const label = text.trim();
+    if (!label || label.length > 60) continue;
+    for (const [re, section] of SECTION_BANNERS) {
+      if (!re.test(label)) continue;
+      if (section === "assets" || section === "fixedAssets" || section === "cash") out.add("assets");
+      else if (section === "liabilities" || section === "termLiabilities") out.add("liabilities");
+      else if (section === "equity") out.add("equity");
+      else if (section === "income" || section === "otherIncome") out.add("income");
+      else if (section === "costs" || section === "cogs") out.add("costs");
+    }
+  }
+  return out;
+}
+
+/** A balance sheet prints both sides of the accounts over a page of amounts —
+    in any language, whatever it calls itself. */
+export function looksLikeBalanceSheetShape(doc: PdfDoc, page: number): boolean {
+  const sides = bannerSides(doc, page);
+  return sides.has("assets") && (sides.has("liabilities") || sides.has("equity")) && amountRowCount(doc, page) >= 5;
+}
+
+/** A profit and loss prints what came in and what went out. */
+export function looksLikePnlShape(doc: PdfDoc, page: number): boolean {
+  const sides = bannerSides(doc, page);
+  if (sides.has("assets")) return false;   // a balance sheet naming its equity block
+  return sides.has("income") && sides.has("costs") && amountRowCount(doc, page) >= 4;
+}
+
+/* Money, not merely digits. A signature page carries mobile numbers and IP
+   addresses, and every one of them reads as a number: surfaced as unbooked
+   figures they are noise in Review and, worse, they look like money somebody
+   forgot to map. Money is written with a grouping separator or with two
+   decimal places, and a phone number is written with neither. */
+const MONEY_CELL = /^\(?-?\d{1,3}(?:[.,\u00a0 ']\d{3})+(?:[.,]\d{1,2})?\)?$|^\(?-?\d+[.,]\d{2}\)?$/;
+
+function moneyRowCount(doc: PdfDoc, page: number): number {
+  let n = 0;
+  for (const r of doc.rows) {
+    if (r.page !== page || r.cells.length < 2) continue;
+    if (!/\p{L}/u.test(r.cells[0].text.trim())) continue;
+    if (MONEY_CELL.test(r.cells[r.cells.length - 1].text.trim())) n++;
+  }
+  return n;
+}
+
+/** A page of caption-and-amount rows that names no section the rules know —
+    a supporting schedule. Real money, no home: it goes to Review. */
+export function looksLikeSchedulePage(doc: PdfDoc, page: number): boolean {
+  return moneyRowCount(doc, page) >= 4;
+}
+
+/* A numbered-box form prints the caption on one line and the box CODE and
+   the AMOUNT on the next, so no row carries both a caption and a figure and
+   every caption+amount test on this page returns nothing. The layout is the
+   evidence: a bare code of two to four digits standing immediately before a
+   money cell, over and over. No language is involved, which is the point —
+   a return in a language nobody listed is still recognisably a return. */
+export function boxedFormPairs(doc: PdfDoc, page: number): number {
+  let n = 0;
+  for (const r of doc.rows) {
+    if (r.page !== page || r.cells.length < 2) continue;
+    for (let i = 0; i < r.cells.length - 1; i++) {
+      const code = r.cells[i].text.trim();
+      const amount = r.cells[i + 1].text.trim();
+      if (!/^\d{2,4}$/.test(code)) continue;
+      if (MONEY_CELL.test(amount) || /^\d{4,}$/.test(amount)) { n++; i++; }
+    }
+  }
+  return n;
+}
+
+/** The client questionnaire, sent as a PDF instead of a spreadsheet. The same
+    test the spreadsheet path already uses, over the page's rows. */
+export function looksLikeQuestionnairePage(doc: PdfDoc, page: number): boolean {
+  const grid = doc.rows.filter((r) => r.page === page).map((r) => r.cells.map((c) => c.text));
+  return looksLikeQuestionnaire(grid);
+}
 
 /** Rows that read as a caption followed by an amount — the shape of a statement. */
 function amountRowCount(doc: PdfDoc, page: number): number {
@@ -145,7 +316,7 @@ function looksLikeChileanBalanceSheet(doc: PdfDoc, page: number): boolean {
     && amountRowCount(doc, page) >= 5;
 }
 
-function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: boolean }): PageInfo {
+function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: boolean; shapes?: boolean }): PageInfo {
   const head = pageText(doc, page, "head");
   const foot = pageText(doc, page, "foot");
   const all = pageText(doc, page, "all");
@@ -160,6 +331,17 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     // Standalone schedule pages name themselves: "Schedule J (Form 5471)".
     const sm = /schedule ([a-z])(?:-1)?\s*\(form 5471\)/.exec(head);
     if (sm && "abcefhijmopr".includes(sm[1])) return mk(("us-5471-sch" + sm[1].toUpperCase()) as PageKind, 3);
+    /* Page 1 of the form itself, recognised BEFORE the schedule tests below.
+       The form prints Schedule A at the foot of its own first page, so the
+       Schedule A test claimed every face page and a return carrying two Form
+       5471s ended up with no face page at all — which is what segmentation
+       starts a new block on. One block then spanned both corporations: only
+       one entity was ever created, and the second corporation's Schedule F
+       lines leaked into the first one's opening balances. Two markers, so
+       that a schedule page quoting the form's title cannot pass for it. */
+    if (/information return of u\.?s\.? persons/.test(all) && /name of person filing this return/.test(all)) {
+      return mk("us-5471-face", 3);
+    }
     // Core-form continuations name their schedules in the body band.
     if (/schedule c\b.*income statement|income statement.*schedule c\b/s.test(all)) return mk("us-5471-schC", 2);
     if (/schedule f\b.*balance sheet|balance sheet.*schedule f\b/s.test(all)) return mk("us-5471-schF", 2);
@@ -176,6 +358,19 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
   if (/franking account/.test(head)) return mk("ato-franking", 3);
   if (/dividend and interest schedule/.test(head)) return mk("ato-dividend-schedule", 3);
   if (/calculation statement/.test(head)) return mk("ato-calc-statement", 2);
+
+  /* A statutory tax RETURN, before the statement tests: a return prints
+     statement headings inside its own boxes ("Total del Activo"), so a page
+     tested for statements first would be read as one. Two ways in, and the
+     second needs no vocabulary at all:
+       - the document says what it is, in any of the languages the
+         terminology table carries; or
+       - the page is laid out as numbered boxes and titles itself nothing. */
+  const termHit = identifyByTerms(head);
+  if (termHit && termHit.kind === "tax-return") return mk("tax-form", 3);
+  if (!opts?.assumeFsBand && boxedFormPairs(doc, page) >= 8 && !STATEMENT_TITLE.test(head.split("\n")[0] || "")) {
+    return mk("tax-form", 2);
+  }
 
   // Statutory financial statements: entity + company-number band, section
   // title. UK statutory accounts print "Company No. SC240721" and Companies
@@ -208,7 +403,7 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     if (/trading account/.test(head)) return mk("fs-trading", 3);
     // A balance-sheet TITLE wins over equity-movement content: a balance sheet
     // may mention retained profits in a note, but never carries the movement.
-    if (/statement of financial position|balance sheet|balance general|estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o patrimonial|balanco patrimonial|balan\u00e7o|balanco|bilan\b|bilancio|balans|bilanz/.test(head) || looksLikeChileanBalanceSheet(doc, page)) return mk("fs-balance-sheet", 3);
+    if (/statement of financial position|balance sheet|balance general|posici\u00f3n financiera|posicion financiera|estado de situaci\u00f3n financiera|estado de situacion financiera|balan\u00e7o patrimonial|balanco patrimonial|balan\u00e7o|balanco|bilan\b|bilancio|balans|bilanz/.test(head) || looksLikeChileanBalanceSheet(doc, page)) return mk("fs-balance-sheet", 3);
     // Equity movements need the strong anchor — a P&L-titled page carrying the
     // retained-profits roll-forward is the equity statement, not a P&L.
     if (/statement of changes in equity/.test(head) || /opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
@@ -226,14 +421,55 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     if (head5.some((t) => /^(profit (and|&) loss|income statement|statement of activity|estado de resultados?)(\s*[-–]\s*\d{4})?$/.test(t))) return mk("fs-pnl", 2);
   }
   if (/terms\s*(&|and)\s*conditions|letter of engagement|engagement terms/.test(head)) return mk("tandc", 2);
+
+  /* ---- identification by SHAPE, once every title test has failed ----
+
+     Everything above asks whether somebody wrote this document's wording
+     down. These ask what the page IS, so a statement in a language nobody
+     listed, or one whose title sits below the head band, is still placed.
+     Score 1: a shape is weaker evidence than a title, and the preparer can
+     always override the type. */
+  if (!opts?.shapes) return mk("unknown", 0);
+  /* A title alone is not a statement: a covering letter names one in its
+     first sentence. Figures beneath it are what make the page the thing it
+     calls itself. */
+  const titleAt = amountRowCount(doc, page) >= 3 ? titleRowIndex(doc, page) : -1;
+  if (titleAt >= 0) {
+    const line = foldAccents(pageRowTexts(doc, page)[titleAt] || "");
+    if (BS_TITLE_WORDS.test(line)) return mk("fs-balance-sheet", 1);
+    if (IS_TITLE_WORDS.test(line)) return mk("fs-pnl", 1);
+  }
+  /* Translate, then identify. The page's own words are read against the
+     terminology table first, so a statement titled in a language the English
+     patterns never covered is placed by what its title MEANS. */
+  const term = identifyByTerms(all);
+  if (term && amountRowCount(doc, page) >= 3) {
+    if (term.kind === "balance-sheet") return mk("fs-balance-sheet", 1);
+    if (term.kind === "income-statement") return mk("fs-pnl", 1);
+    if (term.kind === "equity") return mk("fs-equity", 1);
+  }
+  if (looksLikeBalanceSheetShape(doc, page)) return mk("fs-balance-sheet", 1);
+  if (looksLikePnlShape(doc, page)) return mk("fs-pnl", 1);
+  if (looksLikeQuestionnairePage(doc, page)) return mk("questionnaire", 1);
+  /* Read, and carrying money, but naming nothing the rules know. Never
+     booked — surfaced in Review, because money that was read must not
+     disappear. */
+  if (looksLikeSchedulePage(doc, page)) return mk("fs-schedule", 1);
   return mk("unknown", 0);
 }
+
+/* Which of the two statements a matched title names. Folded, so the accented
+   and unaccented spellings are one pattern. */
+const BS_TITLE_WORDS = /balance sheet|financial position|balance general|balance de situacion|posicion financiera|situacion financiera|balanco|bilan\b|bilanz|bilancio|balans/;
+const IS_TITLE_WORDS = /income statement|profit (and|or|&) loss|comprehensive income|financial performance|estado de resultados?|cuenta de resultados|resultado|compte de (profits|resultat)|conto economico|verliesrekening|verlustrechnung|erfolgsrechnung/;
 
 /** Kinds that legitimately continue onto anchor-less following pages. */
 const CONTINUABLE = new Set<PageKind>([
   "us-5471-schJ", "us-5471-schE", "us-5471-schM", "us-5471-schP",
   "fs-balance-sheet", "fs-pnl", "fs-trading", "fs-equity",
   "us-statements", "ato-return", "tandc",
+  /* A return's later pages carry boxes and no heading at all. */
+  "tax-form",
 ]);
 
 export function classifyPages(doc: PdfDoc): PageInfo[] {
@@ -258,6 +494,15 @@ export function classifyPages(doc: PdfDoc): PageInfo[] {
       out[i] = { page: out[i].page, kind: out[i - 1].kind, score: 1 };
     }
   }
+  /* Pass 4 — identification by SHAPE, last of all.
+     It runs only on pages every other pass left unknown, so a continuation
+     page still inherits its statement rather than being demoted to a
+     schedule: nothing that booked before stops booking. */
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].kind !== "unknown") continue;
+    const info = classifyPdfPage(doc, out[i].page, { shapes: true });
+    if (info.kind !== "unknown") out[i] = info;
+  }
   return out;
 }
 
@@ -278,6 +523,12 @@ const YEAR_ANCHORS: RegExp[] = [
   // 2024" / "January 1-December 31, 2024".
   /as of (?:january|february|march|april|may|june|july|august|september|october|november|december) \d{1,2},? (\d{4})/,
   /(?:january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{0,2}\s*[-–]\s*(?:january|february|march|april|may|june|july|august|september|october|november|december)?\s*\d{0,2},?\s*(\d{4})/,
+  /* The year of a Spanish or Portuguese period end. "al" is the only word
+     that introduces the CLOSING date, in both "al 31/Dic/2024" and
+     "del 01/Dic/2024 al 31/Dic/2024", so no range can be read backwards. */
+  /\bal\s+\d{1,2}\s*[\/.-]\s*[a-z\u00e0-\u00ff]{3,}\.?\s*[\/.-]\s*(\d{4})/,
+  /\bal\s+\d{1,2}\s+de\s+[a-z\u00e0-\u00ff]+\s+de\s+(\d{4})/,
+  /\bem\s+\d{1,2}\s*[\/.-]\s*[a-z\u00e0-\u00ff]{3,}\.?\s*[\/.-]\s*(\d{4})/,
 ];
 
 /* ---------- the period the statements themselves report on ----------
@@ -292,7 +543,30 @@ const YEAR_ANCHORS: RegExp[] = [
 
 const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
 const MONTH_RE = MONTHS.join("|");
-const monthNo = (name: string) => MONTHS.indexOf(String(name || "").toLowerCase().slice(0, 30)) + 1;
+/* The same twelve months in the languages the statements arrive in, each
+   keyed by the shortest prefix its language actually prints. A Mexican
+   CONTPAQ i statement heads every page "al 31/Dic/2024"; with an
+   English-only month list the document reported no period and no year at
+   all, so the work paper's year had to come from a prior return or be typed. */
+const MONTH_ALIASES: Record<string, number> = {
+  ene: 1, enero: 1, feb: 2, febrero: 2, mar: 3, marzo: 3, abr: 4, abril: 4,
+  may: 5, mayo: 5, jun: 6, junio: 6, jul: 7, julio: 7, ago: 8, agosto: 8,
+  sep: 9, set: 9, septiembre: 9, setiembre: 9, oct: 10, octubre: 10,
+  nov: 11, noviembre: 11, dic: 12, diciembre: 12,
+  // Portuguese and French where they differ from the Spanish above.
+  janvier: 1, janeiro: 1, fev: 2, fevereiro: 2, "f\u00e9vrier": 2,
+  mars: 3, "mar\u00e7o": 3, avr: 4, avril: 4, mai: 5, maio: 5,
+  juin: 6, junho: 6, juillet: 7, julho: 7, "ao\u00fbt": 8,
+  setembro: 9, out: 10, outubro: 10, octobre: 10, novembre: 11, novembro: 11,
+  "d\u00e9cembre": 12, dez: 12, dezembro: 12,
+};
+const NON_EN_MONTH_RE = Object.keys(MONTH_ALIASES).sort((a, b) => b.length - a.length).join("|");
+const monthNo = (name: string) => {
+  const n = String(name || "").toLowerCase().slice(0, 30);
+  const en = MONTHS.indexOf(n) + 1;
+  if (en) return en;
+  return MONTH_ALIASES[n] || MONTH_ALIASES[n.replace(/\.$/, "")] || 0;
+};
 
 /** "30 June 2024" and "June 30, 2024" — both orders, ordinal suffixes and a
     written or numeric day. Returns MM/DD/YYYY, or null when the date is not a
@@ -302,8 +576,16 @@ export function parseLongDate(text: string): string | null {
   let day: number | null = null, month = 0, year = 0;
   const dmy = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_RE})\\s*,?\\s*(\\d{4})\\b`).exec(t);
   const mdy = new RegExp(`\\b(${MONTH_RE})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\s*,?\\s*(\\d{4})\\b`).exec(t);
+  /* "31/Dic/2024" and "31 de diciembre de 2024". Accounting packages outside
+     the English-speaking world print the month as a NAME inside a slashed
+     date; neither order above sees it, so the statement reported no date at
+     all and the work paper's year had to come from somewhere else. */
+  const slashed = new RegExp(`\\b(\\d{1,2})\\s*[\\/.-]\\s*(${NON_EN_MONTH_RE}|${MONTH_RE})\\.?\\s*[\\/.-]\\s*(\\d{4})\\b`).exec(t);
+  const spelled = new RegExp(`\\b(\\d{1,2})\\s+de\\s+(${NON_EN_MONTH_RE})\\s+de\\s+(\\d{4})\\b`).exec(t);
   if (dmy) { day = Number(dmy[1]); month = monthNo(dmy[2]); year = Number(dmy[3]); }
   else if (mdy) { month = monthNo(mdy[1]); day = Number(mdy[2]); year = Number(mdy[3]); }
+  else if (slashed) { day = Number(slashed[1]); month = monthNo(slashed[2]); year = Number(slashed[3]); }
+  else if (spelled) { day = Number(spelled[1]); month = monthNo(spelled[2]); year = Number(spelled[3]); }
   if (day === null || !month || !year) return null;
   const dt = new Date(Date.UTC(year, month - 1, day));
   if (dt.getUTCMonth() + 1 !== month || dt.getUTCDate() !== day) return null;
@@ -336,6 +618,13 @@ const PERIOD_ANCHORS: RegExp[] = [
   /as at[^\n]{0,60}/i,
   /as of[^\n]{0,60}/i,
   /balance sheet (?:as )?(?:at|of)[^\n]{0,60}/i,
+  /* Spanish and Portuguese statements date themselves "al 31/Dic/2024" or
+     "al 31 de diciembre de 2024". A P&L prints a RANGE — "del 01/Dic/2024 al
+     31/Dic/2024" — and the anchor deliberately begins at "al", so the date
+     parser reads the END of the range and can never read its beginning. */
+  /\bal\s+\d{1,2}\s*[\/.-]\s*[a-z\u00e0-\u00ff]{3,}\.?\s*[\/.-]\s*\d{4}/i,
+  /\bal\s+\d{1,2}\s+de\s+[a-z\u00e0-\u00ff]+\s+de\s+\d{4}/i,
+  /\bem\s+\d{1,2}\s*[\/.-]\s*[a-z\u00e0-\u00ff]{3,}\.?\s*[\/.-]\s*\d{4}/i,
 ];
 
 /**
@@ -420,22 +709,134 @@ export function detectStatementYear(doc: PdfDoc, pages: PageInfo[]): number | nu
   return best;
 }
 
-const COMPANY_SUFFIX = /\b(pty\.?\s*ltd|ltd|limited|inc|llc|corp(oration)?|gmbh|sarl|bv|plc|co)\b\.?$/i;
+/* Company-form suffixes, not only the Anglo ones. A Mexican statement heads
+   every page "EL KIJ EXPORTACIONES S DE RL DE CV"; with an Anglo-only list the
+   entity had no name from its own accounts, and Basic Information could only
+   be filled from a prior return — which a first-year client does not have. */
+const COMPANY_SUFFIX = new RegExp(
+  "\\b(pty\\.?\\s*ltd|pte\\.?\\s*ltd|sdn\\.?\\s*bhd|ltd|limited|inc|llc|l\\.l\\.c|corp(oration)?|"
+  + "s\\.?\\s?de\\s?r\\.?l\\.?(\\s?de\\s?c\\.?v\\.?)?|s\\.?a\\.?\\s?de\\s?c\\.?v\\.?|s\\.?a\\.?p\\.?i\\.?|"
+  + "s\\.?r\\.?l|s\\.?a\\.?s|s\\.?a|ltda|e\\.?i\\.?r\\.?l|spa|gmbh|mbh|ag|kg|ohg|sarl|sas|sasu|"
+  + "b\\.?v|n\\.?v|plc|oy|oyj|ab|a\\/s|aps|kft|zrt|sp\\.?\\s?z\\s?o\\.?o|d\\.?o\\.?o|co)\\b\\.?$",
+  "i",
+);
+
+/** Rows that a statement's letterhead never means as a company name. */
+/* The form's own captions end in a company word too: "Name of foreign
+   corporation" read as a company called "...corporation", and the agent then
+   reported a third foreign corporation that does not exist. */
+const NAME_ROW_NOISE = /^(hoja|p[aá]gina|page|fecha|date|contpaq|sheet|names? (of|shown)|address|country|currency|identifying|reference|previous|enter|check|see instructions|description)\b/i;
+
+/* A form's own words are not a company. "Name of foreign corporation" is a
+   caption; "foreign corporation" is what is left of it once the caption words
+   are stripped, and it was read as the corporation's name and reported to the
+   preparer as a second corporation to prepare. A name has to carry something
+   that distinguishes THIS company from any other. */
+const GENERIC_NAME_WORD = new Set([
+  "foreign", "domestic", "controlled", "subject", "related", "parent", "subsidiary",
+  "corporation", "corporations", "company", "companies", "entity", "entities",
+  "corp", "co", "business", "partnership", "person", "taxpayer", "filer", "shareholder",
+  "name", "names", "of", "the", "a", "an", "this", "its", "and", "or",
+  "any", "each", "such", "all", "both", "no", "every", "certain", "applicable",
+]);
+
+/* Phrases printed ON the form. A company is never called any of these, and
+   the ones ending in "corporation" slip past a legal-form test: "Transactions
+   Between Controlled Foreign Corporation" is Schedule M's own title, and it
+   was read as the corporation's name. */
+const FORM_PHRASE = /information return|transactions between|controlled foreign corporation|stock of the foreign|previously taxed|accumulated earnings|current earnings|distributions from|organization or reorganization|summary of shareholder|income, war profits|u\.?s\.? shareholders of|persons with respect to/i;
+
+export function isGenericCompanyName(raw: string): boolean {
+  if (FORM_PHRASE.test(String(raw || ""))) return true;
+  const words = String(raw || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  return words.every((w) => GENERIC_NAME_WORD.has(w) || STOPWORDS.has(w));
+}
 
 function findCompanyNames(doc: PdfDoc, pages: number[]): string[] {
   const names: string[] = [];
+  const take = (raw: string) => {
+    const t = raw.trim();
+    if (t.length < 4 || t.length >= 70) return;
+    /* A form prints a legal form letter by letter — "CECILIA GONZALEZ ACUNA
+       S P A" — and the suffix list, which spells them as words, matched
+       nothing. Gluing runs of single letters is general: "S.A.", "S P A",
+       "N. V." and "B V" all become the word the list already carries, and a
+       real word is never a run of single letters. */
+    const glued = t.replace(/\b([A-Za-z])[\s.]+(?=[A-Za-z]\b)/g, "$1");
+    if ((!COMPANY_SUFFIX.test(t) && !COMPANY_SUFFIX.test(glued)) || !/[A-Za-z]{3}/.test(t)) return;
+    if (/statement|report|schedule|form\b/i.test(t) || NAME_ROW_NOISE.test(t)) return;
+    const cleaned = t
+      .replace(/^name of (company|entity|corporation)\s*/i, "")
+      /* A form prints the tax identifier and the name on one line. The number
+         is not part of the name, and left on it no two documents about the
+         same company ever look alike. */
+      .replace(/^\d[\d.\u00a0 -]{5,}[\s|]+/, "")
+      .replace(/\s*\(.*\)\s*$/, "").trim();
+    if (isGenericCompanyName(cleaned)) return;
+    names.push(cleaned);
+  };
   for (const p of pages) {
     const rows = doc.rows.filter((r) => r.page === p).slice(0, 12);
     for (const r of rows) {
-      const t = r.cells.map((c) => c.text).join(" ").trim();
-      if (t.length < 70 && COMPANY_SUFFIX.test(t) && /[A-Za-z]{3}/.test(t) && !/statement|report|schedule|form\b/i.test(t)) {
-        names.push(
-          t.replace(/^name of (company|entity|corporation)\s*/i, "").replace(/\s*\(.*\)\s*$/, "").trim(),
-        );
-      }
+      /* The whole line first — the usual statutory letterhead — then each
+         cell on its own. An accounting package prints its own name and the
+         sheet number on the same line as the client's ("CONTPAQ i   EL KIJ
+         EXPORTACIONES S DE RL DE CV   Hoja: 1"), so the joined line ends in
+         the page number and only the cell carries the company. */
+      take(r.cells.map((c) => c.text).join(" "));
+      if (r.cells.length > 1) for (const c of r.cells) take(c.text);
     }
   }
   return names;
+}
+
+/* The statement's own heading, when nothing on the page carries a legal
+   form. Deliberately narrow: the first line of a statement page that reads
+   like a name and like nothing else — not the title, not a date, not a page
+   number, not the form's own words. */
+function headingNameCandidate(doc: PdfDoc, pages: number[]): string | null {
+  for (const p of pages) {
+    const rows = doc.rows.filter((r) => r.page === p).slice(0, 6);
+    for (const r of rows) {
+      const t = r.cells.map((c) => c.text).join(" ").trim();
+      if (t.length < 4 || t.length > 70) continue;
+      if (NAME_ROW_NOISE.test(t)) continue;
+      if (isGenericCompanyName(t)) continue;
+      if ((t.match(/\d/g) || []).length > 2) continue;
+      const folded = foldAccents(t);
+      if (STATEMENT_TITLE_FOLDED.test(folded)) continue;
+      if (/statement|report|schedule|form\b|informe|estado de|balance|periodo|per\u00edodo/i.test(t)) continue;
+      const words = t.split(/\s+/).filter((w) => /[A-Za-z\u00c0-\u024f]{2}/.test(w));
+      if (words.length < 2 && !words.some((w) => w.length >= 6)) continue;
+      return t;
+    }
+  }
+  return null;
+}
+
+/* On a numbered-box form the company name is a VALUE, not a heading: the
+   caption ("01 Apellido Paterno o razón social", "Denominación social",
+   "Company name") is printed on one line and the name on the next. No suffix
+   list can find it, because a form prints whatever the registry holds —
+   "CORP EDUCACIONAL CHARLIE BRAWN" carries its legal form at the front, or
+   not at all. The form's own layout says which line is the name. */
+const NAME_CAPTION = /raz[oó]n social|denominaci[oó]n social|nombre o raz[oó]n|company name|nom de la soci[eé]t[eé]|firmenname|ragione sociale|naam van de vennootschap/i;
+
+function boxedNameCandidate(doc: PdfDoc, pages: number[]): string | null {
+  for (const p of pages) {
+    const rows = doc.rows.filter((r) => r.page === p);
+    for (let i = 0; i < rows.length - 1; i++) {
+      if (!rows[i].cells.some((c) => NAME_CAPTION.test(c.text))) continue;
+      for (const c of rows[i + 1].cells) {
+        const v = c.text.replace(/^\d[\d.\u00a0 -]{5,}\s*/, "").trim();
+        if (v.length < 4 || v.length > 70) continue;
+        if (!/\p{L}{3}/u.test(v) || NAME_ROW_NOISE.test(v) || isGenericCompanyName(v)) continue;
+        return v;
+      }
+    }
+  }
+  return null;
 }
 
 function mostFrequent(list: string[]): string | null {
@@ -606,7 +1007,17 @@ export function segment5471Blocks(doc: PdfDoc, pages: PageInfo[]): Block5471[] {
   return blocks;
 }
 
-const STOPWORDS = new Set(["pty", "ltd", "limited", "inc", "llc", "corp", "corporation", "co", "gmbh", "plc", "the"]);
+/* Words that say what KIND of company it is, never which one. Two Mexican
+   corporations both end "S DE RL DE CV"; counted as shared tokens, any two of
+   them scored 1.0 similar — which merged two different foreign corporations
+   into one 5471 block, and merged their carry-forward candidates too. The
+   non-Anglo forms are here for the same reason the suffix list carries them. */
+const STOPWORDS = new Set([
+  "pty", "ltd", "limited", "inc", "llc", "corp", "corporation", "co", "gmbh", "plc", "the",
+  "s", "de", "rl", "cv", "sa", "sas", "sapi", "srl", "ltda", "eirl", "spa", "ag", "kg", "ohg",
+  "sarl", "bv", "nv", "oy", "oyj", "ab", "aps", "kft", "zrt", "doo", "mbh", "pte", "sdn", "bhd",
+  "y", "and", "&", "of", "for",
+]);
 
 export function entitySimilarity(a: string, b: string): number {
   const tokens = (s: string) =>
@@ -655,6 +1066,9 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
       confidence: questionnaire || salary ? 0.95 : ledger ? 0.9 : 0.5,
       method: "rules",
       pages: [{ page: 1, kind: "unknown", score: 0 }],
+      textRows: parsed.grid.length,
+      textChars: parsed.grid.reduce((n, r) => n + r.reduce((m, c) => m + String(c || "").length, 0), 0),
+      amountRows: parsed.grid.filter((r) => r.some((c) => numeric(String(c || "")) !== null)).length,
       statementYear: null,
       entityName: null,
       foreignCorpName: null,
@@ -669,11 +1083,16 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
   const has = (pre: string) => [...kinds].some((k) => k.startsWith(pre));
 
   let kind: DocKind = "unknown";
+  /* A schedule page is a page of amounts with no section name. It is real
+     evidence, but it is not proof that the document is a set of accounts —
+     so it never promotes the document on its own. */
+  const hasStatement = [...kinds].some((k) => k.startsWith("fs-") && k !== "fs-schedule");
   // US-form pages dominate: a prior-year 5471 client copy often staples the
   // old financial statements behind it — those must NOT feed current mapping.
   if (has("us-")) kind = "prior-year-us-return";
-  else if (has("fs-")) kind = "cfc-financial-statements";
-  else if (has("ato-")) kind = "cfc-tax-return";
+  else if (hasStatement) kind = "cfc-financial-statements";
+  else if (has("ato-") || kinds.has("tax-form")) kind = "cfc-tax-return";
+  else if (kinds.has("questionnaire")) kind = "client-questionnaire";
   else if (kinds.size === 1 && kinds.has("tandc")) kind = "terms-and-conditions";
 
   let statementYear = detectStatementYear(doc, pages);
@@ -688,26 +1107,81 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
   } else if (statementYear === null && period.end) {
     statementYear = Number(period.end.slice(-4));
   }
+  /* A tax return is filed FOR the year that ended, and names the year it is
+     filed IN. "Año tributario 2025" is the 2024 income year, and booking it
+     as 2025 would put a whole year's figures in the wrong column. The rule is
+     the convention, not the client: a tax year that names the following
+     calendar year reports on the one before it. Said out loud in a note, so
+     the preparer can see the year was derived and not printed. */
+  const taxYearM = /a[n\u00f1]o tributario\s*(\d{4})/.exec(foldAccents(doc.rows.map((r) => r.cells.map((c) => c.text).join(" ")).join("\n")));
+  if (taxYearM) {
+    const filed = Number(taxYearM[1]);
+    const income = filed - 1;
+    if (statementYear === null || statementYear === filed) {
+      statementYear = income;
+      notes.push({
+        level: "info",
+        message: `${fileName} states tax year ${filed}, which reports on the ${income} income year — the figures were placed in ${income}. Set the year end in Basic Information if this return covers a different period.`,
+      });
+    }
+  }
   const statementPeriodEnd = period.end ?? detectStatementPeriodEnd(doc, pages, statementYear);
   const statementPeriodStart = period.start;
   if (kind === "prior-year-us-return" && caseYear && statementYear === caseYear) {
     notes.push({ level: "warn", message: `${fileName}: a US return for the CURRENT year (${caseYear}) was uploaded — expected a prior-year reference copy.` });
   }
 
-  const fsPages = pages.filter((p) => p.kind.startsWith("fs-") || p.kind.startsWith("ato-")).map((p) => p.page);
-  const entityName = mostFrequent(findCompanyNames(doc, fsPages.length ? fsPages : pages.map((p) => p.page)));
+  /* Pages that NAME a statement section. A schedule page is a page of
+     amounts with no section name, and on a US return those are the filer's
+     own 1040 and 1120 schedules — scanning them for a company name found the
+     wrong company entirely. */
+  const fsPages = pages
+    .filter((p) => (p.kind.startsWith("fs-") || p.kind.startsWith("ato-") || p.kind === "tax-form") && p.kind !== "fs-schedule")
+    .map((p) => p.page);
+  let entityName = mostFrequent(findCompanyNames(doc, fsPages.length ? fsPages : pages.map((p) => p.page)));
+  /* No legal form anywhere: an accounting export often prints the trading
+     name on its own. Offer the heading as a candidate rather than leaving the
+     document with no owner, and let the preparer confirm it. */
+  const boxedName = entityName ? null : boxedNameCandidate(doc, fsPages.length ? fsPages : pages.map((p) => p.page));
+  if (boxedName) entityName = boxedName;
+  const entityNameGuess = entityName || !fsPages.length || kind === "prior-year-us-return"
+    ? null
+    : headingNameCandidate(doc, fsPages);
+  if (entityNameGuess) {
+    notes.push({
+      level: "info",
+      message: `${fileName} does not print a company name with a legal form (Ltd, SpA, S de RL de CV...). Its heading reads "${entityNameGuess}" — confirm this is the entity being prepared before relying on the figures, or set the entity's legal name in Basic Information.`,
+    });
+  }
   const classified = pages.filter((p) => p.kind !== "unknown").length;
   const blocks5471 = kind === "prior-year-us-return" ? segment5471Blocks(doc, pages) : undefined;
 
+  let amountRows = 0;
+  for (let p = 1; p <= doc.pageCount; p++) amountRows += amountRowCount(doc, p);
+  /* A boxed form carries no caption-and-amount rows at all, and reporting
+     zero of them would have this document blocked as "read but carrying no
+     figures" — it carries hundreds, in pairs the geometry has to rebuild. */
+  let boxed = 0;
+  for (let p = 1; p <= doc.pageCount; p++) boxed += boxedFormPairs(doc, p);
+  if (boxed > amountRows) amountRows = boxed;
+  const allText = doc.rows.map((r) => r.cells.map((c) => c.text).join(" ")).join("\n");
+  const language = detectTextLanguage(allText).name;
+  const termHit = identifyByTerms(allText);
   return {
     fileId, fileName, kind,
     confidence: pages.length ? classified / pages.length : 0,
+    language,
+    identifiedBy: termHit ? { term: termHit.term, english: termHit.en, language: termHit.lang } : null,
+    textRows: doc.rows.length,
+    textChars: doc.rows.reduce((n, r) => n + r.cells.reduce((m, c) => m + c.text.length, 0), 0),
+    amountRows,
     method: "rules",
     pages,
     statementYear,
     statementPeriodEnd,
     statementPeriodStart,
     entityName,
+    entityNameGuess,
     foreignCorpName: findForeignCorpName(doc),
     entityIds: findEntityIds(doc),
     ...(blocks5471 && blocks5471.length ? { blocks5471 } : {}),
@@ -808,6 +1282,22 @@ export function deriveCaseYears(classes: DocClass[]): { cy: number | null; py: n
 
 export function feedsForPage(cls: DocClass, pageKind: PageKind): Set<FeedTarget> {
   if (cls.duplicateOf) return new Set<FeedTarget>(["none"]);
+  /* Independent of what the DOCUMENT turned out to be: a page of amounts the
+     rules cannot name is shown in Review whatever else the document is, and a
+     questionnaire page answers profile questions whatever format it arrived
+     in. Neither is ever booked by these feeds. */
+  if (pageKind === "fs-schedule") {
+    /* Not on a US return. Its unnamed pages are the filer's OWN schedules —
+       1040, 1120, K-1 — and they are not the foreign corporation's money.
+       Surfacing them would put the parent's figures in the CFC's Review. */
+    const own = cls.kind === "cfc-financial-statements" || cls.kind === "cfc-tax-return"
+      || cls.kind === "trial-balance" || cls.kind === "unknown";
+    return new Set<FeedTarget>([own ? "unassigned" : "none"]);
+  }
+  if (pageKind === "questionnaire") return new Set<FeedTarget>(["profile"]);
+  /* A boxed form's figures are not on its rows — they are rebuilt from its
+     geometry, so it feeds from the rebuilt pairs and never from the page. */
+  if (pageKind === "tax-form") return new Set<FeedTarget>(["boxed-form", "profile"]);
   switch (cls.kind) {
     case "cfc-financial-statements":
     case "cfc-tax-return":

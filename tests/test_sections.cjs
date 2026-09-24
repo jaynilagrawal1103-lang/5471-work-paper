@@ -63,9 +63,9 @@ const R = (label, amt, x0, page = 1) => ({
    added: a QuickBooks sub-account is named after the bank or the supplier, so
    only its heading says what it is, and "8150 Exchange gain or loss" is a LOSS
    only because of the heading it is printed under. */
-t("the two banner lexicons are the same 34 patterns", () => {
+t("the two banner lexicons are the same 41 patterns", () => {
   const BANNERS = load("src/prototype/wp/sectionBanners.ts").SECTION_BANNERS;
-  assert.strictEqual(BANNERS.length, 34);
+  assert.strictEqual(BANNERS.length, 41);
   assert.strictEqual(SHIPPED.SECTB.length, BANNERS.length);
   for (let i = 0; i < BANNERS.length; i++) {
     assert.strictEqual(String(BANNERS[i][0]), String(SHIPPED.SECTB[i][0]), "pattern " + i);
@@ -398,8 +398,10 @@ t("banners survive row hygiene and are emitted by the positioned reader", () => 
     "the reader does not emit banners, or emits them on raw pages");
 });
 
-t("every positioned row carries its indent", () => {
-  assert.ok(/const candidate: ExtractedRow = \{ label, values: kept\.map\(\(x\) => x\.v\), years, page: row\.page, x0 \}/.test(engine));
+t("every positioned row carries its indent, and the column it was read from", () => {
+  const cand = engine.slice(engine.indexOf("const candidate: ExtractedRow = {"), engine.indexOf("if (opts?.raw) { out.push(candidate)"));
+  assert.ok(/label, values: kept\.map\(\(x\) => x\.v\), years, page: row\.page, x0/.test(cand), "indent travels with the row");
+  assert.ok(/periodHeading \? \{ period: periodHeading \}/.test(cand), "a period-typed column names itself on the row");
 });
 
 t("step 2 tags, re-feeds and detects structure, and logs both counts", () => {

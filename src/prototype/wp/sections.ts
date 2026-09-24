@@ -113,7 +113,7 @@ export function dropFurniture(rows: MapRow[]): MapRow[] {
    lines, printed at the outermost indent beside "NET INCOME". Without them
    in this lexicon, "NET OTHER INCOME" survived to the keyword scan, matched
    "other income" and was booked as a second other-income account. */
-const TOTAL_WORD = /^(total|subtotal|sub-total|sum|net result|net\s+(?:other\s+|operating\s+)?(?:income|earnings|profit|loss)|grand total|totaal|totale|gesamt|合计|總計)\b|\b(?:ingresos|gastos|costos|activos|pasivos|patrimonio)\s+totales?\b/i;
+const TOTAL_WORD = /^(total(?:es)?|subtotal|sub-total|sumas? de(?:l|\s+l[ao]s?)?|sum|net result|net\s+(?:other\s+|operating\s+)?(?:income|earnings|profit|loss)|grand total|totaal|totale|gesamt|合计|總計)\b|\b(?:ingresos|gastos|costos|activos|pasivos|patrimonio)\s+totales?\b/i;
 
 /** The outermost figures within a candidate group. A subtotal covers its
     IMMEDIATE children, so only the shallowest indent that carries numbers
@@ -171,7 +171,29 @@ export function structRows(rows: MapRow[]): MapRow[] {
       below.push(out[j]);
     }
     const summary = kidsSum(below);
-    if (summary && same(summary.sum, amt)) {
+    /* Whether a caption is the group's total or one of its members is decided
+       by the WORDS when the indentation says the opposite. A Spanish-language
+       package indents "Total Pasivo a corto plazo" one level IN from the
+       accounts it adds, so the hierarchy reads upside down: each account
+       looked like the summary of the total beneath it and was dropped, while
+       the total looked like an ordinary account and was booked. */
+    const totalWorded = (r: MapRow) => TOTAL_WORD.test(String(r.row.label || "").trim());
+    const invertedByIndent = !!summary && !totalWorded(m) && summary.rows.length > 0 && summary.rows.every(totalWorded);
+    /* Nil proves nothing. A row whose amount reads zero — because the figure
+       columns are blank, or because the last column on the line is a
+       percentage — "ties" to any run of zeros above or below it, and a real
+       account was dropped as a total on that coincidence. */
+    const provable = amt !== 0;
+    /* A nil total. "Total FIJO 0.00" on the liabilities side of a Mexican
+       balance sheet has no components to prove it against, and the nil guard
+       above keeps the arithmetic tests from firing on it — so it survived as
+       an ordinary account and was booked to a liability line. Nothing is lost
+       by skipping it: it carries no money. */
+    if (amt === 0 && TOTAL_WORD.test(String(m.row.label || "").trim())) {
+      m.skipReason = "a nil total";
+      continue;
+    }
+    if (provable && summary && !invertedByIndent && same(summary.sum, amt)) {
       m.skipReason = `summary of the ${summary.rows.length} row(s) indented beneath it`;
       for (const kid of summary.rows) (kid as MapRow).inTotal = true;
       continue;
@@ -183,7 +205,7 @@ export function structRows(rows: MapRow[]): MapRow[] {
       above.unshift(out[j]);
     }
     const total = kidsSum(above);
-    if (total && same(total.sum, amt)) {
+    if (provable && total && same(total.sum, amt)) {
       m.skipReason = `total of the ${total.rows.length} row(s) above it`;
       for (const kid of total.rows) (kid as MapRow).inTotal = true;
       continue;
@@ -253,6 +275,30 @@ export function structRows(rows: MapRow[]): MapRow[] {
         for (const kid of flush) (kid as MapRow).inTotal = true;
         continue;
       }
+
+    /* The same group, printed the other way up: the total INDENTED from the
+       accounts it adds. Indent cannot rank these, so the caption does — a
+       total-worded row whose run of preceding non-total rows adds up to it is
+       that run's total, wherever it sits on the page. */
+    if (TOTAL_WORD.test(String(m.row.label || "").trim())) {
+      const run: MapRow[] = [];
+      let sum = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = out[j];
+        if (prev.row.isBanner) break;
+        if (TOTAL_WORD.test(String(prev.row.label || "").trim())) break;
+        const a = amtOf(prev);
+        if (a === null) break;
+        run.unshift(prev);
+        sum += a;
+      }
+      if (run.length && same(sum, amt)) {
+        m.skipReason = `total of the ${run.length} row(s) above it`;
+        for (const kid of run) (kid as MapRow).inTotal = true;
+        continue;
+      }
+    }
+
     }
 
     if (ind === outermost && TOTAL_WORD.test(String(m.row.label || "").trim())) {
@@ -711,7 +757,22 @@ export function collapsedRoute(label: string, section: Section): string | null {
    line is a real component of closing equity. Skipping it understated retained
    earnings by the whole year's profit. The SKIP is therefore feed-aware for
    the profit captions only. */
-const PROFIT_LINE = /^(net\s+(income|earnings|profit|loss)|(profit|loss)\s+(for|of)\s+the\s+(year|period)|current[-\s]year\s+(earnings|profit|net\s+income|result))\b/i;
+const PROFIT_LINE = new RegExp(
+  "^(net\\s+(income|earnings|profit|loss)"
+  + "|(profit|loss)\\s+(for|of)\\s+the\\s+(year|period)"
+  + "|current[-\\s]year\\s+(earnings|profit|net\\s+income|result)"
+  /* The same line in the languages the statements arrive in. A Mexican
+     balance sheet closes its equity block with "Utilidad o Pérdida del
+     Ejercicio"; skipped as a P&L subtotal, the year's result never reached
+     retained earnings and closing equity was short by the whole year. */
+  + "|utilidad\\s*\\(?o\\)?\\s*p[e\\u00e9]rdida(\\s+del\\s+ejercicio)?"
+  + "|(utilidad|p[e\\u00e9]rdida|resultado)\\s+(neta?\\s+)?del\\s+(ejercicio|per[i\\u00ed]odo)"
+  + "|resultado\\s+del\\s+ejercicio"
+  + "|lucro\\s+(l[i\\u00ed]quido\\s+)?do\\s+exerc[i\\u00ed]cio"
+  + "|r[e\\u00e9]sultat\\s+de\\s+l.exercice"
+  + ")\\b",
+  "i",
+);
 
 /** The retained-earnings line, when a SKIP-matched profit caption sits on the
     balance-sheet side; null when the SKIP should stand. */

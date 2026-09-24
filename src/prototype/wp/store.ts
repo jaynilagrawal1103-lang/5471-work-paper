@@ -3,7 +3,7 @@
 import {
   BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES, REPLACEABLE_FORMULA_REFS,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
-  detectRulers, explainUnreadable, extractPositionedRows, extractRows, fixedAssetSplit, matchRule, matchRuleScoped, noteLookthrough, numeric, readDocument, signForLabel, statementNotes,
+  detectRulers, resolveWordRulers, inheritRulers, detectPeriodRulers, explainUnreadable, isProcessorFee, splitSidePanels, extractPositionedRows, extractRows, fixedAssetSplit, matchRule, matchRuleScoped, noteLookthrough, numeric, readDocument, signForLabel, stackedCaptionRows, statementNotes,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
@@ -20,7 +20,8 @@ import {
 import {
   AGENT_CAN, AGENT_CANNOT, AGENT_FRAMEWORK, AGENT_GRAPH, AGENT_NAME, AGENT_PROVIDER,
   citeEvidence, runAgent,
-  type AgentBrief, type AgentFailure, type AgentImportant, type AgentRow, type AgentSuggestion, type DocBrief,
+  type AgentBrief,
+  type CaseContext, type AgentFailure, type AgentImportant, type AgentRow, type AgentSuggestion, type DocBrief,
 } from "./agent";
 import { sessionSnapshot } from "../session";
 import { apiBase } from "../api";
@@ -94,6 +95,7 @@ import { applyPeg, lookupRates, peggedRate, yearFromPeriod, FX_META } from "./fx
 import { seedRateDb, type RateDb } from "./rateDb";
 import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
 import { collectCaptionLabels, detectLanguage, displayLabel, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
+import { translateCaption } from "./terms";
 import { cleanFor, detectProfile, looksLikeDate, sniffCurrency, type DetectedField, type ProfileCandidate } from "./detectProfile";
 
 declare const JSZip: any;
@@ -598,7 +600,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 8;
+export const RULE_CATALOGUE_VERSION = 10;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -609,6 +611,10 @@ const SKIP_ADDED_SINCE: Record<number, string[]> = {
   2: ["net earnings", "net earnings for the year", "net profit for the period", "net loss for the year", "net loss"],
   // v5 (2026-09-15): Chilean statement totals may end in "totales".
   4: ["ingresos totales", "gastos totales", "costos totales", "activos totales", "pasivos totales", "patrimonio total", "total activos", "total pasivos", "total gastos", "total costos", "resultado antes de impuestos"],
+  // v9 (2026-09-23): how a Mexican P&L captions its bottom line.
+  8: ["utilidad (o p\u00e9rdida)", "utilidad (o perdida)", "utilidad o p\u00e9rdida", "utilidad o perdida",
+      "utilidad o p\u00e9rdida del ejercicio", "utilidad o perdida del ejercicio",
+      "resultado integral de financiamiento", "resultado integral", "resultado neto"],
 };
 
 /** target → first keyword, for each group added at version 2. Identified by
@@ -634,6 +640,36 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
   // accounting package actually prints, and a named partner capital account
   // was claimed by the bare "capital" keyword on the common-stock group.
   7: ["cheque account", "computer equipment", "capital -"],
+  /* v9 (2026-09-23): the Mexican chart of accounts. A CONTPAQ i balance sheet
+     left its land, its whole fixed-asset register, every tax account and the
+     accumulated result unmapped, and an advance PAID to suppliers was booked
+     as a payable. */
+  8: ["terrenos", "equipo de transporte", "depreciaci\u00f3n acumulada", "amortizaci\u00f3n acumulada", "anticipo a proveedores",
+      "impuestos por pagar", "resultado de ejercicios anteriores", "depreciaci\u00f3n contable",
+      "gastos de servicio"],
+  /* v10 (2026-09-24): the payment-processor fees left the cost-of-goods group
+     and became a group of their own, so a saved catalogue that never had them
+     needs the new group as well as the move. */
+  9: ["paypal fee"],
+};
+
+/** Keywords that MOVED to a different line at a given version. Adding a group
+    cannot fix a caption that the saved catalogue already claims for the wrong
+    line: the old group keeps matching and position only breaks ties. So the
+    keyword is taken out of every group that is not its new target, and added
+    to the group that is. A preparer who deleted the keyword keeps it deleted;
+    a preparer who moved it somewhere else themselves keeps their choice,
+    because only the target it is being moved OFF is touched. */
+const RULES_MOVED_SINCE: Record<number, Array<{ kw: string[]; from: string; to: string }>> = {
+  /* v10 (2026-09-24): a payment processor's fee is the cost of collecting the
+     money, not the cost of the goods. Booked on Schedule C line 2 it read as
+     cost of goods sold; it belongs in other deductions beside "bank fees". */
+  9: [{
+    kw: ["shopify fee", "paypal fee", "stripe fee", "merchant account fee",
+         "merchant fee", "payment processing fee", "payment fee",
+         "transaction fee", "processing fee"],
+    from: "IS:12", to: "IS:OD",
+  }],
 };
 
 /** Groups the saved catalogue is missing purely because it predates them.
@@ -648,10 +684,38 @@ export function upgradeRules(saved: MappingRule[], savedVersion: number | undefi
   const add = DEFAULT_RULES.filter((r) => r.kw.some((k) => wanted.has(k.toLowerCase()) && !known.has(k.toLowerCase())));
   const skipWords: string[] = [];
   for (let v = from; v < RULE_CATALOGUE_VERSION; v++) for (const k of SKIP_ADDED_SINCE[v] || []) if (!known.has(k)) skipWords.push(k);
-  if (!add.length && !skipWords.length) return saved;
-  const merged = skipWords.length
+  const moves: Array<{ kw: string[]; from: string; to: string }> = [];
+  for (let v = from; v < RULE_CATALOGUE_VERSION; v++) for (const m of RULES_MOVED_SINCE[v] || []) {
+    const words = m.kw.map((k) => k.toLowerCase());
+    // Applicable only while the keyword is still on the line it is moving off.
+    // A catalogue that never had it, or has already been moved, is untouched.
+    if (saved.some((r) => r.t === m.from && r.kw.some((k) => words.includes(k.toLowerCase())))) moves.push(m);
+  }
+  if (!add.length && !skipWords.length && !moves.length) return saved;
+  let merged = skipWords.length
     ? saved.map((r) => (r.t === "SKIP" ? { ...r, kw: [...r.kw, ...skipWords] } : r))
     : saved;
+  for (const m of moves) {
+    const words = m.kw.map((k) => k.toLowerCase());
+    // Only the group it is being moved OFF loses the keyword.
+    merged = merged
+      .map((r) => (r.t === m.from ? { ...r, kw: r.kw.filter((k) => !words.includes(k.toLowerCase())) } : r))
+      .filter((r) => r.kw.length);
+    // Only the keywords the saved catalogue actually carried are moved across.
+    const carry = m.kw.filter((k) => known.has(k.toLowerCase()));
+    if (!carry.length) continue;
+    if (merged.some((r) => r.t === m.to)) {
+      let done = false;
+      merged = merged.map((r) => {
+        if (done || r.t !== m.to) return r;
+        done = true;
+        const have = new Set(r.kw.map((k) => k.toLowerCase()));
+        return { ...r, kw: [...r.kw, ...carry.filter((k) => !have.has(k.toLowerCase()))] };
+      });
+    } else {
+      merged = [...merged, { t: m.to, kw: [...carry] }];
+    }
+  }
   // Ahead of the saved rules: a longer keyword still wins, so position only
   // decides ties, and a rule the preparer wrote should not lose one.
   return [...merged, ...add.map((r) => ({ t: r.t, kw: [...r.kw] }))];
@@ -831,15 +895,78 @@ export function toast(text: string, kind: "ok" | "bad" | "" = "") {
    every other NAMED block becomes a sibling entity sharing the same document
    files, processed sequentially. Re-processing never spawns duplicates: a
    plan whose reference ID or name matches an existing entity is skipped. */
+/* Which corporation does a page belong to?
+ *
+ * A client sends one PDF per statement, but a stapled set — or a package
+ * that prints two companies one after the other — carries pages for more
+ * than one foreign corporation. A Form 5471 is filed per corporation, so a
+ * page that names another corporation must not feed this work paper: added
+ * together, two companies' balance sheets produce a work paper that belongs
+ * to neither. The page's own letterhead is the evidence, and nothing else
+ * is guessed: a page that names no corporation stays with whoever the page
+ * before it belonged to, and a page that names two is left unattributed.
+ *
+ * This is the source-side counterpart of the EN9_norm / EN9_vars / EN9_attr
+ * block in dist/index.html; the two must agree caption for caption. */
+const entityNameKey = (s: string): string => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+export function entityNameVariants(name: string): string[] {
+  const n = entityNameKey(name);
+  if (!n) return [];
+  const out = [n];
+  const bare = n.replace(/(proprietarylimited|ptylimited|ptyltd|limited|ltd|pty|incorporated|inc|llc|gmbh|plc)+$/, "");
+  if (bare && bare !== n && bare.length >= 6) out.push(bare);
+  return out;
+}
+
+type PageOwnerDoc = { rows: { page: number; cells: { text: string }[] }[] };
+
+export function attributePagesToEntities(
+  doc: PageOwnerDoc,
+  ents: { key: string; vars: string[] }[],
+): Map<number, string | null> {
+  /* The letterhead is at the top of the page, so only the first rows are
+     read — far enough down to clear a logo, not so far that an account
+     caption naming a group company decides the page. */
+  const head = new Map<number, string[]>();
+  for (const r of doc.rows) {
+    const acc = head.get(r.page) || [];
+    if (acc.length < 16) { acc.push(r.cells.map((c) => c.text).join(" ")); head.set(r.page, acc); }
+  }
+  const pages = [...head.keys()].sort((a, b) => a - b);
+  const owner = new Map<number, string | null>();
+  let running: string | null = null;
+  let first: string | null = null;
+  for (const page of pages) {
+    const text = entityNameKey((head.get(page) || []).join(" "));
+    const hit = ents.filter((e) => e.vars.some((v) => v && text.includes(v)));
+    if (hit.length === 1) { running = hit[0].key; if (first === null) first = running; }
+    owner.set(page, running);
+  }
+  // Pages before the first letterhead belong to the first corporation named.
+  if (first !== null) for (const page of pages) { if (owner.get(page) !== null) break; owner.set(page, first); }
+  return owner;
+}
+
 let fanningOut = false;
 
 async function fanOutSiblings(parentId: string, plans: CfCandidate[]): Promise<void> {
   const parent = state.entities.find((e) => e.id === parentId);
   if (!parent) return;
+  /* When the plan and an existing entity are BOTH named, the NAME decides and
+     nothing else does — the same rule the candidate dedupe applies. A
+     reference ID read from a neighbouring block's pages (the scan bands
+     overlap on a stapled multi-CFC copy) otherwise matched this plan against
+     the corporation already being prepared, and the second corporation never
+     became an entity at all. Identifiers only settle it when a name is
+     missing, and a template placeholder ("Entity 1") is not a name. */
+  const placeholderName = (n: string) => !String(n || "").trim() || /^entity \d+$/i.test(String(n).trim());
   const fresh = plans.filter((plan) => {
-    const match = state.entities.find((e) =>
-      (plan.refIds.length && !!e.profile.refId && plan.refIds.includes(e.profile.refId)) ||
-      entitySimilarity(e.profile.legalName || e.name, plan.cfcName) >= 0.5);
+    const match = state.entities.find((e) => {
+      const known = e.profile.legalName || e.name;
+      if (plan.cfcName && !placeholderName(known)) return entitySimilarity(known, plan.cfcName) >= 0.5;
+      return plan.refIds.length > 0 && !!e.profile.refId && plan.refIds.includes(e.profile.refId);
+    });
     return !match;
   });
   if (!fresh.length) return;
@@ -1985,6 +2112,14 @@ export const actions = {
     const log: string[] = [];
     const bundles: { file: EntityFile; parsed: ParsedDoc; cls: DocClass }[] = [];
     const mapRows: MapRow[] = [];
+    /* Rows read from pages that carry figures but name no statement section.
+       They are never booked; they join the unmatched list in step 3 so the
+       preparer can see every figure the tool read. */
+    const looseRows: Entity["unmatched"] = [];
+    /* English read off the terminology table for captions that carried none.
+       Written before mapping, so the rules, the review items, the provenance
+       sheet and the preparer all see the same English. */
+    const termTranslations: Record<string, string> = {};
     const profileGrids: { rows: string[][]; doc: string }[] = [];
     const review: ReviewItem[] = [];
     let caseYears: { cy: number | null; py: number | null } = { cy: null, py: null };
@@ -2137,10 +2272,19 @@ export const actions = {
             });
           }
           if (b.cls.kind === "unknown" && !b.cls.duplicateOf) {
+            /* A document that carried FIGURES and could not be identified is
+               not a warning. Nothing from it reached the work paper, and a
+               warning in a long list is how that goes unnoticed: the numbers
+               were there to be read and the work paper was produced without
+               them. A document with no figures at all (a cover letter, terms
+               and conditions) stays a warning — there is nothing to lose. */
+            const hasFigures = (b.cls.amountRows || 0) > 0;
             rv({
               id: `doc-unclassified-${b.file.id}`,
-              level: "warn", category: "process",
-              message: `${b.file.name} could not be classified and fed NOTHING into the work paper. Set its document type manually in Document intake (Type column) and re-process — or map its lines by hand.`,
+              level: hasFigures ? "block" : "warn", category: "process",
+              message: hasFigures
+                ? `${b.file.name} was READ (${(b.cls.textChars || 0).toLocaleString()} characters, ${(b.cls.amountRows || 0).toLocaleString()} line(s) carrying figures) but could not be identified, so NOTHING from it reached the work paper. Set its document type in Document intake (Type column) and re-process, or assign its rows in Review — they are listed there unassigned.`
+                : `${b.file.name} could not be classified and fed NOTHING into the work paper. It carries no figures, so nothing is missing from the schedules. Set its document type in Document intake (Type column) if it should feed something.`,
               source: b.file.name,
             });
           }
@@ -2171,24 +2315,128 @@ export const actions = {
 
       /* Step 2 — extract rows per feed policy; run the special modules. */
       if (step === 2) {
+        /* Documents whose pages were all kept for another corporation. They
+           are not failures here, so the zero-rows warning below passes over
+           them: the entity-scope item already explains where they went. */
+        const scopedOutDocs = new Set<string>();
+        /* ---- who this pile of paper is about ----
+
+           Entities are one source of names; the DOCUMENTS are the other, and
+           for a client with no US return they are the only one. Two companies
+           in one pile used to be added together whenever the case held a
+           single entity, because attribution was switched on by the entity
+           count. It is switched on by the paper now.
+
+           One company named throughout is never held back, whatever the
+           entity is called: an entity named "Client 1" is a naming question,
+           not a contamination risk. */
+        const entityScope = state.entities
+          .map((e) => ({ key: e.id, nm: e.profile.legalName || e.name, vars: entityNameVariants(e.profile.legalName || e.name), entity: true }))
+          .filter((e) => e.vars.length && !/^entity \d+$/i.test(e.nm.trim()));
+        const docCompanies: { key: string; nm: string; vars: string[]; entity: boolean }[] = [];
+        for (const b of bundles) {
+          const nm = b.cls.entityName;
+          if (!nm || b.cls.duplicateOf) continue;
+          if (entityScope.some((e) => entitySimilarity(e.nm, nm) >= 0.5)) continue;
+          if (docCompanies.some((d) => entitySimilarity(d.nm, nm) >= 0.5)) continue;
+          const vars = entityNameVariants(nm);
+          if (vars.length) docCompanies.push({ key: `doc:${vars[0]}`, nm, vars, entity: false });
+        }
+        /* A heading with no legal form is a CANDIDATE, not a name. It may
+           take part in attribution only once the case is already known to
+           hold more than one company — there the risk is two companies added
+           together, and the candidate is the only evidence which pages belong
+           to whom. With a single company in the papers a candidate can only
+           do harm: an entity the preparer called "Client 1" would have its
+           own statements held back on the strength of a guess. */
+        if (entityScope.length + docCompanies.length >= 2) {
+          for (const b of bundles) {
+            const nm = b.cls.entityNameGuess;
+            if (!nm || b.cls.duplicateOf || b.cls.entityName) continue;
+            if (entityScope.some((e) => entitySimilarity(e.nm, nm) >= 0.5)) continue;
+            if (docCompanies.some((d) => entitySimilarity(d.nm, nm) >= 0.5)) continue;
+            const vars = entityNameVariants(nm);
+            if (vars.length) docCompanies.push({ key: `doc:${vars[0]}`, nm, vars, entity: false });
+          }
+        }
+        const namedCompanies = entityScope.length + docCompanies.length;
+        const companyScope = namedCompanies > 1 ? [...entityScope, ...docCompanies] : [];
+        /* One company, and it is not the entity's name. Nothing is held back —
+           the preparer is told, and decides. */
+        if (namedCompanies === 1 && docCompanies.length === 1) {
+          const me = state.entities.find((e) => e.id === entityId);
+          rv({
+            id: `entity-name-differs-${entityId}`,
+            level: "warn", category: "entity-scope",
+            message: `Every document in this entity names "${docCompanies[0].nm}", but the entity is called "${me ? (me.profile.legalName || me.name) : "this entity"}". The documents were used, because only one company is named in the papers. Set the legal name in Basic Information if they are the same company, or move the documents if they are not.`,
+            source: docCompanies[0].nm,
+          });
+        }
+        /* A company the papers name that has no entity: its pages are held
+           back rather than folded into somebody else's work paper. */
+        const companiesWithoutEntity = new Map<string, string>(docCompanies.map((d) => [d.key, d.nm]));
         for (const b of bundles) {
           if (b.cls.duplicateOf) continue;
           const { parsed, cls, file } = b;
           let read = 0;
           if (parsed.pdf) {
-            const rulers = detectRulers(parsed.pdf);
-            const isPages = pagesForFeed(cls, "generic-is");
-            const bsPages = pagesForFeed(cls, "generic-bs");
+            /* A statement printed as two facing panels — assets down the left,
+               liabilities and equity down the right — is re-cut into one
+               column of rows per panel before anything else reads it. Left
+               unsplit, every liability on the page is swallowed as a second
+               period column of the asset printed beside it. Pages that are not
+               printed that way come back untouched. */
+            const pdf = splitSidePanels(parsed.pdf);
+            /* "Current Year / Prior Year" headers become real years here, or
+               are dropped when the engagement's years are still unknown. */
+            const rulers = resolveWordRulers(detectRulers(pdf), caseYears);
+            /* "Periodo | % | Acumulado | %" — figure columns named by what
+               they measure rather than by a year. */
+            const periodRulers = detectPeriodRulers(pdf);
+            /* Page attribution runs before any feed is read, so a page that
+               names another company never reaches the rules. */
+            const scopeEnts = companyScope;
+            /* The document says whose it is, and that outranks reading the
+               letterhead page by page. A form prints the registry's wording
+               ("CORP EDUCACIONAL CHARLIE BRAWN") while the entity carries the
+               filing's ("CORPORACION EDUCACIONAL CHARLIE BRAWN LIMITADA"):
+               the same company, and no substring of the page matches the
+               entity's name, so page attribution alone left every page
+               unowned and both companies were read into both work papers.
+               Names are compared the way they are compared everywhere else. */
+            const docOwner = cls.entityName
+              ? companyScope.find((c) => entitySimilarity(c.nm, cls.entityName as string) >= 0.5) || null
+              : null;
+            const pageOwner = companyScope.length > 1
+              ? (docOwner
+                ? new Map<number, string | null>(cls.pages.map((p) => [p.page, docOwner.key]))
+                : attributePagesToEntities(parsed.pdf, companyScope))
+              : new Map<number, string | null>();
+            const excludedPages = new Map<number, string>();
+            const ownPages = (pages: Set<number>): Set<number> => {
+              const keep = new Set<number>();
+              for (const p of pages) {
+                const owner = pageOwner.get(p) ?? null;
+                if (owner === null || owner === entityId) keep.add(p);
+                else excludedPages.set(p, owner);
+              }
+              return keep;
+            };
+            const isPages = ownPages(pagesForFeed(cls, "generic-is"));
+            const bsPages = ownPages(pagesForFeed(cls, "generic-bs"));
             /* Held apart until the section banners have been read: a page can
                hold the end of the P&L and the start of the balance sheet, and
                classification only gets one answer for the whole page. The
                banners are the statement's own account of which is which. */
             let pdfIs: MapRow[] = [];
             let pdfBs: MapRow[] = [];
-            for (const row of isPages.size ? extractPositionedRows(parsed.pdf, rulers, { pages: isPages }) : []) {
+            /* A statement that runs over a page break prints its header once,
+               so a continuation page is ruled by the header above it — within
+               its own feed only. */
+            for (const row of isPages.size ? extractPositionedRows(pdf, rulers, { pages: isPages, inheritRulerFrom: inheritRulers(rulers, isPages), periodRulers }) : []) {
               pdfIs.push({ row, docId: file.id, docName: file.name, feed: "is", kind: "pdf", x0: row.x0 });
             }
-            for (const row of bsPages.size ? extractPositionedRows(parsed.pdf, rulers, { pages: bsPages }) : []) {
+            for (const row of bsPages.size ? extractPositionedRows(pdf, rulers, { pages: bsPages, inheritRulerFrom: inheritRulers(rulers, bsPages), periodRulers }) : []) {
               pdfBs.push({ row, docId: file.id, docName: file.name, feed: "bs", kind: "pdf", x0: row.x0 });
             }
             /* The notes are not booked -- they restate what the face already
@@ -2206,7 +2454,7 @@ export const actions = {
             }
             const notePages = new Set((cls.pages || []).filter((p) => p.kind === "fs-notes").map((p) => p.page));
             const notes = notePages.size
-              ? statementNotes(extractPositionedRows(parsed.pdf, rulers, { pages: notePages }))
+              ? statementNotes(extractPositionedRows(pdf, rulers, { pages: notePages }))
               : [];
             const lookthrough = notes.length ? noteLookthrough(notes) : new Map<string, string>();
             if (lookthrough.size) {
@@ -2295,9 +2543,9 @@ export const actions = {
               mapRows.push(m);
             }
             if (skipped) log.push(`${file.name}: ${skipped} structural subtotal/total row(s) dropped before mapping`);
-            const eqPages = pagesForFeed(cls, "equity");
-            if (eqPages.size && !equity) equity = pullEquityFacts(parsed.pdf, eqPages, detectRulers(parsed.pdf), caseYears.cy);
-            const atoPages = pagesForFeed(cls, "targeted-ato");
+            const eqPages = ownPages(pagesForFeed(cls, "equity"));
+            if (eqPages.size && !equity) equity = pullEquityFacts(parsed.pdf, eqPages, resolveWordRulers(detectRulers(parsed.pdf), caseYears), caseYears.cy);
+            const atoPages = ownPages(pagesForFeed(cls, "targeted-ato"));
             if (atoPages.size) ato = { ...pullAtoFacts(parsed.pdf, atoPages), ...ato };
             const cfPages = pagesForFeed(cls, "carry-forward");
             if (cfPages.size && !(caseYears.cy && cls.statementYear === caseYears.cy)) {
@@ -2314,9 +2562,110 @@ export const actions = {
                 });
               }
             }
-            const profilePages = pagesForFeed(cls, "profile");
+            const profilePages = ownPages(pagesForFeed(cls, "profile"));
             if (profilePages.size) {
               profileGrids.push({ rows: parsed.pdf.rows.filter((r) => profilePages.has(r.page)).map((r) => r.cells.map((c) => c.text)), doc: file.name });
+            }
+            /* The client questionnaire, sent as a PDF. The spreadsheet branch
+               below has read it for as long as the questionnaire has existed;
+               sent as a PDF the same document reached nothing at all. */
+            if (cls.kind === "client-questionnaire" && !questionnaire) {
+              const qGrid = parsed.pdf.rows.filter((r) => profilePages.has(r.page)).map((r) => r.cells.map((c) => c.text));
+              const q = parseQuestionnaire(qGrid, file.name);
+              if (q) {
+                questionnaire = q;
+                log.push(`${file.name}: client questionnaire (PDF) — ${[
+                  q.roles ? `roles "${q.roles}"` : "",
+                  q.wagesReceived !== undefined ? `wages received ${q.wagesReceived.toLocaleString()}` : "",
+                  q.additionalHolders.length ? `${q.additionalHolders.length} additional shareholder(s)` : "",
+                ].filter(Boolean).join(", ") || "no answers read"}`);
+              }
+            }
+            /* A numbered-box tax return. Its figures are not on its rows —
+               the caption is printed on one line and the box code and amount
+               on the next — so the pairs the geometry rebuilds ARE the
+               document, and reading the page instead would read nothing.
+               Income and expense boxes only: a return states balance-sheet
+               totals that a statement itemises, and those are offered in
+               Review rather than booked. */
+            const boxedPages = ownPages(pagesForFeed(cls, "boxed-form"));
+            if (boxedPages.size) {
+              const pairs = stackedCaptionRows(parsed.pdf);
+              const boxRows = gridStructRows<MapRow>(extractRows(pairs).map((row) => (
+                { row, docId: file.id, docName: file.name, feed: "is" as const, kind: "grid" as const }
+              )));
+              let boxSkipped = 0;
+              for (const m of boxRows) {
+                if (m.skipReason) boxSkipped++;
+                else read++;
+                const en = translateCaption(m.row.label || "");
+                if (en) termTranslations[m.row.label] = en;
+                mapRows.push(m);
+              }
+              log.push(`${file.name}: ${boxRows.length - boxSkipped} caption/amount pair(s) rebuilt from the boxed form${boxSkipped ? `, ${boxSkipped} dropped as totals` : ""}`);
+              rv({
+                id: `boxed-form-${file.id}`,
+                level: "info", category: "process",
+                message: `${file.name} is a numbered-box tax return${cls.language && cls.language !== "English" ? ` in ${cls.language}` : ""}${cls.identifiedBy ? `, identified by "${cls.identifiedBy.term}" (${cls.identifiedBy.english})` : ""}. Its caption/amount pairs were rebuilt from the page layout because no row on the form carries both. Income and expense boxes were mapped; the balance-sheet boxes it states as single totals are listed in Review for you to place, because a return states what a balance sheet itemises.`,
+                source: file.name,
+              });
+            }
+            /* Pages that carry money but name no section the rules know. They
+               are NEVER booked — every figure on them is surfaced in Review,
+               because money that was read must not disappear without a word.
+               This is the difference between a short work paper and a short
+               work paper nobody can explain. */
+            const loosePages = ownPages(pagesForFeed(cls, "unassigned"));
+            if (loosePages.size) {
+              const loose = extractPositionedRows(pdf, rulers, { pages: loosePages, inheritRulerFrom: inheritRulers(rulers, loosePages), periodRulers });
+              let shown = 0;
+              for (const row of loose) {
+                const label = String(row.label || "").trim();
+                const values = (row.values || []).filter((v): v is number => typeof v === "number" && isFinite(v));
+                if (!label || !values.length) continue;
+                looseRows.push({
+                  label, values, page: row.page ?? undefined, x0: row.x0,
+                  docId: file.id, docName: file.name,
+                  reason: `Read from ${file.name} page ${row.page ?? "?"}, which carries figures but names no statement section the rules know. Nothing from it was booked — assign it here if it belongs on the work paper.`,
+                });
+                shown++;
+              }
+              if (shown) {
+                log.push(`${file.name}: ${shown} row(s) from ${loosePages.size} unnamed page(s) surfaced in Review, not booked`);
+                rv({
+                  id: `doc-loose-rows-${file.id}`,
+                  level: "warn", category: "process",
+                  message: `${file.name} has ${loosePages.size} page(s) carrying figures that name no statement section the tool knows (${[...loosePages].join(", ")}). ${shown} row(s) were read and are listed in Review & exceptions, unassigned. Nothing from those pages was booked — assign anything that belongs on the work paper, or set the document type in Document intake.`,
+                  source: file.name,
+                });
+              }
+            }
+            /* Silence here would be the worst outcome: the preparer would see
+               a shorter work paper and no reason for it. */
+            if (excludedPages.size) {
+              const ownerKeys = [...new Set([...excludedPages.values()])];
+              const homeless = ownerKeys.filter((k) => companiesWithoutEntity.has(k));
+              if (homeless.length) {
+                const n = [...excludedPages.entries()].filter(([, k]) => companiesWithoutEntity.has(k)).length;
+                rv({
+                  id: `company-without-entity-${file.id}`,
+                  level: "block", category: "entity-scope",
+                  message: `${file.name}: ${n} page(s) are the accounts of ${homeless.map((k) => companiesWithoutEntity.get(k)).join(", ")}, and this case has no entity for ${homeless.length > 1 ? "them" : "it"}. A Form 5471 is filed per foreign corporation, so those pages were NOT booked here — folded into this work paper they would belong to neither company. Create the entity and process the document against it, or set the document type / move the file if the two are the same company.`,
+                  source: file.name,
+                });
+              }
+              const names = ownerKeys
+                .map((k) => companiesWithoutEntity.get(k) || scopeEnts.find((e) => e.key === k)?.nm || "another company");
+              const me = state.entities.find((e) => e.id === entityId);
+              const self = me ? (me.profile.legalName || me.name) : "this work paper";
+              rv({
+                id: `entity-scope-${file.id}`,
+                level: "warn", category: "entity-scope",
+                message: `${file.name}: ${excludedPages.size} page(s) were identified as ${names.join(", ")} and were EXCLUDED from ${self}. Only pages identified as ${self} (plus unidentified pages) feed this work paper.`,
+                source: file.name,
+              });
+              log.push(`${file.name}: ${excludedPages.size} page(s) excluded (belong to ${names.join(", ")})`);
+              scopedOutDocs.add(file.id);
             }
           } else if (cls.kind === "related-party-ledger") {
             ledger = summarizeLedger(parsed.grid, file.name) || ledger;
@@ -2353,12 +2702,24 @@ export const actions = {
         // A recognized statement document that produced ZERO mapped rows is a
         // silent failure — name it, with its page kinds, instead of letting
         // the preparer discover empty schedules later.
+        const selfKey = (() => {
+          const me = state.entities.find((e) => e.id === entityId);
+          return entityNameKey(me ? (me.profile.legalName || me.name) : "");
+        })();
         for (const b of bundles) {
           if (b.cls.duplicateOf) continue;
           const feedsStatements =
             b.cls.kind === "cfc-financial-statements" || b.cls.kind === "trial-balance";
           if (!feedsStatements) continue;
           if (mapRows.some((m) => m.docId === b.file.id)) continue;
+          /* A statement that names ANOTHER corporation contributed nothing
+             here because page attribution kept it for the entity it belongs
+             to. That is the scoping working, and the entity-scope item above
+             already says so; a second "produced ZERO line items" warning
+             would read as a failure. */
+          if (scopedOutDocs.has(b.file.id)) continue;
+          const docKey = entityNameKey(b.cls.entityName || "");
+          if (selfKey && docKey && docKey !== selfKey && !docKey.includes(selfKey) && !selfKey.includes(docKey)) continue;
           const kinds = [...new Set(b.cls.pages.map((p) => p.kind))].join(", ");
           rv({
             id: `doc-zero-rows-${b.file.id}`,
@@ -2375,9 +2736,17 @@ export const actions = {
         if (cfCandidates.length) {
           const deduped: CfCandidate[] = [];
           for (const cand of cfCandidates) {
-            const dupAt = deduped.findIndex((d) =>
-              (cand.refIds.length && d.refIds.some((id) => cand.refIds.includes(id))) ||
-              (!!cand.cfcName && !!d.cfcName && entitySimilarity(cand.cfcName, d.cfcName) >= 0.5));
+            /* When both blocks name their corporation, the NAME decides and
+               nothing else does. A reference ID read from a neighbouring
+               block's pages — the scan bands overlap on a stapled multi-CFC
+               copy — otherwise merged two different foreign corporations into
+               one candidate, and the second corporation never became an
+               entity. Identifiers only settle it when a name is missing. */
+            const dupAt = deduped.findIndex((d) => (
+              cand.cfcName && d.cfcName
+                ? entitySimilarity(cand.cfcName, d.cfcName) >= 0.5
+                : cand.refIds.length > 0 && d.refIds.some((id) => cand.refIds.includes(id))
+            ));
             if (dupAt < 0) { deduped.push(cand); continue; }
             const kept = deduped[dupAt];
             if (cand.pageCount > kept.pageCount) deduped[dupAt] = cand;
@@ -2484,6 +2853,17 @@ export const actions = {
             }
           }
         }
+        /* English before mapping, not after it. A caption the terminology
+           table knows carries its English from here on: the rules see it, the
+           review items quote it, and the provenance sheet can show the
+           original and the English side by side. A caption the preparer has
+           already translated is never overwritten. */
+        if (Object.keys(termTranslations).length) {
+          const cur = state.entities.find((e) => e.id === entityId);
+          const merged = { ...termTranslations, ...(cur?.translations || {}) };
+          updateEntity(entityId, { translations: merged });
+          log.push(`${Object.keys(termTranslations).length} caption(s) read through the built-in terminology before mapping`);
+        }
         updateEntity(entityId, { nameMismatch, log: [...log] });
 
         /* The agent reads the documents BEFORE the rules do. It changes
@@ -2492,7 +2872,27 @@ export const actions = {
            rows the structure pass dropped that it reads as line items so they
            reach Review rather than disappearing. */
         try {
-          await agentUnderstand(entityId, mapRows, log);
+          const brief = await agentUnderstand(entityId, mapRows, log, {
+            self: cf?.cfcName || null,
+            planned: siblingPlans.map((c) => c.cfcName).filter(Boolean) as string[],
+          });
+          /* The agent has no authority to create or move anything. What it can
+             do is refuse to let the run pass over a situation it has
+             recognised: every risk it raised becomes an exception here, before
+             a single line is booked, carrying the action that resolves it and
+             who is allowed to take it. A critical one blocks generation. */
+          for (const risk of brief?.risks || []) {
+            rv({
+              id: `agent-risk-${risk.id}`,
+              level: risk.level === "critical" ? "block" : "warn",
+              category: "process", applied: false,
+              message: `${AGENT_NAME}: ${risk.what} ${risk.why} RECOMMENDED ACTION: ${risk.action}`
+                + (risk.permitted === "tool"
+                  ? " The tool can do this for you — it is offered on the entity card."
+                  : " The agent is not permitted to do this itself.")
+                + (risk.evidence ? ` Evidence: ${risk.evidence}.` : ""),
+            });
+          }
         } catch (err) {
           log.push(`AI agent could not read the documents — ${(err as Error).message}`);
         }
@@ -2507,7 +2907,7 @@ export const actions = {
         const relabels: Record<string, string> = { ...ent.relabels };
         const sourceLabels: Record<string, SourceLabel> = {};
         const contributions: Record<string, Contribution[]> = {};
-        const unmatched: Entity["unmatched"] = [];
+        const unmatched: Entity["unmatched"] = [...looseRows];
         const pools = makePoolState();
         // Standing user remaps survive re-processing. Pre-reserve their pool
         // rows so auto-allocation cannot collide onto a user-chosen slot.
@@ -2572,6 +2972,13 @@ export const actions = {
              an intangible asset merely because its English translation shares
              the word "patent" with Schedule F line 12c. */
           if (m.feed === "is" && /\bpatentes?\b/i.test(m.row.label)) target = "IS:OD";
+          /* The mirror of it, one line up. A payment processor's fee is the
+             cost of COLLECTING the money, so it is an ordinary deduction like
+             any bank charge — unless the statement itself files it under cost
+             of sales, as a QuickBooks chart does with "4500 Shopify Payment
+             Fees" and "4502 Paypal Fees". The books' own banner decides, and
+             the hand-prepared paper for that client agrees with the banner. */
+          if (m.feed === "is" && m.section === "cogs" && target === "IS:OD" && isProcessorFee(m.row.label)) target = "IS:12";
           if (target === "SKIP") {
             // "Net income" in an equity section is closing equity, not a
             // P&L subtotal — the one SKIP that depends on which statement
@@ -2827,7 +3234,24 @@ export const actions = {
             log.push(`Columns not booked: ${spare.map(([y, n]) => `${y} (${n} figure(s))`).join(", ")} — outside the ${caseYears.cy}/${caseYears.py} pair`);
           }
         }
-        log.push(`${Object.keys(lines).length} schedule lines populated · ${unmatched.length} unmatched`);
+        /* The outcome, said first and said plainly. A run that booked nothing
+           used to report "0 schedule lines populated" in the middle of a list
+           of cheerful counts — "22 entity detail(s) detected", "32 schedule
+           cell(s) prepared" — and then finish with the entity marked ready. */
+        {
+          const statementDocs = Object.values(state.entities.find((e) => e.id === entityId)?.docClasses || {})
+            .filter((c) => !c.duplicateOf && ["cfc-financial-statements", "trial-balance"].includes(c.kind));
+          if (!Object.keys(lines).length && statementDocs.length) {
+            log.push(`NOTHING WAS BOOKED: ${statementDocs.length} statement document(s) were read and no schedule line was populated \u00b7 ${unmatched.length} caption(s) unmatched`);
+            rv({
+              id: "nothing-booked", level: "block", category: "mapping",
+              message: `${statementDocs.length} set(s) of financial statements were read — ${statementDocs.map((c) => c.fileName).join(", ")} — and NOT ONE schedule line was populated from them. The work paper would carry only what the prior return and your own entries supply. Check the Review tab for the captions that could not be placed, and the Documents tab for any document that could not be classified, before generating.`,
+              target: `${SHEET.is}!F7`,
+            });
+          } else {
+            log.push(`${Object.keys(lines).length} schedule lines populated \u00b7 ${unmatched.length} unmatched`);
+          }
+        }
         updateEntity(entityId, { lines, relabels, sourceLabels, contributions, unmatched, log: [...log] });
 
         // Entity particulars — from profile-allowed pages and the prior-year
@@ -3289,6 +3713,23 @@ export const actions = {
             const lines = { ...cur0.lines };
             const relabels = { ...cur0.relabels };
             const seeded: string[] = [];
+            /* An asset is not negative. Where the prior return's own contra
+               lines are concerned it is (bad debts, accumulated depreciation),
+               and those carry `negate` above. Anywhere else a negative filed
+               asset means the figure was read out of the wrong column of that
+               return — a liability landing on the asset side — and the only
+               visible symptom is Schedule F failing to balance at the
+               beginning of the year, with nothing to say which line is wrong.
+               The figure is still carried exactly as filed, because a carried
+               balance is evidence and not ours to correct; the line is named
+               instead. */
+            const suspectAssets: Array<{ what: string; row: number; amount: number }> = [];
+            const ASSET_KEY: Record<string, string> = {
+              cash: "cash", ar: "trade receivables", inventories: "inventories",
+              oca: "other current assets", loansToShareholders: "loans to shareholders",
+              depreciable: "depreciable assets", land: "land",
+              otherAssets: "other assets",
+            };
             for (const [key, rows, negate, aggregateLabel] of boyMap) {
               const filed = cf.priorClosingUSD[key]?.value;
               if (typeof filed !== "number") continue;
@@ -3307,6 +3748,14 @@ export const actions = {
                 else if (aggregateLabel) relabels[k] = `${aggregateLabel} (per prior-year Form 5471)`;
               }
               seeded.push(`${k}=${local.toLocaleString()}`);
+              if (!negate && local < 0 && ASSET_KEY[key]) suspectAssets.push({ what: ASSET_KEY[key], row, amount: local });
+            }
+            for (const a of suspectAssets) {
+              rv({
+                id: `cf-negative-asset-${a.row}`, level: "warn", category: "carry-forward",
+                message: `The prior-year Form 5471 carries a NEGATIVE opening ${a.what} of ${a.amount.toLocaleString()} (Schedule F line ${a.row}, column (a)). An asset line is not negative unless it is a contra account, so this is usually a liability read from the wrong column of that return's Schedule F — and it is why the opening column does not balance. The figure was carried exactly as filed, because a carried balance is evidence: check it against the prior return's Schedule F column (b) and move it to the liabilities side if it belongs there.`,
+                target: `${SHEET.bs}!D${a.row}`, source: cfSource,
+              });
             }
             if (seeded.length) {
               updateEntity(entityId, { lines, relabels, openingRate: { rate, why: rateSource.why, source: cfSource } });
@@ -3499,6 +3948,31 @@ export const actions = {
       fanningOut = true;
       try {
         await fanOutSiblings(entityId, siblingPlans);
+        /* The agent raised the missing corporation as a blocking risk at the
+           start of this run, because at that point the case had no entity for
+           it. The tool has now created one, which is the very action the agent
+           recommended — so the block clears here rather than standing over a
+           situation that has been resolved. */
+        const after = state.entities.find((e) => e.id === entityId);
+        if (after) {
+          const made = new Set(siblingPlans.map((c) => `agent-risk-second-entity-${String(c.cfcName || "").toLowerCase().replace(/[^a-z0-9]+/g, "-")}`));
+          const left = (after.reviewItems || []).filter((i) => !made.has(i.id));
+          if (left.length !== (after.reviewItems || []).length) {
+            updateEntity(entityId, { reviewItems: left });
+            logEvent(
+              "Second corporation prepared",
+              `${siblingPlans.map((c) => c.cfcName).join(", ")} — the agent flagged it as a separate filing and the entity was created, so the blocking risk is cleared`,
+              after.name, "system",
+            );
+          }
+        }
+        /* This entity was mapped while it was the only one in the case, so
+           every page in the file was its own. Now that its siblings exist,
+           read it again: page attribution can keep each corporation's pages
+           to its own entity, which is the difference between a work paper for
+           one corporation and a work paper for two added together. The
+           fan-out guard is still set, so this run cannot fan out again. */
+        await actions.processEntity(entityId);
       } catch (err) {
         toast("Additional 5471 work papers could not all be created: " + (err as Error).message, "bad");
       } finally {
@@ -3907,6 +4381,30 @@ export function readState(ent: Entity | undefined, file: EntityFile): ReadStatus
     if (item?.source === file.name && /no text layer/i.test(String(item.message || ""))) return "scan — needs OCR";
   }
   return "could not be read";
+}
+
+/** What the document actually gave this work paper, under the read status.
+ *
+ * "Text read" answers one question only: did the reader run. It said nothing
+ * about whether anything was found or whether any of it was used, so a
+ * document that produced nothing at all still read green while its type said
+ * UNKNOWN — two statements that cannot both be comfortable. This is the
+ * second line: how much text, how many figures, and where they went. */
+export function readDetail(ent: Entity | undefined, file: EntityFile): string {
+  const cls = ent?.docClasses?.[file.id];
+  if (!cls) return "";
+  const parts: string[] = [];
+  if (typeof cls.textChars === "number") parts.push(`${cls.textChars.toLocaleString()} characters`);
+  if (typeof cls.textRows === "number") parts.push(`${cls.textRows.toLocaleString()} lines`);
+  if (cls.amountRows) parts.push(`${cls.amountRows.toLocaleString()} with figures`);
+  const booked = Object.values(ent?.contributions || {}).flat().filter((c) => c.docId === file.id).length;
+  const loose = (ent?.unmatched || []).filter((u) => u.docId === file.id).length;
+  if (cls.duplicateOf) parts.push("duplicate — not used");
+  else if (booked) parts.push(`${booked} booked`);
+  else if (loose) parts.push(`${loose} in Review, none booked`);
+  else if (cls.kind === "unknown") parts.push("NOT USED — type unknown");
+  else parts.push("nothing booked");
+  return parts.join(" \u00b7 ");
 }
 
 /** The prior filing's Schedule F lines re-translated at two rates — the
@@ -4937,9 +5435,20 @@ export async function materializeCaseWrites(
       });
     }
     if (cf.referenceIds.length > 1) {
-      rv({
+      /* Two reference IDs on ONE Form 5471 block is an inconsistency to fix.
+         Two of them because the return carries two Form 5471s is not: it is a
+         second foreign corporation, and it gets its own entity. Saying "the
+         Form 5472 names the entity differently" sent the preparer looking for
+         a form that was not in the file while the second CFC went unfiled. */
+      const blocks = Math.max(0, ...Object.values(ent.docClasses || {})
+        .map((c) => (c.blocks5471 || []).length));
+      rv(blocks > 1 ? {
+        id: "cf-refid-multi", level: "info", category: "carry-forward",
+        message: `${cfSource} covers ${blocks} foreign corporations, with reference IDs ${cf.referenceIds.join(", ")}. This entity carries out ${cf.referenceIds[0]}; the others are prepared as their own entities.`,
+        source: cfSource,
+      } : {
         id: "cf-refid-mismatch", level: "warn", category: "consistency",
-        message: `Two different reference IDs appear in the prior-year return (${cf.referenceIds.join(" vs ")}) — the Form 5472 names the entity differently. Fix before filing.`,
+        message: `Two different reference IDs appear on one Form 5471 in the prior-year return (${cf.referenceIds.join(" vs ")}). A reference ID must be identical on every year's filing for the same corporation — check which one belongs to this entity before filing.`,
         source: cfSource,
       });
     }
@@ -5089,6 +5598,28 @@ export async function materializeCaseWrites(
        books themselves supplied the fact, where sole ownership IS the
        counterparty and there may be no name on file to quote. */
     const relatedParty = questionnaire?.taxpayerName || cf?.holderName || ledger?.counterparty || salary?.person || null;
+    /* Nothing could be inferred, but a wage WAS booked. Shipping Schedule M
+       blank without a word is how a compensation transaction goes unreported:
+       the reviewer sees an empty schedule and no reason for it. The tool still
+       refuses to guess the counterparty — with more than one shareholder there
+       is more than one person the wage can have been paid to — so it names the
+       amount, converts it, and says what is missing. */
+    if (!facts.length && avgRate) {
+      const wages = (ent.contributions["IS:26"] || []).filter((c) => c.field === "amount");
+      const amount = wages.reduce((n, c) => r2add(n, c.value), 0);
+      const holders = (ent.shareholders || []).length;
+      if (wages.length && amount > 0) {
+        rv({
+          id: "schm-compensation-not-inferred", level: "warn", category: "related-party",
+          message: `${amount.toLocaleString()} ${ent.profile.currency || ""} of compensation is booked on Schedule C line 11 ("${wages[0].label}"), but Schedule M was left blank: ${
+            holders > 1
+              ? `the corporation has ${holders} shareholders on file, so who the wage was paid to is a guess, not an inference`
+              : "no questionnaire, salary schedule or related person on file names who it was paid to"
+          }. If it went to a related person, enter US$${Math.round(amount / avgRate).toLocaleString()} on Schedule M (line 19 for compensation the corporation PAID, line 6 if your work paper uses that row) in the column for that person. If it went to unrelated staff, Schedule M is correctly blank.`,
+          target: `${SHEET.schM}!E28`, source: wages[0].docName, suggestedValue: Math.round(amount / avgRate),
+        });
+      }
+    }
     if (facts.length && avgRate && (relatedParty || facts.some((f) => f.booked))) {
       const booked = Object.entries(ent.contributions).flatMap(([target, list]) => list.map((c) => ({ target, ...c })));
       const usedCols = new Set<string>();
@@ -6119,6 +6650,9 @@ async function agentUnderstand(
   entityId: string,
   mapRows: MapRow[],
   log: string[],
+  /** What the run has already decided about which corporation this entity is,
+      and which others the tool is about to create. */
+  hints?: { self?: string | null; planned?: string[] },
 ): Promise<AgentBrief | null> {
   if (state.agent?.enabled === false) return null;
   const ent = state.entities.find((e) => e.id === entityId);
@@ -6140,14 +6674,28 @@ async function agentUnderstand(
     }
     docs.push({
       docId, name: cls.fileName, kind: cls.kind, pages: (cls.pages || []).length,
+      /* The corporation the document itself names. The agent needs it to tell
+         a document that belongs to another corporation (nothing wrong: page
+         attribution kept it for that entity) from one that genuinely carried
+         no figures. */
+      entityName: cls.entityName ?? null,
       statementYear: cls.statementYear ?? null,
       periodEnd: cls.statementPeriodEnd ?? null,
       periodStart: cls.statementPeriodStart ?? null,
       rowsRead: rows.length,
       rowsWithFigures: rows.filter((m) => (m.row.values || []).some((v) => typeof v === "number" && isFinite(v))).length,
+      amountRows: cls.amountRows ?? 0,
+      loosePages: pagesForFeed(cls, "unassigned").size,
       rowsDropped: rows.filter((m) => !!m.skipReason).length,
       sections: [...new Set(rows.map((m) => m.section).filter(Boolean) as string[])],
-      language: [...langs.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "English",
+      /* A statement is in the language of its ACCOUNT NAMES, not of whichever
+         language most of its captions happen to score as. "Total Ingresos",
+         "Total Costos" and "Depreciacion Contable" all read as English on a
+         word count, so a page of Spanish accounts was reported as English
+         while the same run raised a failure for its untranslated Spanish.
+         One confidently non-English caption settles it, and the log and the
+         failure list now read the same value. */
+      language: ([...langs.entries()].filter(([n]) => n !== "English").sort((a, b) => b[1] - a[1])[0]?.[0]) || "English",
       ocr: (ent.files || []).some((f) => f.id === docId && !!f.ocr),
       feedsLineItems: ["cfc-financial-statements", "cfc-tax-return", "trial-balance"].includes(cls.kind),
     });
@@ -6173,7 +6721,8 @@ async function agentUnderstand(
   try {
     const years = resolveCaseYears(ent);
     result = await runAgent(
-      { phase: "understand", rows, docs, haveModel, requiredYear: years.cy, yearSource: years.source, detectedYears: years.detected },
+      { phase: "understand", rows, docs, haveModel, requiredYear: years.cy, yearSource: years.source, detectedYears: years.detected,
+        caseContext: buildCaseContext(ent, hints) },
       { ask: groqCall, timeoutMs: GROQ_TIMEOUT_MS }, (n) => nodes.push(n.node),
     );
   } catch (err) {
@@ -6229,10 +6778,53 @@ async function agentUnderstand(
     detectedYears: result.detectedYears,
     yearReason: caseYearReason(resolveCaseYears(ent)),
     docs: result.docs, language, important: result.important, failures,
+    risks: result.risks || [],
     notes: result.notes, steps: nodes, translated,
   };
   updateEntity(entityId, { agentBrief: brief });
   return brief;
+}
+
+/** What the agent needs in order to see past this one entity: every foreign
+    corporation the documents name, and whether the case already has an entity
+    for it. Built from the documents themselves, so it holds for any client
+    whose papers cover more than one corporation. */
+function buildCaseContext(ent: Entity, hints?: { self?: string | null; planned?: string[] }): CaseContext {
+  const corporations: CaseContext["corporations"] = [];
+  const seen = new Set<string>();
+  /* "Entity 1" is the card's placeholder, not a corporation. Read as one, it
+     matched nothing and every document in the case looked like it belonged to
+     somebody else. */
+  const real = (n: string) => (/^entity \d+$/i.test(n.trim()) ? "" : n.trim());
+  const known = state.entities
+    .map((e) => real(String(e.profile.legalName || e.profile.entityShort || e.name || "")))
+    .filter(Boolean)
+    /* The corporation this run has already chosen for itself, and the ones the
+       tool is about to create as siblings, are accounted for — flagging them
+       as missing would be the agent objecting to work already in hand. */
+    .concat([hints?.self || ""], hints?.planned || [])
+    .filter(Boolean);
+  const add = (name: string, source: string, refId?: string | null) => {
+    const clean = String(name || "").trim();
+    if (!clean || seen.has(clean.toLowerCase())) return;
+    seen.add(clean.toLowerCase());
+    corporations.push({
+      name: clean, source, refId: refId ?? null,
+      hasEntity: known.some((k) => entitySimilarity(k, clean) >= 0.5),
+    });
+  };
+  for (const cls of Object.values(ent.docClasses || {})) {
+    if (cls.duplicateOf) continue;
+    /* One prior-year return can carry a Form 5471 per corporation. Each block
+       names its own, and each one is a separate filing. */
+    for (const b of cls.blocks5471 || []) if (b.cfcName) add(b.cfcName, cls.fileName, b.referenceIds?.[0]);
+    if (cls.entityName) add(cls.entityName, cls.fileName, null);
+  }
+  return {
+    corporations,
+    entityName: real(String(ent.profile.legalName || ent.profile.entityShort || "")) || hints?.self || null,
+    mayCreateEntity: true,
+  };
 }
 
 

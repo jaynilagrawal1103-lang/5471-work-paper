@@ -40,7 +40,7 @@ ok(info.framework === "LangGraph", "the framework is reported");
 ok(info.provider === "Groq", "the provider is reported");
 ok(info.connected === false, "with no key configured it reports Not connected");
 ok(
-  JSON.stringify(info.steps) === JSON.stringify(["gather", "understand", "suggest", "terminology", "critique", "route", "reconcile", "survey", "yearCheck", "spotlight", "interpret", "handoff"]),
+  JSON.stringify(info.steps) === JSON.stringify(["gather", "understand", "suggest", "terminology", "critique", "route", "reconcile", "survey", "yearCheck", "risks", "spotlight", "interpret", "handoff"]),
   "the panel reads its steps from the compiled graph",
 );
 

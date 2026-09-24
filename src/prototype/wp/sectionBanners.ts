@@ -70,6 +70,22 @@ export const SECTION_BANNERS: [RegExp, Section][] = [
   [/^passif$/i, "liabilities"],
   [/^actif(?:\s+(?:circulant|immobilis(?:é|e)))?$/i, "assets"],
   [/^(?:patrimonio|patrimonio\s+neto)$/i, "equity"],
+  /* A Spanish-language balance sheet names its two sides ACTIVO and PASIVO,
+     and its equity block CAPITAL — often letter-spaced across the page
+     ("A C T I V O"), which is how the package draws a heading. The groups
+     beneath them ("CIRCULANTE", "FIJO", "DIFERIDO") are deliberately NOT
+     banners: the same three words head both sides, so only the side heading
+     above them says which side a row is on. */
+  [/^p\s?a\s?s\s?i\s?v\s?o\s?s?$/i, "liabilities"],
+  [/^a\s?c\s?t\s?i\s?v\s?o\s?s?$/i, "assets"],
+  [/^c\s?a\s?p\s?i\s?t\s?a\s?l$/i, "equity"],
+  /* Schedule F splits current from non-current on both sides, and these are
+     the statement saying which is which. Without them a long-term creditor
+     got the same answer as a short-term one. */
+  [/^(?:total\s+)?pasivos?\s+(?:a\s+)?(?:largo\s+plazo|no\s+circulante|no\s+corriente|fijo)$/i, "termLiabilities"],
+  [/^(?:total\s+)?pasivos?\s+(?:a\s+)?(?:corto\s+plazo|circulante|corriente)$/i, "liabilities"],
+  [/^(?:total\s+)?activos?\s+(?:a\s+)?(?:largo\s+plazo|no\s+circulante|no\s+corriente|fijo)$/i, "fixedAssets"],
+  [/^(?:total\s+)?activos?\s+(?:a\s+)?(?:corto\s+plazo|circulante|corriente)$/i, "assets"],
   [/^pasivos?$/i, "liabilities"],
   [/^activos?$/i, "assets"],
   /* "Other income" is narrower than "income", for the same reason "cogs" is

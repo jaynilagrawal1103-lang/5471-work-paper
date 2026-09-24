@@ -87,9 +87,48 @@ await (async () => {
 })();
 
 await (async () => {
-  const { e15 } = await run(entity({ shareholders: [{ id: "a", name: "A" }, { id: "b", name: "B" }] }));
+  const { e15, items } = await run(entity({ shareholders: [{ id: "a", name: "A" }, { id: "b", name: "B" }] }));
   t("two shareholders: no inference, the counterparty would be a guess", () => {
     assert.ok(!e15, "E15 was written for a two-shareholder corporation");
+  });
+  /* Refusing to guess is right; shipping the schedule blank with no word is
+     not. Boating Made Easy 2024 had two 50% holders and 72,067.40 of wages,
+     and the work paper went out with an empty Schedule M and no reason. */
+  t("but the blank schedule says why, with the figure and the conversion", () => {
+    const it = items.find((i) => i.id === "schm-compensation-not-inferred");
+    assert.ok(it, "no review item: " + JSON.stringify(items.map((x) => x.id)));
+    assert.strictEqual(it.level, "warn");
+    assert.strictEqual(it.category, "related-party");
+    assert.ok(it.message.includes("82,000"), it.message);
+    assert.ok(/2 shareholders on file/.test(it.message), it.message);
+    assert.ok(/guess, not an inference/.test(it.message), it.message);
+    assert.ok(/line 19/.test(it.message), "the row the corporation PAYING names: " + it.message);
+    assert.strictEqual(it.suggestedValue, 82000);
+  });
+})();
+
+await (async () => {
+  const { e15, items } = await run(entity({ pct: "25" }));
+  t("a minority filer is told the same thing", () => {
+    assert.ok(!e15);
+    const it = items.find((i) => i.id === "schm-compensation-not-inferred");
+    assert.ok(it, "no review item for the minority filer");
+    assert.ok(/no questionnaire, salary schedule or related person/.test(it.message), it.message);
+  });
+})();
+
+await (async () => {
+  const { items } = await run(entity({ wage: null }));
+  t("no wage booked: nothing to say either", () => {
+    assert.ok(!items.some((i) => i.id === "schm-compensation-not-inferred"),
+      "warned about compensation that was never booked");
+  });
+})();
+
+await (async () => {
+  const { items } = await run(entity());
+  t("a schedule that WAS pre-filled does not also complain", () => {
+    assert.ok(!items.some((i) => i.id === "schm-compensation-not-inferred"), JSON.stringify(items.map((x) => x.id)));
   });
 })();
 

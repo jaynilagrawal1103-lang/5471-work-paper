@@ -112,12 +112,32 @@ main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scrol
 .en9-sources{padding:12px 16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;margin-top:12px}
 @media (max-width:900px){.en9-auth-row{grid-template-columns:1fr}}
 /* --- OCR panel --- */
-.en9-ocr{border-left:4px solid #0e9384}
-.en9-ocr-sub{font-size:12px;color:#667085;margin:6px 0 10px;max-width:70ch}
+/* The OCR card sits under the dropzone and must never compete with it:
+   a heading, a status word, what is happening now, and a closed disclosure. */
+.en9-ocr{border-left:3px solid #0e9384;padding-top:12px;padding-bottom:12px}
+.en9-ocr-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.en9-ocr-title{font-size:14px;color:#0f172a}
+.en9-ocr-pill{font-size:11px;font-weight:600;letter-spacing:.01em;padding:2px 10px;border-radius:999px;border:1px solid transparent;white-space:nowrap}
+.en9-ocr-pill.is-off{background:#f1f5f9;border-color:#e2e8f0;color:#475569}
+.en9-ocr-pill.is-run{background:#fffbeb;border-color:#fde68a;color:#92400e}
+.en9-ocr-pill.is-ok{background:#f0fdf4;border-color:#bbf7d0;color:#166534}
+.en9-ocr-pill.is-warn{background:#fef3c7;border-color:#fcd34d;color:#92400e}
+.en9-ocr-sub{font-size:12px;color:#667085;margin:6px 0 0;max-width:68ch}
+.en9-ocr-adv{margin-top:10px;border-top:1px solid #eef2f6;padding-top:8px}
+.en9-ocr-adv>summary{font-size:12px;color:#475569;cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px;padding:3px 0;user-select:none}
+.en9-ocr-adv>summary::-webkit-details-marker{display:none}
+.en9-ocr-adv>summary::before{content:"\203a";display:inline-block;transition:transform .15s ease;color:#94a3b8}
+.en9-ocr-adv[open]>summary::before{transform:rotate(90deg)}
+.en9-ocr-adv>summary:hover{color:#0f172a}
+.en9-ocr-advsub{font-size:12px;color:#667085;margin:8px 0 10px;max-width:68ch}
 .en9-ocr-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.en9-ocr-row select{min-width:190px}
-.en9-ocr-lang{font-size:12px;color:#475569;display:flex;align-items:center;gap:6px}
-.en9-ocr-status{font-size:12px;color:#334155;margin-top:8px;min-height:16px;font-variant-numeric:tabular-nums}
+.en9-ocr-row select{min-width:0;flex:1 1 190px;max-width:100%}
+.en9-ocr-lang{font-size:12px;color:#475569;display:flex;align-items:flex-start;gap:6px;min-width:0;flex:1 1 220px}
+/* Empty is empty: a reserved line and a flex gap were holding open a band of
+   white space between the one-line summary and the disclosure. */
+.en9-ocr-status{font-size:12px;color:#334155;font-variant-numeric:tabular-nums}
+.en9-ocr-status:not(:empty){margin-top:8px}
+.en9-ocr-jobs:empty,.en9-ocr-status:empty{display:none}
 .en9-ocr-acts{display:flex;gap:8px;margin-top:8px}
 .en9-ocr-note{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:10px;max-width:78ch}
 @media (max-width:640px){.en9-ocr-row{flex-direction:column;align-items:stretch}}
@@ -135,24 +155,28 @@ main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scrol
 .en9-os-pending{margin-top:8px;display:grid;gap:4px}
 .en9-os-foot{font-size:11px;color:#92400e;background:#fef3c7;border-radius:8px;padding:6px 10px;margin-top:12px;max-width:84ch}
 @media (max-width:760px){.en9-os-2col{grid-template-columns:1fr}.en9-os-row{grid-template-columns:1fr}}
-.en9-ocr-src{min-width:260px;max-width:100%}
+.en9-ocr-src{min-width:0;flex:1 1 240px;max-width:100%}
 .en9-ocr-engine{font-size:12px;color:#0f5132;background:#ecfdf3;border:1px solid #b7e4c7;border-radius:8px;padding:6px 10px;margin:0 0 6px;max-width:78ch}
 .en9-ocr-engine.offline{color:#334155;background:#f8fafc;border-color:#cbd5e1}
-.en9-ocr-url{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:#475569;margin:0 0 10px}
-.en9-ocr-url label{display:flex;align-items:center;gap:6px}
-.en9-ocr-url input{width:300px;max-width:100%;font-size:12px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px}
+/* Fixed pixel widths inside a flex row are what pushed these controls past
+   the card on a phone. They are fluid now, and the row wraps. */
+.en9-ocr-url{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:#475569;margin:0 0 10px;min-width:0}
+.en9-ocr-url label{display:flex;align-items:center;gap:6px;min-width:0;flex:1 1 220px}
+.en9-ocr-url input{flex:1 1 auto;width:auto;min-width:0;max-width:100%;font-size:12px;padding:5px 8px;border:1px solid #cbd5e1;border-radius:6px}
 .en9-ocr-check{padding:4px 10px;font-size:12px}
 .en9-ocr-pages{font-size:12px;color:#475569;display:flex;align-items:center;gap:6px}
-.en9-ocr-pages input{width:220px;font-size:12px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:6px}
+.en9-ocr-pages{min-width:0;flex:1 1 200px}
+.en9-ocr-pages input{flex:1 1 auto;width:auto;min-width:0;max-width:100%;font-size:12px;padding:5px 8px;border:1px solid #cbd5e1;border-radius:6px}
 .en9-ocr-force{display:block;font-size:12px;color:#475569;margin-top:8px}
-.en9-ocr-jobs{margin-top:8px;display:flex;flex-direction:column;gap:4px}
-.en9-ocr-job{display:grid;grid-template-columns:minmax(120px,1fr) auto minmax(160px,2fr);gap:10px;font-size:12px;padding:4px 8px;border-radius:6px;background:#f8fafc;border:1px solid #e2e8f0;align-items:baseline}
+.en9-ocr-jobs{margin-top:8px;display:flex;flex-direction:column;gap:5px}
+.en9-ocr-job{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,2fr);gap:10px;font-size:12px;padding:5px 9px;border-radius:8px;background:#f8fafc;border:1px solid #e2e8f0;align-items:baseline}
+@media (max-width:640px){.en9-ocr-job{grid-template-columns:1fr;row-gap:2px}}
 .en9-ocr-job.running{border-color:#fde68a;background:#fffbeb}
 .en9-ocr-job.done{border-color:#b7e4c7;background:#f0fdf4}
 .en9-ocr-job.failed{border-color:#fecaca;background:#fef2f2}
-.en9-ocr-jobname{font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.en9-ocr-jobname{font-weight:600;color:#0f172a;min-width:0;overflow-wrap:anywhere}
 .en9-ocr-jobstate{color:#334155;white-space:nowrap}
-.en9-ocr-jobmsg{color:#475569;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.en9-ocr-jobmsg{color:#475569;min-width:0;overflow-wrap:anywhere}
 .en9-ocr-wait{font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 10px;margin-top:8px;flex-basis:100%}
 .en9-ocr-sandbox{font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;margin-top:8px;max-width:78ch}
 .en9-ocr{padding:18px!important;border-left-width:4px!important}
@@ -202,28 +226,62 @@ button.en9-swapped{display:none}
 .en9-ag-h.en9-ag-alert{color:#b45309}
 .en9-ag-chips{display:flex;flex-wrap:wrap;gap:6px}
 .en9-ag-chip{font-size:12px;padding:3px 10px;border-radius:999px;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe}
+/* The panel measures ITSELF, not the window: it lives in a column whose
+   width has nothing to do with the viewport, so a viewport media query left
+   the five columns wider than the card and the last of them was clipped by
+   the card's own overflow. */
+.en9-agentact,.en9-ag-panel{container-type:inline-size}
 .en9-ag-table{display:flex;flex-direction:column;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden}
-.en9-ag-tr{display:grid;grid-template-columns:minmax(120px,2fr) minmax(110px,1.4fr) 90px 110px minmax(100px,1fr);
-  gap:8px;padding:8px 12px;font-size:12px;align-items:center;border-top:1px solid #eef2f6}
+.en9-ag-tr{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.4fr) minmax(0,.9fr) minmax(0,1.1fr) minmax(0,1fr);
+  gap:8px;padding:9px 12px;font-size:12px;align-items:start;border-top:1px solid #eef2f6}
+.en9-ag-tr>span{min-width:0;overflow-wrap:anywhere}
+.en9-ag-tr>span::before{content:attr(data-col);display:none}
 .en9-ag-tr:first-child{border-top:0}
 .en9-ag-th{background:#f8fafc;font-weight:600;color:#475569;text-transform:uppercase;font-size:10px;letter-spacing:.05em}
 .en9-ag-doc{font-weight:600;color:#0f172a;word-break:break-word}
-.en9-ag-docs,.en9-ag-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
-.en9-ag-doccard,.en9-ag-card{border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:#fff}
-.en9-ag-docline,.en9-ag-cardhead{display:flex;align-items:center;gap:8px;justify-content:space-between}
-.en9-ag-meta{font-size:11px;color:#64748b;word-break:break-word}
-.en9-ag-text{margin:0;font-size:13px;line-height:1.45;color:#334155}
+.en9-ag-docs,.en9-ag-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.en9-ag-doccard,.en9-ag-card{border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;background:#fff;min-width:0}
+.en9-ag-doccard{transition:border-color .12s ease,box-shadow .12s ease}
+.en9-ag-doccard:hover{border-color:#cbd5e1;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.en9-ag-docline,.en9-ag-cardhead{display:flex;align-items:flex-start;gap:10px;justify-content:space-between}
+/* A long filename wraps inside the card instead of pushing the badge out of
+   it. break-word alone leaves an unbroken 80-character name overflowing. */
+.en9-ag-docname{min-width:0;flex:1 1 auto;font-size:13px;line-height:1.4;color:#0f172a;overflow-wrap:anywhere}
+.en9-ag-docbadge{flex:0 0 auto}
+.en9-ag-meta{display:flex;flex-wrap:wrap;gap:4px 6px;font-size:11px;color:#64748b}
+.en9-ag-metachip{background:#f8fafc;border:1px solid #eef2f6;border-radius:6px;padding:1px 7px;color:#475569;white-space:nowrap}
+.en9-ag-text{margin:0;font-size:13px;line-height:1.5;color:#334155;overflow-wrap:anywhere}
 .en9-ag-action{color:#0f172a;font-weight:500}
-.en9-ag-acts{display:flex;gap:6px;flex-wrap:wrap}
+.en9-ag-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
 .en9-agentact .button.en9-ag-src,.en9-agentact .button.en9-ag-ev{font-size:12px;padding:4px 10px}
 .en9-ag-evbody{border-top:1px dashed #e2e8f0;padding-top:6px;display:flex;flex-direction:column;gap:2px}
+/* "Detected2025, 2024" — the label and its value were two spans with no
+   spacing and no separation of weight. */
+.en9-ag-chain{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;margin:2px 0 4px}
+.en9-ag-chainstep{display:inline-flex;align-items:baseline;gap:6px;min-width:0}
+.en9-ag-chainlab{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;white-space:nowrap}
+.en9-ag-chainval{font-size:12px;color:#0f172a;font-weight:600;overflow-wrap:anywhere}
 .en9-ag-flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .en9-ag-flowstep{font-size:12px;padding:3px 10px;border-radius:8px;background:#f1f5f9;color:#334155;border:1px solid #e2e8f0}
 .en9-ag-flowsep{color:#94a3b8}
 .en9-ag-foot{margin:0;font-size:11px;color:#64748b}
 .en9-ag-empty{margin:0;font-size:13px;color:#64748b}
+/* Below the width five columns need, the same markup becomes labelled rows.
+   Nothing is hidden and nothing shrinks — the layout changes instead. */
+@container (max-width:558px){
+  .en9-ag-tr{grid-template-columns:minmax(72px,auto) minmax(0,1fr);row-gap:6px;column-gap:10px;padding:10px 12px}
+  .en9-ag-th{display:none}
+  .en9-ag-tr>span{display:contents}
+  .en9-ag-tr>span::before{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;padding-top:1px}
+  /* A badge is its own width. display:contents puts it straight into the
+     grid, where it would otherwise stretch across the value column. */
+  .en9-ag-tr>span>*{justify-self:start}
+}
+@supports not (container-type:inline-size){
+  .en9-ag-table{overflow-x:auto}
+  .en9-ag-tr{min-width:560px}
+}
 @media (max-width:720px){
-  .en9-ag-tr{grid-template-columns:1fr 1fr;row-gap:4px}
   .en9-ag-th{display:none}
 }
 

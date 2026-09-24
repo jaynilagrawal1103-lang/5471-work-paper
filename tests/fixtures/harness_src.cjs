@@ -71,6 +71,10 @@ function book(items, opts = {}) {
     const norm = ENG.applyRowHygiene(it.row);
     if (!norm) { unmatched.push({ label: it.row.label, why: "prose filter" }); continue; }
     let target = ENG.matchRule(norm.label, rules);
+    /* A payment processor's fee is an ordinary deduction unless the statement
+       files it under cost of sales — the same override the booking loop
+       applies, replicated here so the fixtures measure the shipped rule. */
+    if (it.feed === "is" && it.section === "cogs" && target === "IS:OD" && ENG.isProcessorFee(norm.label)) target = "IS:12";
     /* SKIP is decided before any fallback or veto, exactly as the real
        booking loop does — a subtotal under a liabilities banner is still a
        subtotal, not something to re-route. */

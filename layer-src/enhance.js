@@ -1547,6 +1547,8 @@ function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
 
 /* Running / finished jobs, shown on the OCR card and beside the Process button. */
 function EN9ocrRenderJobs(){
+  /* One status word on the card, repainted wherever the jobs are. */
+  try{ var pc=document.querySelector(".en9-ocr"); if(pc&&pc.EN9_pill) pc.EN9_pill(); }catch(e){}
   var host=document.getElementById("en9-ocr-jobs"); if(host){ while(host.firstChild) host.removeChild(host.firstChild);
     var s0=st(), activeId=s0&&s0.activeEntityId;
     /* Jobs are data owned by their entity.  Never show a previous client's
@@ -1566,6 +1568,29 @@ function EN9ocrRenderJobs(){
       else if(hint) hint.remove(); }); }catch(e){}
 }
 
+/* The four words a preparer needs about OCR, from what the app already
+   knows. No new detection: it reads the jobs the automatic pass created and
+   the OCR sidecars the store holds. */
+function en9OcrSummary(){
+  try{
+    var s0=st(), eid=s0&&s0.activeEntityId;
+    var busy=Object.keys(EN9OCR.jobs).some(function(k){ var j=EN9OCR.jobs[k];
+      return j&&(j.status==="running"||j.status==="detecting")&&(!eid||j.entityId===eid); });
+    if(busy) return ["run","Processing"];
+    var ent=((s0&&s0.entities)||[]).filter(function(e){return e.id===eid;})[0];
+    var done=((ent&&ent.files)||[]).filter(function(f){return f&&f.ocr;});
+    if(!done.length) return ["off","Not needed"];
+    var needs=done.some(function(f){
+      var pages=(f.ocr&&f.ocr.pages)||[];
+      return pages.some(function(pg){
+        if(pg.status==="failed") return true;
+        return ((pg.flags||[]).some(function(x){ return x&&x.level==="warn"; }));
+      });
+    });
+    return needs?["warn","Needs review"]:["ok","Completed"];
+  }catch(e){ return ["off","Not needed"]; }
+}
+
 function enhanceOcrPanel(){
   var dz=document.querySelector(".dropzone");
   var old=document.querySelector(".en9-ocr");
@@ -1579,17 +1604,42 @@ function enhanceOcrPanel(){
     var sel0=old.querySelector("select"); en9OcrFillEntities(sel0);
     var activeNow=st()&&st().activeEntityId;
     if(old.getAttribute("data-en9-active")!==String(activeNow||"")){ old.setAttribute("data-en9-active",String(activeNow||"")); old.EN9_reset&&old.EN9_reset(); }
-    old.EN9_fillSrc&&old.EN9_fillSrc(); old.EN9_engine&&old.EN9_engine(); return; }
+    old.EN9_fillSrc&&old.EN9_fillSrc(); old.EN9_engine&&old.EN9_engine(); old.EN9_pill&&old.EN9_pill(); return; }
   var card=el("section","panel en9-ocr");
-  card.appendChild(el("strong",null,"OCR a scanned PDF — automatic at upload, manual here"));
-  card.appendChild(el("p","en9-ocr-sub","Every PDF you add is checked for pages without a text layer. Those pages are read automatically — by the PaddleOCR service when one is running, otherwise by PaddleOCR (PP-OCRv5) running inside this browser, with Tesseract.js as the last resort — and “Process entity” waits until the recognised text is in place. With the in-browser engines the document never leaves this browser; with the service it goes only to your own server. Use this card to run OCR by hand: on a file the check did not catch, on specific pages, or again with another language. Every figure from an OCR’d document is flagged for verification against the original scan."));
-  var eng=el("div","en9-ocr-engine","Checking for the OCR service…"); card.appendChild(eng);
+  /* The card is a STATUS line first and a tool second. Detection and reading
+     both happen on their own at upload (EN9ocrIntakeTick), so the normal user
+     has nothing to do here: what they need is to see that it happened. The
+     manual controls stay — they are a real fallback for a file detection did
+     not catch, for specific pages, or for another language — but they belong
+     behind a disclosure, not in front of the upload area they were competing
+     with. Nothing was removed. */
+  var chead=el("div","en9-ocr-head");
+  chead.appendChild(el("strong","en9-ocr-title","Scanned pages"));
+  var pill=el("span","en9-ocr-pill"); chead.appendChild(pill);
+  card.appendChild(chead);
+  card.appendChild(el("p","en9-ocr-sub","Every PDF you add is checked for pages with no text. Those pages are read automatically, and processing waits until the reading is done."));
+  function paintPill(){
+    var p2=en9OcrSummary();
+    pill.className="en9-ocr-pill is-"+p2[0];
+    pill.textContent=p2[1];
+  }
+  card.EN9_pill=paintPill; paintPill();
+  var adv=document.createElement("details"); adv.className="en9-ocr-adv";
+  var sum=document.createElement("summary"); sum.textContent="Advanced \u00b7 run OCR by hand"; adv.appendChild(sum);
+  adv.appendChild(el("p","en9-ocr-advsub","Use this for a file the automatic check did not catch, for specific pages, or to read again in another language. Pages already read are never replaced unless you ask."));
+  /* The engines and the privacy model belong to the preparer who opens this,
+     not to the upload screen. Both the service and the in-browser engines are
+     named here because which one read a page changes how far the document
+     travelled: with PaddleOCR or Tesseract in the browser it never leaves
+     this browser; with the service it reaches only your own server. */
+  adv.appendChild(el("p","en9-ocr-advsub","Pages are read by the PaddleOCR service when one is running, otherwise by PaddleOCR (PP-OCRv5) in this browser, with Tesseract.js as the last resort. With the in-browser engines the document never leaves this browser; with the service it goes only to your own server. Every figure from an OCR’d document is flagged for verification against the original scan."));
+  var eng=el("div","en9-ocr-engine","Checking for the OCR service…"); adv.appendChild(eng);
   /* where the service is: found automatically, or typed here */
   var urow=el("div","en9-ocr-url");
   var ul=el("label",null,"Service address "); var ui=document.createElement("input"); ui.type="text"; ui.setAttribute("data-en9","");
   ui.placeholder="auto (this server, then http://127.0.0.1:"+EN9OCR.service.DEFAULT_PORT+") · off = read in this browser"; ui.value=EN9OCR.service.userUrl(); ul.appendChild(ui);
   var ub=el("button","button en9-ocr-check","Check"); ub.type="button";
-  urow.appendChild(ul); urow.appendChild(ub); card.appendChild(urow);
+  urow.appendChild(ul); urow.appendChild(ub); adv.appendChild(urow);
   var checking=false;
   function showEngine(force){ if(checking&&!force) return;
     checking=true; eng.className="en9-ocr-engine"; if(force) eng.textContent="Checking for the OCR service…";
@@ -1629,7 +1679,7 @@ function enhanceOcrPanel(){
   var btn=el("button","button en9-ocr-btn","Run OCR now"); btn.type="button";
   row.appendChild(sel); row.appendChild(src); row.appendChild(fi); row.appendChild(pgl); row.appendChild(lg); row.appendChild(btn);
   fillSrc();
-  card.appendChild(row);
+  adv.appendChild(row);
   var upload=el("div","en9-ocr-upload"); upload.tabIndex=0;
   upload.innerHTML='<strong>Drop a PDF here</strong><span>or choose a file from this computer</span><small class="en9-ocr-selected">No file selected</small>';
   function setLocalFile(file){
@@ -1653,19 +1703,20 @@ function enhanceOcrPanel(){
   upload.addEventListener("dragover",function(ev){ ev.preventDefault(); upload.classList.add("is-dragging"); });
   upload.addEventListener("dragleave",function(){ upload.classList.remove("is-dragging"); });
   upload.addEventListener("drop",function(ev){ ev.preventDefault(); upload.classList.remove("is-dragging"); setLocalFile(ev.dataTransfer&&ev.dataTransfer.files&&ev.dataTransfer.files[0]); });
-  card.appendChild(upload); card.appendChild(fl);
-  if(en9IsSandbox()) card.appendChild(el("div","en9-ocr-sandbox","⚠ You are viewing this inside the claude.ai preview, which blocks the background workers the in-browser engine needs. Everything else works here — but run OCR on your deployed site (or open the downloaded HTML directly in your browser)."));
-  var stat=el("div","en9-ocr-status"); stat.id="en9-ocr-status"; card.appendChild(stat);
+  adv.appendChild(upload); adv.appendChild(fl);
+  if(en9IsSandbox()) adv.appendChild(el("div","en9-ocr-sandbox","⚠ You are viewing this inside the claude.ai preview, which blocks the background workers the in-browser engine needs. Everything else works here — but run OCR on your deployed site (or open the downloaded HTML directly in your browser)."));
   var jobs=el("div","en9-ocr-jobs"); jobs.id="en9-ocr-jobs"; card.appendChild(jobs);
+  var stat=el("div","en9-ocr-status"); stat.id="en9-ocr-status"; card.appendChild(stat);
+  card.appendChild(adv);
   var acts=el("div","en9-ocr-acts"); acts.style.display="none";
   var addb=el("button","button primary","Add to intake"); addb.type="button";
   var dlb=el("button","button","Download searchable PDF"); dlb.type="button";
-  acts.appendChild(addb); acts.appendChild(dlb); card.appendChild(acts);
+  acts.appendChild(addb); acts.appendChild(dlb); adv.appendChild(acts);
   /* Reset only this presentation state on a client switch.  Stored files and
      OCR sidecars remain with their actual entity; no old transient result can
      bleed into the next client's screen. */
-  card.EN9_reset=function(){ src.value=""; fi.value=""; pg.value=""; fc.checked=false; cb.checked=false; acts.style.display="none"; stat.textContent="Ready to detect this client's selected document."; };
-  card.appendChild(el("div","en9-ocr-note","Documents read by OCR are named “… (OCR).pdf” so every caption’s source chip shows OCR provenance; the Provenance sheet of the work paper lists the engine, confidence and page position of every figure they contribute. Treat all extracted figures as unverified until checked."));
+  card.EN9_reset=function(){ src.value=""; fi.value=""; pg.value=""; fc.checked=false; cb.checked=false; acts.style.display="none"; stat.textContent=""; };
+  adv.appendChild(el("div","en9-ocr-note","Documents read by OCR are named “… (OCR).pdf” so every caption’s source chip shows OCR provenance; the Provenance sheet of the work paper lists the engine, confidence and page position of every figure they contribute. Treat all extracted figures as unverified until checked."));
   btn.addEventListener("click",function(){
     if(!sel.value){ stat.textContent="Choose the entity this document belongs to."; return; }
     var s2=st(), ent=s2&&(s2.entities||[]).find(function(x){return x.id===sel.value;});
@@ -2020,18 +2071,24 @@ function enhanceAgentActivity(){
     });
     card.appendChild(chain);
     var tb=el("div","en9-ag-table");
+    var COLS=["Document","Identified","Required","Result","Role"];
     var hr=el("div","en9-ag-tr en9-ag-th");
-    ["Document","Identified","Required","Result","Role"].forEach(function(h){ hr.appendChild(el("span",null,h)); });
+    COLS.forEach(function(h){ hr.appendChild(el("span",null,h)); });
     tb.appendChild(hr);
+    /* Each cell carries its column name. Wide enough, the names stay hidden
+       and the grid reads as a table; too narrow for five columns, the same
+       markup stacks into labelled rows instead of being cut off at the card
+       edge. No font size changes, and nothing is hidden. */
+    var label=function(node,i){ node.setAttribute("data-col",COLS[i]); return node; };
     var MATCH={match:["ok","Match"],mismatch:["bad","Mismatch"],unclear:["warn","Unclear"],unchecked:["off","Not year-bound"]};
     brief.docs.forEach(function(d){
       var r=el("div","en9-ag-tr");
-      r.appendChild(el("span","en9-ag-doc",d.name));
-      r.appendChild(el("span",null,(d.statementYear||"—")+(d.periodEnd?" · to "+d.periodEnd:"")+(d.periodStart?" (from "+d.periodStart+")":"")));
-      r.appendChild(el("span",null,String(d.supportsYear||brief.requiredYear||"—")));
+      r.appendChild(label(el("span","en9-ag-doc",d.name),0));
+      r.appendChild(label(el("span",null,(d.statementYear||"—")+(d.periodEnd?" · to "+d.periodEnd:"")+(d.periodStart?" (from "+d.periodStart+")":"")),1));
+      r.appendChild(label(el("span",null,String(d.supportsYear||brief.requiredYear||"—")),2));
       var mm=MATCH[d.match||"unchecked"];
-      var c=el("span"); c.setAttribute("data-en9",""); c.appendChild(en9AgBadge(mm[0],mm[1])); r.appendChild(c);
-      r.appendChild(el("span",null,d.role==="current-year"?"Current year":d.role==="prior-year-input"?"Prior-year input":d.role==="comparative"?"Comparative column":d.role==="unclear"?"Unknown":"Reference"));
+      var c=el("span"); c.setAttribute("data-en9",""); c.appendChild(en9AgBadge(mm[0],mm[1])); r.appendChild(label(c,3));
+      r.appendChild(label(el("span",null,d.role==="current-year"?"Current year":d.role==="prior-year-input"?"Prior-year input":d.role==="comparative"?"Comparative column":d.role==="unclear"?"Unknown":"Reference"),4));
       tb.appendChild(r);
     });
     card.appendChild(tb);
@@ -2044,11 +2101,18 @@ function enhanceAgentActivity(){
     brief.docs.forEach(function(d){
       var row=el("div","en9-ag-doccard");
       var top=el("div","en9-ag-docline");
-      top.appendChild(el("strong",null,d.name));
-      top.appendChild(en9AgBadge(d.rowsWithFigures?"ok":"off",d.rowsWithFigures?"Reviewed":"No figures"));
+      /* The filename is the heading and it is allowed to be long: it wraps,
+         and the badge keeps its size rather than being squeezed out of the
+         card by it. */
+      top.appendChild(el("strong","en9-ag-docname",d.name));
+      var bw=el("span","en9-ag-docbadge"); bw.appendChild(en9AgBadge(d.rowsWithFigures?"ok":"off",d.rowsWithFigures?"Reviewed":"No figures"));
+      top.appendChild(bw);
       row.appendChild(top);
-      row.appendChild(el("div","en9-ag-meta",[d.kind.replace(/-/g," "),d.pages+" page(s)",d.language,
-        d.rowsWithFigures+" figure(s)",d.ocr?"OCR":""].filter(Boolean).join(" · ")));
+      /* One fact per chip, so the line can be scanned instead of read. */
+      var meta=el("div","en9-ag-meta");
+      [d.kind.replace(/-/g," "),d.pages+" page(s)",d.language,d.rowsWithFigures+" figure(s)",d.ocr?"OCR":""]
+        .filter(Boolean).forEach(function(t){ meta.appendChild(el("span","en9-ag-metachip",t)); });
+      row.appendChild(meta);
       var det=el("div","en9-ag-evbody"); det.style.display="none";
       [["Period",(d.periodStart?d.periodStart+" to ":"")+(d.periodEnd||"not stated")],
        ["Rows read",String(d.rowsRead)],["Dropped as totals",String(d.rowsDropped)],

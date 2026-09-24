@@ -6,9 +6,15 @@ import type { ViewId } from "../Shell";
 import { BS_LINES, CATEGORY_CELLS, IS_LINES, OWNERSHIP_FIELDS, explainUnreadable } from "./engine";
 import { displayLabel } from "./captions";
 import {
-  actions, allReviewItems, buildWrites, cellCount, getSnapshot, readState, subscribe, validateEntity,
+  actions, allReviewItems, buildWrites, cellCount, getSnapshot, readDetail, readState, subscribe, validateEntity,
   PROCESS_STEPS, type Entity,
 } from "./store";
+import { entitySimilarity } from "./classify";
+
+/* Same company, written two ways? The entity's own name or its legal name is
+   enough — a document that names neither is named in red. */
+const sameCompany = (docName: string, entityName: string, legalName: string): boolean =>
+  entitySimilarity(docName, legalName || entityName) >= 0.5 || entitySimilarity(docName, entityName) >= 0.5;
 
 const bytes = (b: number) =>
   b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(2)} MB`;
@@ -276,10 +282,20 @@ function ReadStatusCell({ entityId, fileId }: { entityId: string; fileId: string
   const title = status === "text read (OCR)"
     ? `Text recognised by OCR (${file.ocr?.backend || file.ocr?.engine || "engine"}) — verify every figure against the scan`
     : read ? undefined : explainUnreadable(file.name);
+  /* The status word answers "did the reader run". The line beneath answers
+     "and did anything come of it" — the question a green tag next to an
+     UNKNOWN type leaves open. */
+  const detail = readDetail(ent, file);
+  const unused = /NOT USED|nothing booked/.test(detail);
   return (
-    <span className={`actor-tag ${tone}`} title={title}>
-      {status}
-    </span>
+    <>
+      <span className={`actor-tag ${tone}`} title={title}>
+        {status}
+      </span>
+      {detail ? (
+        <><br /><small style={{ color: unused ? "var(--bad, #b3261e)" : "var(--muted)" }}>{detail}</small></>
+      ) : null}
+    </>
   );
 }
 
@@ -306,7 +322,10 @@ function DocKindSelect({ entityId, fileId }: { entityId: string; fileId: string 
 
 export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) {
   const state = useWp();
-  const all = state.entities.flatMap((e) => e.files.map((f) => ({ ...f, entityId: e.id, entity: e.name, status: e.status, progress: e.progress, cls: e.docClasses[f.id] })));
+  const all = state.entities.flatMap((e) => e.files.map((f) => ({
+    ...f, entityId: e.id, entity: e.name, legalName: e.profile.legalName || "",
+    status: e.status, progress: e.progress, cls: e.docClasses[f.id],
+  })));
   return (
     <div className="view-stack">
       <SectionHeader
@@ -338,7 +357,21 @@ export function IntakeView({ onNavigate }: { onNavigate: (v: ViewId) => void }) 
                         </small></>
                       ) : null}
                     </td>
-                    <td>{f.entity}</td>
+                    {/* Two different questions, and they were sharing one
+                        column: which entity HOLDS the file, and which company
+                        the document itself names. A file in the wrong entity
+                        looked correct, because the column printed the folder
+                        it sat in. */}
+                    <td>
+                      {f.entity}
+                      {f.cls?.entityName && !sameCompany(f.cls.entityName, f.entity, f.legalName) ? (
+                        <><br /><small style={{ color: "var(--bad, #b3261e)" }} title="The document names a different company from the entity holding it">
+                          document names {f.cls.entityName}
+                        </small></>
+                      ) : f.cls?.entityName ? (
+                        <><br /><small style={{ color: "var(--muted)" }}>document names {f.cls.entityName}</small></>
+                      ) : null}
+                    </td>
                     <td>
                       {f.cls
                         ? <span className={f.cls.method === "user" ? "actor-tag user" : "actor-tag system"}>{f.cls.kind}{f.cls.duplicateOf ? " · duplicate" : ""}</span>
