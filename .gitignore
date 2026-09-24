@@ -18,3 +18,8 @@ __pycache__/
 .pytest_cache/
 .cache/
 dist/index.offline.html
+
+# Session scratch harnesses — they hardcode an uploads path for one client run
+# and are rebuilt whenever a live document set is being traced.
+/.de.ts
+/tests/.*.cjs
