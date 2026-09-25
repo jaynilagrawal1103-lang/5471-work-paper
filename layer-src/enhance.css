@@ -168,15 +168,40 @@ main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scrol
 .en9-ocr-pages{min-width:0;flex:1 1 200px}
 .en9-ocr-pages input{flex:1 1 auto;width:auto;min-width:0;max-width:100%;font-size:12px;padding:5px 8px;border:1px solid #cbd5e1;border-radius:6px}
 .en9-ocr-force{display:block;font-size:12px;color:#475569;margin-top:8px}
-.en9-ocr-jobs{margin-top:8px;display:flex;flex-direction:column;gap:5px}
-.en9-ocr-job{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,2fr);gap:10px;font-size:12px;padding:5px 9px;border-radius:8px;background:#f8fafc;border:1px solid #e2e8f0;align-items:baseline}
-@media (max-width:640px){.en9-ocr-job{grid-template-columns:1fr;row-gap:2px}}
-.en9-ocr-job.running{border-color:#fde68a;background:#fffbeb}
-.en9-ocr-job.done{border-color:#b7e4c7;background:#f0fdf4}
-.en9-ocr-job.failed{border-color:#fecaca;background:#fef2f2}
-.en9-ocr-jobname{font-weight:600;color:#0f172a;min-width:0;overflow-wrap:anywhere}
-.en9-ocr-jobstate{color:#334155;white-space:nowrap}
-.en9-ocr-jobmsg{color:#475569;min-width:0;overflow-wrap:anywhere}
+/* A processed file reads top to bottom: status badge, file, time on one
+   line; the one result sentence beneath; diagnostics folded away. Long
+   names wrap inside their own cell and never push the badge or the time. */
+.en9-ocr-jobs{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.en9-ocr-job{display:grid;grid-template-columns:5.75rem minmax(0,1fr) auto;grid-template-areas:"badge name time" ". res res" ". det det";column-gap:10px;row-gap:3px;align-items:baseline;font-size:12px;line-height:1.45;padding:8px 12px;border-radius:8px;background:#fff;border:1px solid #e2e8f0;border-left:3px solid #cbd5e1}
+.en9-ocr-job.tone-run,.en9-ocr-job.tone-warn{border-left-color:#f59e0b}
+.en9-ocr-job.tone-info{border-left-color:#3b82f6}
+.en9-ocr-job.tone-ok{border-left-color:#22c55e}
+.en9-ocr-job.tone-bad{border-left-color:#ef4444}
+.en9-ocr-jobbadge{grid-area:badge;font-size:11px;font-weight:600;padding:1px 8px;border-radius:999px;border:1px solid transparent;white-space:nowrap;justify-self:start}
+.en9-ocr-jobbadge.is-off{background:#f1f5f9;border-color:#e2e8f0;color:#475569}
+.en9-ocr-jobbadge.is-run{background:#fffbeb;border-color:#fde68a;color:#92400e}
+.en9-ocr-jobbadge.is-info{background:#eff6ff;border-color:#bfdbfe;color:#1e40af}
+.en9-ocr-jobbadge.is-ok{background:#f0fdf4;border-color:#bbf7d0;color:#166534}
+.en9-ocr-jobbadge.is-warn{background:#fef3c7;border-color:#fcd34d;color:#92400e}
+.en9-ocr-jobbadge.is-bad{background:#fef2f2;border-color:#fecaca;color:#991b1b}
+.en9-ocr-jobname{grid-area:name;font-weight:600;color:#0f172a;min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.en9-ocr-jobtime{grid-area:time;color:#667085;font-variant-numeric:tabular-nums;white-space:nowrap}
+.en9-ocr-jobtime:empty{display:none}
+.en9-ocr-jobres{grid-area:res;color:#475569;min-width:0;overflow-wrap:anywhere}
+.en9-ocr-jobdet{grid-area:det;min-width:0}
+.en9-ocr-jobdet>summary{font-size:11px;color:#667085;cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:4px;user-select:none}
+.en9-ocr-jobdet>summary::-webkit-details-marker{display:none}
+.en9-ocr-jobdet>summary::before{content:"\203a";display:inline-block;transition:transform .15s ease;color:#94a3b8}
+.en9-ocr-jobdet[open]>summary::before{transform:rotate(90deg)}
+.en9-ocr-jobdet>summary:hover{color:#0f172a}
+.en9-ocr-jobtech{margin:0;padding:2px 8px;background:#f8fafc;color:#475569;font-size:11px;line-height:1.45;overflow-wrap:anywhere;word-break:break-word}
+.en9-ocr-jobdet>summary+.en9-ocr-jobtech{margin-top:4px;padding-top:6px;border-top-left-radius:6px;border-top-right-radius:6px}
+.en9-ocr-jobtech:last-child{padding-bottom:6px;border-bottom-left-radius:6px;border-bottom-right-radius:6px}
+.en9-ocr-status,.en9-ocr-wait,.en9-ocr-sub{overflow-wrap:anywhere;word-break:break-word;min-width:0}
+.en9-ocr-status[hidden],.en9-ocr-sub[hidden]{display:none}
+/* Narrow screens stack: badge and time share the first line, the file
+   name gets the full width beneath, then the result. */
+@media (max-width:520px){.en9-ocr-job{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"badge time" "name name" "res res" "det det";padding:8px 10px}}
 .en9-ocr-wait{font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:6px 10px;margin-top:8px;flex-basis:100%}
 .en9-ocr-sandbox{font-size:12px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:8px;padding:7px 10px;margin-top:8px;max-width:78ch}
 .en9-ocr{padding:18px!important;border-left-width:4px!important}
@@ -186,10 +211,7 @@ main,.view-stack{overflow-x:hidden}            /* no page-level horizontal scrol
 .en9-ocr-upload{display:grid;gap:3px;place-items:center;text-align:center;border:1.5px dashed #94a3b8;border-radius:10px;background:#f8fafc;padding:14px 18px;margin:12px 0 4px;cursor:pointer;transition:.15s ease}
 .en9-ocr-upload:hover,.en9-ocr-upload.is-dragging{border-color:#4f46e5;background:#eef2ff;box-shadow:0 0 0 3px #c7d2fe}
 .en9-ocr-upload strong{color:#1e293b;font-size:13px}.en9-ocr-upload span{color:#64748b;font-size:12px}.en9-ocr-selected{display:block;max-width:min(900px,100%);margin-top:4px;padding:4px 8px;color:#334155;background:#fff;border-radius:6px;overflow-wrap:anywhere;word-break:break-word;font-size:12px;line-height:1.45}
-.en9-ocr-job{grid-template-columns:minmax(220px,1fr) minmax(150px,auto) minmax(220px,2fr);padding:8px 10px;align-items:start}
-.en9-ocr-job.required{border-color:#93c5fd;background:#eff6ff}.en9-ocr-job.detecting{border-color:#c7d2fe;background:#eef2ff}.en9-ocr-jobname,.en9-ocr-jobmsg{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;line-height:1.4}
-.en9-ocr-jobstate{font-weight:700;font-variant-numeric:tabular-nums}
-@media (max-width:900px){.en9-ocr-row{grid-template-columns:1fr 1fr}.en9-ocr-job{grid-template-columns:1fr;gap:4px}}
+@media (max-width:900px){.en9-ocr-row{grid-template-columns:1fr 1fr}}
 @media (max-width:640px){.en9-ocr-row{grid-template-columns:1fr}.en9-ocr-upload{padding:16px 12px}}
 .en9-signoff-dialog{position:fixed;inset:0;z-index:120;background:rgba(15,23,42,.42);display:grid;place-items:center;padding:16px}
 .en9-signoff-box{width:min(480px,100%);background:#fff;border-radius:14px;padding:20px;box-shadow:0 18px 50px rgba(15,23,42,.28)}
@@ -290,3 +312,24 @@ button.en9-swapped{display:none}
 .en9-agent .en9-ag-pill{font-size:11px;font-weight:600;letter-spacing:.02em;padding:2px 9px;border-radius:999px;border:1px solid transparent}
 .en9-agent .en9-ag-on{background:#dcfce7;border-color:#86efac;color:#166534}
 .en9-agent .en9-ag-off{background:#f1f5f9;border-color:#cbd5e1;color:#475569}
+/* The ⌘K hint is a keyboard affordance; on a phone it only pushed the
+   top bar 31px past the screen and gave every page a sideways scroll. */
+@media (max-width:420px){.en9-kbd-hint{display:none}}
+/* Documents list: a long file name took the whole row's min-content and
+   pushed Remove past the card on a phone. The name wraps in its own cell. */
+.doc-row{grid-template-columns:32px minmax(0,1fr) auto}
+.doc-row>div{min-width:0}
+.doc-row strong{overflow-wrap:anywhere;word-break:break-word;line-height:1.35}
+/* Manual OCR controls wrap by the card's own width (the sidebar makes the
+   card narrow while the viewport is still wide), so no control is squeezed
+   into a sliver; checkboxes keep their natural size. */
+.en9-ocr-row{display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:10px 12px}
+.en9-ocr-row>select{flex:1 1 200px;width:auto}
+.en9-ocr-row>.en9-ocr-pages{flex:1 1 220px}
+.en9-ocr-row>.en9-ocr-lang{flex:1 1 100%;align-items:flex-start}
+.en9-ocr-row input[type=checkbox],.en9-ocr-force input[type=checkbox]{width:auto;flex:0 0 auto;margin:2px 0 0}
+.en9-ocr-engine .en9-ocr-jobdet{margin-top:4px}
+/* The OCR settings card shares its column with the rate table; that
+   table's width set the column and cut the card off on tablet and phone.
+   The column now follows the screen and the table scrolls in its own box. */
+.view-stack:has(>.en9-ocrset){grid-template-columns:minmax(0,1fr)}

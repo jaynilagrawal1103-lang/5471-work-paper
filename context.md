@@ -187,6 +187,31 @@ On 2026-09-15 the owner landed a local UX pass and the Parnasa reconciliation re
 
 Residue from that pass is in Open issues below.
 
+2026-09-25 OCR card presentation pass (layer only, NOT committed at owner's
+request; no OCR/engine/fallback/processing/API change):
+- Job rows (`en9OcrJobRow` in `layer-src/enhance.js`): badge · file · time on
+  one line, one plain result sentence under it, diagnostics (full engine
+  message, `Engine:`, `Reason:`) folded in a `Details` toggle whose open state
+  survives re-renders (`en9OcrOpenDet`). Badges: Checking / OCR required /
+  Reading / Not needed / Completed / Needs review (flags > 0) / Failed. Page
+  and flag counts come from the file's `ocr` record, else the app's sentence.
+  Long names get `<wbr>` after `_ - . )` and space. Stacks at <=520px.
+- `EN9ocrSay`: a message for a file goes only to its row; the card status line
+  takes file-less messages and hides when a row names the same file; toasts
+  only for outcomes (done/failed/no job). Intro line hides once rows exist.
+- Pill shows "Needs review" when an active-entity job failed.
+- Card anchors under the ACTIVE entity's dropzone (`en9ActiveEntityCard`); the
+  "Waiting for OCR to finish: …" hint goes only in that entity's run panel.
+- Engine status box: the "(… could not be loaded … URL …)" fallback text moves
+  into Details (`en9OcrEngineText`); textContent keeps it.
+- CSS: manual OCR controls wrap by card width (flex) with natural-size
+  checkboxes; doc-list rows wrap long names (Remove stays visible); ⌘K hint
+  hidden <=420px (it caused sideways page scroll); Settings `.view-stack`
+  holding `.en9-ocrset` uses `minmax(0,1fr)` so the rate table no longer cuts
+  the OCR settings card off.
+- Verified with Playwright at 1440/1024/768/414/360: no page overflow, no
+  clipping/overlap in card, rows, doc list, run panel or settings card.
+
 On 2026-09-16 the OCR path was measured end to end (report:
 `OCR_Workflow_and_Accuracy_Report.xlsx`, delivered to the owner; scripts and
 outputs stayed in the session scratchpad, nothing in the repo changed). Host:

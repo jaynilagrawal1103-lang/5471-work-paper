@@ -1338,10 +1338,17 @@ function EN9ocrLangsFor(ent) {
   return "eng";
 }
 function EN9ocrSay(m, fileId) {
-  try { window.__WPACT && window.__WPACT.__toast ? window.__WPACT.__toast(m) : 0; } catch (e) {}
+  /* One message, one place. A message about a file belongs to that file's
+     row (its Details keep the full text), so it is not repeated on the card's
+     status line below the rows as well. Toasts are for outcomes — a reading
+     started, finished or failed — not for the engine's step-by-step
+     progress, which the row already shows as a status and a clock. */
+  var job = fileId && EN9OCR.jobs[fileId];
+  var outcome = !job || job.status === "done" || job.status === "failed";
+  try { if (outcome && window.__WPACT && window.__WPACT.__toast) window.__WPACT.__toast(m); } catch (e) {}
   try { console.info("[OCR] " + m); } catch (e) {}
-  var el = document.getElementById("en9-ocr-status"); if (el) el.textContent = m;
-  if (fileId && EN9OCR.jobs[fileId]) EN9OCR.jobs[fileId].message = m;
+  if (job) job.message = m;
+  else { var el = document.getElementById("en9-ocr-status"); if (el) el.textContent = m; }
   EN9ocrRenderJobs();
 }
 /* Upload-time detection: probe every new PDF, OCR the pages that need it. */
@@ -1545,6 +1552,75 @@ function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
   (e&&e.files||[]).forEach(function(f){ if(/\.pdf$/i.test(f.name||"")&&f.blob) out.push(f); });
   return out; }
 
+/* One processed file, as the preparer needs to read it: what state it is in,
+   which file, the one result that matters, and — only when there is any —
+   the technical detail behind a disclosure. Everything shown comes from the
+   job and the file's own OCR record; nothing is re-detected or re-read. */
+function en9OcrClock(ms){ var secs=Math.max(0,Math.floor(ms/1000));
+  return secs<60?secs+"s":Math.floor(secs/60)+"m "+String(secs%60).padStart(2,"0")+"s"; }
+function en9OcrReadCounts(j){
+  /* pages read and readings flagged, from the file's OCR record when the
+     store has it, else from the app's own completion sentence */
+  try{ var s0=st(), ent=((s0&&s0.entities)||[]).filter(function(e){return e.id===j.entityId;})[0];
+    var f=ent&&(ent.files||[]).filter(function(x){return x.id===j.newId;})[0], oc=f&&f.ocr;
+    if(oc&&oc.pages){ var read=(oc.ocrPages&&oc.ocrPages.length)||oc.pages.filter(function(p){return p.status!=="text";}).length;
+      var flagged=oc.pages.reduce(function(n,p){ return n+((p.flags||[]).filter(function(x){return x&&x.level!=="info";}).length); },0);
+      return {pages:read,flags:flagged}; } }catch(e){}
+  var m=String(j.message||""), pm=/(\d+) page\(s\)/.exec(m), fm=/(\d+) reading\(s\) flagged/.exec(m);
+  return {pages:pm?+pm[1]:null, flags:fm?+fm[1]:0};
+}
+var en9OcrOpenDet={};
+/* The engine line says which engine reads the pages. Why a faster engine
+   could not load (download addresses, fallbacks) is diagnostics: it stays
+   in the text, folded behind Details. */
+function en9OcrEngineText(box, full){
+  while(box.firstChild) box.removeChild(box.firstChild);
+  full=String(full||""); var m=/\s*\(([^()]*(?:https?:\/\/|could not)[^()]*)\)/i.exec(full);
+  if(!m){ box.textContent=full; return; }
+  box.appendChild(document.createTextNode((full.slice(0,m.index)+full.slice(m.index+m[0].length)).replace(/\s{2,}/g," ").trim()));
+  var d=document.createElement("details"); d.className="en9-ocr-jobdet";
+  var sm=document.createElement("summary"); sm.textContent="Details"; d.appendChild(sm);
+  d.appendChild(el("p","en9-ocr-jobtech",m[1])); box.appendChild(d);
+}
+function en9OcrJobRow(j){
+  var ended=j.completedAt||Date.now(), clock=en9OcrClock(ended-j.startedAt);
+  var tone, label, result;
+  if(j.status==="detecting"){ tone="run"; label="Checking"; result="Checking whether any page needs OCR"; }
+  else if(j.status==="required"){ tone="info"; label="OCR required"; result=j.message||"Some pages have no text layer"; }
+  else if(j.status==="running"){ tone="run"; label="Reading"; result="Reading the pages with no text layer"; }
+  else if(j.status==="not-required"){ tone="off"; label="Not needed"; result="Text layer found — no OCR needed"; }
+  else if(j.status==="done"){ var c=en9OcrReadCounts(j);
+    tone=c.flags?"warn":"ok"; label=c.flags?"Needs review":"Completed";
+    result=(c.pages!=null?c.pages+" page"+(c.pages===1?"":"s")+" read":"Read")+(c.flags?" · "+c.flags+" reading"+(c.flags===1?"":"s")+" to check against the scan":""); }
+  else { tone="bad"; label="Failed";
+    result=j.error?"Could not be read. The original stays attached — add a clearer scan, a text PDF or the source spreadsheet.":(j.message||"Could not be read"); }
+  var row=el("div","en9-ocr-job "+j.status+" tone-"+tone);
+  var badge=el("span","en9-ocr-jobbadge is-"+tone,label);
+  /* break long file names at their own separators before breaking a word */
+  var name=el("span","en9-ocr-jobname"); name.title=j.name||"";
+  String(j.name||"Document").replace(/([_\-.\s)])/g,"$1\u0000").split("\u0000").filter(Boolean).forEach(function(part,i){ if(i) name.appendChild(document.createElement("wbr")); name.appendChild(document.createTextNode(part)); });
+  var live=j.status==="running"||j.status==="detecting";
+  var time=el("span","en9-ocr-jobtime",live||(j.completedAt&&ended-j.startedAt>=1000)?clock:"");
+  var res=el("span","en9-ocr-jobres",result);
+  row.appendChild(badge); row.appendChild(name); row.appendChild(time); row.appendChild(res);
+  /* Diagnostics are for someone investigating, never for the scan line. */
+  var tech=[];
+  /* a failure with a known reason shows the reason, not the whole sentence
+     again — the row above already says what to do */
+  var failedWithReason=j.status==="failed"&&j.error;
+  if(!failedWithReason&&j.message&&j.message!==result&&j.message!=="Processing") tech.push(j.message);
+  if(j.engine) tech.push("Engine: "+j.engine);
+  if(j.error) tech.push("Reason: "+j.error);
+  if(tech.length){ var d=document.createElement("details"); d.className="en9-ocr-jobdet";
+    /* rows are rebuilt on every progress message; an opened Details stays open */
+    var dk=j.fileId||j.name; if(en9OcrOpenDet[dk]) d.open=true;
+    d.addEventListener("toggle",function(){ if(d.open) en9OcrOpenDet[dk]=1; else delete en9OcrOpenDet[dk]; });
+    var sm=document.createElement("summary"); sm.textContent="Details"; d.appendChild(sm);
+    tech.forEach(function(t){ d.appendChild(el("p","en9-ocr-jobtech",t)); });
+    row.appendChild(d); }
+  return row;
+}
+
 /* Running / finished jobs, shown on the OCR card and beside the Process button. */
 function EN9ocrRenderJobs(){
   /* One status word on the card, repainted wherever the jobs are. */
@@ -1554,17 +1630,25 @@ function EN9ocrRenderJobs(){
     /* Jobs are data owned by their entity.  Never show a previous client's
        filename, status or elapsed time in the active client's panel. */
     var jobs=Object.keys(EN9OCR.jobs).map(function(k){return EN9OCR.jobs[k];}).filter(function(j){return j.entityId===activeId;}).sort(function(a,b){return b.startedAt-a.startedAt;}).slice(0,8);
-    jobs.forEach(function(j){ var row=el("div","en9-ocr-job "+j.status);
-      var ended=j.completedAt||Date.now(), elapsed=Math.max(0,ended-j.startedAt), secs=Math.floor(elapsed/1000), clock=(secs<60?secs+"s":Math.floor(secs/60)+"m "+String(secs%60).padStart(2,"0")+"s");
-      row.appendChild(el("span","en9-ocr-jobname",j.name)); row.appendChild(el("span","en9-ocr-jobstate",j.status==="detecting"?"Detection":j.status==="required"?"OCR required":j.status==="running"?"Processing · "+clock:j.status==="done"?"Completed · "+clock+(j.engine?" · "+j.engine:""):j.status==="not-required"?"OCR not required":"Failed · "+clock));
-      row.appendChild(el("span","en9-ocr-jobmsg",j.message||"")); host.appendChild(row); }); }
+    jobs.forEach(function(j){ host.appendChild(en9OcrJobRow(j)); });
+    /* The card's status line carries messages that belong to no row (the
+       manual controls, the start-of-reading notice). When a row already
+       covers the file a message names, the row is the one place for it. */
+    var stat=document.getElementById("en9-ocr-status");
+    if(stat){ var said=stat.textContent||"";
+      var covered=jobs.some(function(j){ return j.name&&said.indexOf(j.name)>=0; });
+      stat.hidden=!!(covered&&said);
+      var sub=document.querySelector(".en9-ocr-sub"); if(sub) sub.hidden=jobs.length>0; } }
   /* the run panel: say why Process entity is waiting */
   try{ var s=st(), active=s&&s.activeEntityId;
     var pend=Object.keys(EN9OCR.jobs).filter(function(k){var j=EN9OCR.jobs[k];return j.status==="running"&&(!active||j.entityId===active);}).map(function(k){return EN9OCR.jobs[k].name;});
-    document.querySelectorAll(".run-panel").forEach(function(rp){
+    /* only the active entity's Process button is waiting on these files */
+    var panels=document.querySelectorAll(".run-panel"), mine=null;
+    if(panels.length>1){ var ac=en9ActiveEntityCard(); mine=ac&&ac.querySelector(".run-panel"); }
+    panels.forEach(function(rp){
       var hint=rp.querySelector(".en9-ocr-wait");
-      if(pend.length){ if(!hint){ hint=el("div","en9-ocr-wait"); rp.appendChild(hint); }
-        hint.textContent="OCR is reading "+pend.join(", ")+" — “Process entity” waits until it finishes, so the run uses the recognised text."; }
+      if(pend.length&&(!mine||rp===mine)){ if(!hint){ hint=el("div","en9-ocr-wait"); rp.appendChild(hint); }
+        hint.textContent="Waiting for OCR to finish: "+pend.join(", "); }
       else if(hint) hint.remove(); }); }catch(e){}
 }
 
@@ -1577,6 +1661,11 @@ function en9OcrSummary(){
     var busy=Object.keys(EN9OCR.jobs).some(function(k){ var j=EN9OCR.jobs[k];
       return j&&(j.status==="running"||j.status==="detecting")&&(!eid||j.entityId===eid); });
     if(busy) return ["run","Processing"];
+    /* A reading that failed produced no OCR record, so the files alone would
+       call the entity "Not needed" — the one word it must not say. */
+    var failed=Object.keys(EN9OCR.jobs).some(function(k){ var j=EN9OCR.jobs[k];
+      return j&&j.status==="failed"&&(!eid||j.entityId===eid); });
+    if(failed) return ["warn","Needs review"];
     var ent=((s0&&s0.entities)||[]).filter(function(e){return e.id===eid;})[0];
     var done=((ent&&ent.files)||[]).filter(function(f){return f&&f.ocr;});
     if(!done.length) return ["off","Not needed"];
@@ -1591,8 +1680,21 @@ function en9OcrSummary(){
   }catch(e){ return ["off","Not needed"]; }
 }
 
+/* With several entities each card has its own dropzone. The OCR card
+   belongs under the ACTIVE entity's, not whichever happens to be first. */
+function en9ActiveEntityCard(){
+  try{ var s0=st(), ids=((s0&&s0.entities)||[]).map(function(e){return e.id;});
+    var i=ids.indexOf(s0&&s0.activeEntityId), cards=document.querySelectorAll(".entity-card");
+    if(i>=0&&cards.length===ids.length) return cards[i]; }catch(e){}
+  return null;
+}
+function en9OcrDropzone(){
+  var all=document.querySelectorAll(".dropzone"); if(all.length<2) return all[0]||null;
+  var card=en9ActiveEntityCard(), dz=card&&card.querySelector(".dropzone");
+  return dz||all[0];
+}
 function enhanceOcrPanel(){
-  var dz=document.querySelector(".dropzone");
+  var dz=en9OcrDropzone();
   var old=document.querySelector(".en9-ocr");
   if(!dz||!dz.parentElement){ if(old)old.remove(); return; }
   if(old) {
@@ -1644,7 +1746,7 @@ function enhanceOcrPanel(){
   function showEngine(force){ if(checking&&!force) return;
     checking=true; eng.className="en9-ocr-engine"; if(force) eng.textContent="Checking for the OCR service…";
     EN9OCR.service.health(force).then(function(h){ checking=false;
-      eng.textContent=EN9OCR.service.statusText(); eng.className="en9-ocr-engine"+(h&&h.available?"":" offline");
+      en9OcrEngineText(eng, EN9OCR.service.statusText()); eng.className="en9-ocr-engine"+(h&&h.available?"":" offline");
       try{ var hint=document.querySelector(".en9-ocrset"); if(hint&&hint.EN9_refresh) hint.EN9_refresh(); }catch(e){} },
       function(){ checking=false; }); }
   ub.addEventListener("click",function(){ EN9OCR.service.setUserUrl(ui.value); ui.value=EN9OCR.service.userUrl(); showEngine(true); });
