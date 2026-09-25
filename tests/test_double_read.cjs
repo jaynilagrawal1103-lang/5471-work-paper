@@ -103,5 +103,38 @@ t("the shipped guard answers the same as the source one", () => {
   }
 });
 
+/* ---- the cross-page echo: booked, and flagged ---- */
+
+/* "Interest 2,468" on the profit and loss and "Interest 4% a year 2,468" in
+   the note beneath it are the same money under two captions on two pages.
+   The rules cannot tell that from two real accounts that agree to the cent,
+   so the figure is booked as read and the preparer is told what to look at.
+   Dropping it would be a guess; saying nothing is what brought this here. */
+const SRCTEXT = fs.readFileSync(path.join(root, "src/prototype/wp/store.ts"), "utf8");
+
+t("the source raises an echo item, and still books the figure", () => {
+  const i = SRCTEXT.indexOf("const echo = (contributions[resolved.target]");
+  assert.ok(i > 0, "the echo guard is not in the booking loop");
+  const block = SRCTEXT.slice(i, i + 1400);
+  assert.ok(/c\.label\.toLowerCase\(\) !== m\.row\.label\.toLowerCase\(\)/.test(block),
+    "it must fire on a DIFFERENT caption — the same caption is the existing dupe rule");
+  assert.ok(/c\.page !== m\.row\.page/.test(block), "same-page repeats are the AI guard's job");
+  assert.ok(/level: "warn"/.test(block) && /applied: true/.test(block),
+    "the figure stays booked and the item says so");
+  assert.ok(!/\n\s*continue;/.test(block.slice(0, block.indexOf("});"))),
+    "the echo path must NOT skip the contribution");
+});
+
+t("and the shipped bundle does the same, at the same point in the loop", () => {
+  assert.ok(DIST.includes("/*EN9ECHOPAGE-BEGIN*/") && DIST.includes("/*EN9ECHOPAGE-END*/"), "sentinel missing");
+  const b = /\/\*EN9ECHOPAGE-BEGIN\*\/[\s\S]*?\/\*EN9ECHOPAGE-END\*\//.exec(DIST)[0];
+  assert.ok(b.includes('level:"warn"') && b.includes("applied:!0"), "dist drops the figure or hides the item");
+  assert.ok(b.includes("ce.page!==F.row.page") && b.includes("ce.label.toLowerCase()!==F.row.label.toLowerCase()"),
+    "dist fires on the wrong condition");
+  // It sits AFTER the counted-once rule, so an identical caption is still
+  // deduped rather than double-reported.
+  assert.ok(DIST.indexOf("counted once.") < DIST.indexOf("/*EN9ECHOPAGE-BEGIN*/"), "ordering changed");
+});
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

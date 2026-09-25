@@ -1311,3 +1311,25 @@ Deliberately narrow, because a second reading is the only thing being stopped:
 
 `test:dblread` — 12 groups, including a src↔dist answer-for-answer comparison
 of the guard. The existing page-dupe rule is unchanged.
+
+### 2026-09-25 (3) — the cross-page echo
+
+The other half of the Wendorf double counting: "Interest 2,468" on the profit
+and loss and "Interest 4% a year 2,468" in the note beneath it, and "Wages and
+salaries 65,868" (p.10) with "Wage tax 1,032" (p.16) — the same money reaching
+one line from two pages under two captions.
+
+The existing `dupe-page-*` rule only fires on an IDENTICAL caption, where
+counting once is safe. With different captions the rules cannot tell a note
+restating the face from two real accounts that agree to the cent, so the
+figure is booked as read and a WARN item (`echo-page-*`, `applied: true`)
+names both captions, both pages and the amount the line would be overstated
+by. Dropping it would be a guess; saying nothing is what produced the
+complaint. Mirrored as `EN9ECHOPAGE`.
+
+NOT fixed, and not fixable without the source PDF: on that document the notes
+pages (14–18) fed the income-statement mapping at all, which is how balance
+sheet captions ("Issued", "Subscribed", "Other reserves", "Long term loan")
+and a date read as 312,024 reached Schedule C other deductions. The design
+already says notes restate the face and are not booked; those pages were not
+classified `fs-notes`. Needs the scanned statement to reproduce.

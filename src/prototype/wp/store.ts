@@ -3134,6 +3134,29 @@ export const actions = {
               });
               continue;
             }
+            /* The same amount on the same line from another page of the same
+               document, under a DIFFERENT caption. Usually the notes
+               restating the face — "Interest" on the profit and loss and
+               "Interest 4% a year" in the note beneath it — and then the line
+               carries it twice. Sometimes two real accounts that happen to
+               agree to the cent. The rules cannot tell which, so the figure is
+               booked as read and the preparer is told exactly what to look at:
+               dropping it would be a guess, and a silent double count is what
+               brought this here. */
+            const echo = (contributions[resolved.target] || []).find((c) =>
+              c.docId === m.docId && c.page !== m.row.page &&
+              c.label.toLowerCase() !== m.row.label.toLowerCase() &&
+              c.value === r.value && c.field === r.field && r.value !== 0,
+            );
+            if (echo) {
+              rv({
+                id: `echo-page-${resolved.target}-${norm(m.row.label)}`,
+                level: "warn", category: "mapping", applied: true,
+                sourceLabel: m.row.label,
+                message: `${targetLabel(resolved.target)} now carries ${r.value.toLocaleString()} twice from ${m.docName}: once as "${echo.label}" (page ${echo.page}) and again as "${m.row.label}" (page ${m.row.page}). If the second is the note explaining the first, the line is overstated by ${r.value.toLocaleString()} — remove one on Mapping & adjustments. If they really are two accounts of the same size, leave both.`,
+                source: m.docName,
+              });
+            }
             const booked = taxBookValue(resolved.target, r.field, r.value);
             if (taxPrintedNegative(resolved.target, r.field, r.value)) {
               rv({
