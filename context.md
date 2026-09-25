@@ -1333,3 +1333,57 @@ sheet captions ("Issued", "Subscribed", "Other reserves", "Long term loan")
 and a date read as 312,024 reached Schedule C other deductions. The design
 already says notes restate the face and are not booked; those pages were not
 classified `fs-notes`. Needs the scanned statement to reproduce.
+
+### 2026-09-25 (4) — Schedule B Part I: one cell holding both share counts
+
+TEZCATLIPOCA's prior return prints Part I as
+`TODD A WIENER | COMMON | 2,999.000 2,999.000` — the two counts in ONE cell,
+because nothing but white space separates the columns. The shipped Part I
+reader (`EN9parseUsShareholders`) classified the whole cell with numericCell,
+which read it as the single number 2999.0002999, saw fewer than two figures on
+the row and skipped the holder. The U.S. Shareholders block came out empty
+while Part II — which splits on white space before reading — was right.
+
+Fixed in dist (`EN9P1TOK`): a cell whose whitespace-separated tokens are ALL
+numbers contributes each token, so the glued pair reads as 2,999 and 2,999.
+Anything else is classified as before. `test:usshare` covers the glued pair,
+the separate-cell shape that always worked, and a name that carries a number.
+
+This is the FOURTH src/dist parity gap found the same way. The source tree has
+its own Part I path (`scanHolderRows(partI)` via `parseSharePair`, which has
+always split on white space) and never reproduced it — as with the dated year
+headers, the dot-thousands flag and `setRelabel`. A src-only test cannot see
+these. Everything below was therefore verified by driving the SHIPPED
+dist/index.html headlessly with the real client documents.
+
+#### End-to-end verification on the shipped file (2026-09-25)
+
+| Client | Checked | Result |
+|---|---|---|
+| Claycomb / HMC | dated column headers | 14 Schedule F lines, boy AND eoy, ties to the statement |
+| Elliott / Rise | Paypal Fees $20.87 | books to IS:44 (other deductions); IS:12 empty |
+| Santmyer / Charlie Brawn | dot-grouped thousands | 49,943 and 622,624, not 49.94 / 622.62 |
+| Wiener / TEZCATLIPOCA | Schedule B Part I | TODD A WIENER 2,999 / 2,999, Subpart F 99.97% |
+| Wiener / EL KIJ | Schedule B Part I | TODD A WIENER 2,970 / 2,970, 99% |
+
+#### OPEN — Cecilia's own pages excluded from her entity (dist only)
+
+With BOTH Chilean statements loaded onto ONE entity, and the second company
+created by fan-out, Cecilia's log reads
+`b1e34a21-…: 2 page(s) excluded (belong to CECILIA GONZALEZ ACUNA S P A)` —
+her own document is attributed to a DOCUMENT company rather than to her, and
+she books nothing from it (8 carried opening balances only). Charlie is
+correct. src does not reproduce it: there the same set gives Cecilia 8 booked
+lines and excludes only Charlie's pages.
+
+`entitySimilarity("CECILIA GONZALEZ ACUNA SPA", "CECILIA GONZALEZ ACUNA S P A")`
+is 1, and `EN9_norm`/`EN9_vars`/`EN9_attr`/`Wh` are byte-identical to src, so
+the company comparison is not the cause. Re-processing does not clear it:
+`processedAt` does not change, so the second run appears not to start — that is
+the next thread to pull.
+
+NOT fixed, deliberately. The obvious fix (let an unnamed entity keep pages
+owned by a document company) was written, tested, and REVERTED: it made
+Cecilia book CHARLIE's figures — 928,368,104 of gross receipts in both work
+papers. Cross-entity contamination is worse than an empty schedule, and a
+guess is not a fix.

@@ -258,6 +258,55 @@ t("a parsed Schedule B lands on the right cells, in both trees", () => {
   }
 });
 
+/* ------- 5b. one cell holding BOTH share counts, with a space ------- */
+
+/* TEZCATLIPOCA's Part I prints "2,999.000 2,999.000" as a single cell: the
+   page builder never split them because nothing separates the columns but
+   white space. The shipped Part I reader classified the whole cell with
+   numericCell, which read it as the one number 2999.0002999, saw fewer than
+   two figures on the row and skipped the holder — so the U.S. Shareholders
+   block came out empty while Part II, which splits on white space, was right.
+   The pair is verified against the client's own prior return. */
+t("Part I reads both counts when one cell holds the pair", () => {
+  const cut = (re) => {
+    const i = dist.search(re);
+    let d = 0, k = dist.indexOf("{", i);
+    for (;; k++) { if (dist[k] === "{") d++; else if (dist[k] === "}") d--; if (!d) break; }
+    return dist.slice(i, k + 1);
+  };
+  const parse = new Function(
+    `${cut(/function Ii\([^)]*\)\{/)}\n` +
+    `${/var Oa=\(?t[^)]*\)?=>\{[\s\S]*?\},\$w=t=>[\s\S]*?===null,/.exec(dist)[0].replace(/,$/, ";")}\n` +
+    `${cut(/function EN9pctNear\(/)}\n${cut(/function EN9parseUsShareholders\(/)}\nreturn EN9parseUsShareholders;`,
+  )();
+  const page = (holder) => [
+    { page: 14, cells: ["Part I U.S. Shareholders of Foreign Corporation (see instructions)"] },
+    { page: 14, cells: ["(a) Name, address, and identifying", "shares held at", "shares held at"] },
+    { page: 14, cells: holder },
+    { page: 14, cells: ["377 FIFTH STREET"] },
+    { page: 14, cells: ["BROOKLYN, NY 11215"] },
+    { page: 14, cells: ["054-50-1546", "99.97%"] },
+    { page: 14, cells: ["Part II Direct Shareholders of Foreign Corporation (see instructions)"] },
+  ];
+  const glued = parse(page(["TODD A WIENER", "COMMON", "2,999.000 2,999.000"]));
+  assert.strictEqual(glued.length, 1, "the holder was skipped: " + JSON.stringify(glued));
+  assert.strictEqual(glued[0].name, "TODD A WIENER");
+  assert.strictEqual(glued[0].boy, 2999);
+  assert.strictEqual(glued[0].eoy, 2999);
+  assert.strictEqual(glued[0].pct, 99.97);
+
+  // Separate cells, the shape that always worked, must be unchanged.
+  const apart = parse(page(["HEATHER M CLAYCOMB", "COMMON", "25.500", "25.500"]));
+  assert.strictEqual(apart.length, 1);
+  assert.strictEqual(apart[0].boy, 25.5);
+  assert.strictEqual(apart[0].eoy, 25.5);
+
+  // A cell of prose with a number in it is still a name, not two counts.
+  const prose = parse(page(["A BORGES - NRA", "COMMON", "1.000", "1.000"]));
+  assert.strictEqual(prose[0].name, "A BORGES - NRA");
+  assert.strictEqual(prose[0].boy, 1);
+});
+
 /* ---------------- 6. the shipped file is actually wired up ---------------- */
 t("the shipped file calls the writer from both save paths", () => {
   assert(/EN9USSHR\*\/EN9usShWrites\(t\.usShareholders\b/.test(dist), "Shareholders-tab edit path");
