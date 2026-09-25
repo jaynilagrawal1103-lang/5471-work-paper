@@ -1259,3 +1259,30 @@ assert the explanation, and a pre-filled schedule must NOT also complain),
 `test:boy` 24 groups (the negative-asset detection, the contra accounts and a
 negative liability, plus a src↔dist presence guard). Suite 64 scripts; only the
 documented `test:peg` failure remains, confirmed pre-existing.
+
+### 2026-09-25 — dot-grouped thousands reached the shipped grid reader
+
+The Charlie Brawn work paper generated from the 24-Sep bundle booked box 1588
+"Otros ingresos percibidos o devengados" 49.943 as **49.94** and box 1424
+"Otros gastos deducibles" 622.624 as **622.62**, on the same form where
+928.368.104 came out right. A third src/dist parity gap:
+
+- `numeric` / `numericCell` in dist took NO options argument, while the grid
+  reader `Jv` (extractRows) had been mirrored and was already calling
+  `Oa(String(d),{dotThousands:EN9dt})`. The object was silently dropped, so
+  the document-level opt-in never reached the parser. Both now take the flag
+  and normalise either shape (boolean or `{dotThousands}`), because callers in
+  the bundle use both.
+- `EN9dotDoc` mirrors `dotThousandsDocument`. The positioned reader already
+  had its own page-level test (`EN9clNum`) and is unchanged.
+- A single dot is still a decimal point on its own. It becomes a thousands
+  group only when the document elsewhere prints two or more groups, which no
+  ordinary decimal statement does.
+
+Verified in the shipped bundle: `Jv` on the three real captions returns
+928,368,104 / 49,943 / 622,624, and on `["Sales","1.234"]` still returns 1.234.
+
+Three snapshot tests pinned the old one-argument signatures and broke:
+`test:stacked`, `test:swiss` and `test:detect` now locate `Ii` and `Oa` by
+NAME, and `tests/detect_test_src.cjs` carries the refreshed chunks. Pinning a
+parameter list was pinning the wrong thing.

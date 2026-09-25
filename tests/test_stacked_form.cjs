@@ -193,13 +193,16 @@ t("dist carries the same mapping rules as src", () => {
 
 t("dist's stacked reader returns exactly what src's does", () => {
   // Extract the shipped function and run it on the same geometry.
+  // Matched by NAME, not by parameter list: both gained an opt-in flag for
+  // dot-grouped thousands, and pinning the signature broke this test instead
+  // of the behaviour it is here to check.
   const numeric = (() => {
-    const i = DIST.indexOf("function Ii(t){");
+    const i = DIST.search(/function Ii\([^)]*\)\{/);
     let d = 0, k = DIST.indexOf("{", i);
     for (;; k++) { if (DIST[k] === "{") d++; else if (DIST[k] === "}") d--; if (!d) break; }
     return DIST.slice(i, k + 1);
   })();
-  const cells = /var Oa=t=>\{[\s\S]*?\},\$w=t=>[\s\S]*?===null,/.exec(DIST)[0].replace(/,$/, ";");
+  const cells = /var Oa=\(?t[^)]*\)?=>\{[\s\S]*?\},\$w=t=>[\s\S]*?===null,/.exec(DIST)[0].replace(/,$/, ";");
   const stack = /\/\*EN9STACK-BEGIN\*\/[\s\S]*?\/\*EN9STACK-END\*\//.exec(DIST)[0];
   const shipped = new Function(`${numeric}\n${cells}\n${stack}\nreturn EN9stackRows;`)();
   assert.deepStrictEqual(shipped(DOC), pairs);

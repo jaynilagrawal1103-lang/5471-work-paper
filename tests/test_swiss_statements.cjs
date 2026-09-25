@@ -163,8 +163,9 @@ t("dist carries all four fixes, wired in", () => {
 });
 
 t("the shipped year-header parser reads any currency, not a list of ten", () => {
+  // Located by name; the parameter lists are not part of what this pins.
   const cut = (from) => {
-    const i = DIST.indexOf(from);
+    const i = typeof from === "string" ? DIST.indexOf(from) : DIST.search(from);
     let d = 0, k = DIST.indexOf("{", i);
     for (;; k++) { if (DIST[k] === "{") d++; else if (DIST[k] === "}") d--; if (!d) break; }
     return DIST.slice(i, k + 1);
@@ -172,7 +173,7 @@ t("the shipped year-header parser reads any currency, not a list of ten", () => 
   const start = DIST.indexOf("/*EN9CCYTOK-BEGIN*/");
   const seg = DIST.slice(start, DIST.indexOf("EN9_RSV=", start)).replace(/,\s*$/, "") + ";";
   const HY = new Function(
-    `${cut("var Pa={AFN:")};${cut("function Ii(t){")};${/var Oa=t=>\{[\s\S]*?\}/.exec(DIST)[0]};${seg}return EN9_HY;`,
+    `${cut("var Pa={AFN:")};${cut(/function Ii\([^)]*\)\{/)};${/var Oa=\(?t[^)]*\)?=>\{[\s\S]*?\}/.exec(DIST)[0]};${seg}return EN9_HY;`,
   )();
   for (const code of ["CHF", "USD", "SEK", "CLP", "THB", "ZAR"]) {
     assert.strictEqual(HY(`2024 ${code}`), 2024, `"2024 ${code}" not read as a year`);

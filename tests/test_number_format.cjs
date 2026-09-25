@@ -49,5 +49,54 @@ t("text is null", () => assert.strictEqual(numeric("Total del Activo"), null));
    a future change does not silently flip it. */
 t("one dot is still read as a decimal point", () => assert.strictEqual(numeric("464.138"), 464.138));
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+/* …until the DOCUMENT settles the convention. The Charlie Brawn Form 22
+   prints 928.368.104 in one box and 49.943 in another; read in isolation the
+   second is 49.94, a thousand times too small, on the same form as figures
+   that can only be dot-grouped. The caller opts in once the page has been
+   read as a whole (dotThousandsDocument), never from one token. */
+t("a single dot IS a thousands group once the document says so", () => {
+  assert.strictEqual(numeric("49.943", { dotThousands: true }), 49943);
+  assert.strictEqual(numeric("622.624", { dotThousands: true }), 622624);
+  assert.strictEqual(numeric("-3.658", { dotThousands: true }), -3658);
+});
+
+t("opting in does not touch anything that is not a bare 1-3 / 3 group", () => {
+  assert.strictEqual(numeric("1.449,37", { dotThousands: true }), 1449.37, "European decimal comma");
+  assert.strictEqual(numeric("0.241879", { dotThousands: true }), 0.241879, "six-place decimal");
+  assert.strictEqual(numeric("1449.37", { dotThousands: true }), 1449.37, "two-place decimal");
+  assert.strictEqual(numeric("2.555.002.379", { dotThousands: true }), 2555002379);
+});
+
+/* The whole point of the document-level test: it must NOT fire on an ordinary
+   English statement that happens to print a three-place decimal. */
+const dotDoc = (text) => /\d{1,3}(?:\.\d{3}){2,}/.test(String(text || ""));
+t("the document test needs two or more groups before it fires", () => {
+  assert.strictEqual(dotDoc("928.368.104 49.943 622.624"), true);
+  assert.strictEqual(dotDoc("Rate 1.234 and 5.678"), false);
+  assert.strictEqual(dotDoc(""), false);
+});
+
+/* Both trees: the grid reader is where the Chilean boxed form is booked, and
+   the shipped bundle ignored the flag entirely until this was mirrored. */
+(async () => {
+  const D = require("./fixtures/harness.cjs");
+  await D.boot();
+  const M = D.M;
+  t("dist: the flag reaches numericCell", () => {
+    assert.strictEqual(M.Oa("622.624"), 622.624, "off by default");
+    assert.strictEqual(M.Oa("622.624", { dotThousands: true }), 622624);
+  });
+  t("dist: a dot-grouped grid books whole pesos, an ordinary one does not", () => {
+    const chile = M.Jv([["Ingresos del giro percibidos", "928.368.104"],
+                        ["Otros ingresos percibidos o devengados", "49.943"],
+                        ["Otros gastos deducibles de los ingresos", "622.624"]]);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(chile)).map((r) => r.values),
+      [[928368104], [49943], [622624]]);
+    const plain = M.Jv([["Sales", "1.234"], ["Other", "5.678"]]);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(plain)).map((r) => r.values),
+      [[1.234], [5.678]]);
+  });
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();
+
