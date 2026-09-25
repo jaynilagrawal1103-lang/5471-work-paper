@@ -1366,7 +1366,7 @@ dist/index.html headlessly with the real client documents.
 | Wiener / TEZCATLIPOCA | Schedule B Part I | TODD A WIENER 2,999 / 2,999, Subpart F 99.97% |
 | Wiener / EL KIJ | Schedule B Part I | TODD A WIENER 2,970 / 2,970, 99% |
 
-#### OPEN — Cecilia's own pages excluded from her entity (dist only)
+#### FIXED — Cecilia's own pages excluded from her entity (dist only)
 
 With BOTH Chilean statements loaded onto ONE entity, and the second company
 created by fan-out, Cecilia's log reads
@@ -1382,8 +1382,31 @@ the company comparison is not the cause. Re-processing does not clear it:
 `processedAt` does not change, so the second run appears not to start — that is
 the next thread to pull.
 
-NOT fixed, deliberately. The obvious fix (let an unnamed entity keep pages
-owned by a document company) was written, tested, and REVERTED: it made
-Cecilia book CHARLIE's figures — 928,368,104 of gross receipts in both work
-papers. Cross-entity contamination is worse than an empty schedule, and a
-guess is not a fix.
+The first attempt (let an unnamed entity keep pages owned by a document
+company) was written, tested and REVERTED: it made Cecilia book CHARLIE's
+figures — 928,368,104 of gross receipts in both work papers. Cross-entity
+contamination is worse than an empty schedule.
+
+The actual cause, found by logging the scope into the entity's own log:
+processing an entity that was the only one in the case gives it every page,
+so attribution never runs. The tool knows this and re-reads the parent after
+the fan-out (`/*EN9REPARENT*/await Be.processEntity(t)`), and THAT run is what
+keeps each corporation's pages to its own work paper. But the shipped build
+asks the preparer to confirm a re-process — right for a button press, wrong
+for the tool re-reading its own work. The modal appeared mid fan-out, and a
+Cancel (or a headless browser, which answers no) abandoned the re-read. The
+parent kept the first pass's scope, where it was still called "Entity 2",
+was therefore absent from the company scope, and had BOTH statements
+attributed to document companies.
+
+Fix (`EN9REASKFAN`): the confirm is skipped while `d8` — the fan-out flag —
+is set. It is set for exactly the length of the self-read, so it is the honest
+test of "the tool asked for this, not the preparer". The prompt itself is
+unchanged for a preparer pressing the button.
+
+Verified on the shipped file with the real documents: Cecilia re-processes
+AFTER her sibling and books her own 1,973,582,648 / 703,095,833 / 779,000,384
+/ 97,509,381 / 31,464,925 / 115,585,728 / 59,235,438 / 184,913,638, excluding
+only Charlie's two pages; Charlie excludes only Cecilia's. Neither carries the
+other's figures. `test:entscope` pins the guard and that the preparer's own
+prompt survives.

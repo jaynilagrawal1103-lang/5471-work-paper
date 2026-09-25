@@ -287,5 +287,32 @@ t("language is decided by function words, not by script", () => {
   }
 });
 
+/* ---- the parent must re-read itself after a fan-out ---- */
+
+/* An entity processed while it was the only one in the case has every page of
+ * its own, so page attribution never ran. Once its siblings exist the tool
+ * re-reads it, and THAT is what keeps each corporation's pages to its own
+ * work paper. The shipped build asks the preparer to confirm a re-process —
+ * right for a button press, wrong for the tool re-reading its own work: the
+ * modal appeared mid fan-out, and a Cancel (or a browser that answers no)
+ * left CECILIA GONZALEZ ACUNA SPA with both Chilean statements attributed to
+ * document companies and nothing booked from her own. */
+t("the re-process prompt is skipped while the tool is fanning out", () => {
+  assert.ok(DIST.includes("/*EN9REASKFAN-BEGIN*/"), "the guard is missing");
+  assert.ok(/if\(!d8&&e\.processedAt&&Object\.keys\(e\.lines\|\|\{\}\)\.length/.test(DIST),
+    "the confirm is not guarded by the fan-out flag");
+  // The flag is set for exactly the length of the self-read, and the
+  // self-read is still called.
+  assert.ok(DIST.includes("/*EN9REPARENT*/await Be.processEntity(t);"), "the parent is never re-read");
+  assert.ok(/d8=!0;try\{await r_\(t,d\)/.test(DIST), "the flag is not set around the fan-out");
+  assert.ok(/finally\{d8=!1\}/.test(DIST), "the flag is never cleared");
+});
+
+t("a preparer pressing the button is still asked", () => {
+  // Only the fan-out is exempt: the prompt itself, and its wording, stay.
+  assert.ok(/Re-process \$\{e\.name\}\?/.test(DIST), "the prompt was removed rather than guarded");
+  assert.ok(/mapped line\(s\) will be recomputed from the current documents/.test(DIST));
+});
+
 console.log(`${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
