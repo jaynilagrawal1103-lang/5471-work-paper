@@ -1286,3 +1286,28 @@ Three snapshot tests pinned the old one-argument signatures and broke:
 `test:stacked`, `test:swiss` and `test:detect` now locate `Ii` and `Oa` by
 NAME, and `tests/detect_test_src.cjs` carries the refreshed chunks. Pinning a
 parameter list was pinning the wrong thing.
+
+### 2026-09-25 (2) — one figure, read twice off one page
+
+Collaborate and Eight B.V. 2024 (scanned Dutch annual statement, OCR at 93.3%)
+booked gross receipts 31,212 where the face says 10,400: the catalogue booked
+"Net turnover 10,400" from page 10, and the OCR of the SAME page also yielded
+the fragment "Gross 10,400", which the model proposed for the same line. Both
+were added. Same document, same page, same line, same amount is the same
+money, whatever caption the reader attached to it.
+
+`figureAlreadyBooked(contributions, target, row)` (dist `EN9dupFigure`) is
+consulted before BOTH places that book a model proposal — the AI mapping pass
+and the agent-suggestion pass — and the proposal is refused with the figure
+and the page named, so the preparer sees why it was not added.
+
+Deliberately narrow, because a second reading is the only thing being stopped:
+- the RULES path is untouched, so two different accounts that happen to print
+  an identical figure still book separately;
+- a different page is left to the existing `dupe-page-*` rule, which reports
+  it in its own words;
+- a different document, a different line, a zero, or a one-cent difference all
+  book normally.
+
+`test:dblread` — 12 groups, including a src↔dist answer-for-answer comparison
+of the guard. The existing page-dupe rule is unchanged.

@@ -4895,6 +4895,34 @@ function negativeDeductionTotals(lines: Record<string, LineValue>): string[] {
   return out;
 }
 
+/* The same figure, read twice off one page.
+ *
+ * A rule booked "Net turnover 10,400" from page 10 of a scanned Dutch annual
+ * statement. The OCR of that same page also yielded the fragment "Gross
+ * 10,400", which the model proposed for the same line — so gross receipts
+ * carried the amount twice and came out overstated by its whole value.
+ *
+ * Same document, same page, same line, same amount is the same money,
+ * whatever caption the reader attached to it. Two genuinely different
+ * accounts that happen to print an identical figure are still booked
+ * separately by the rules; this only stops a SECOND reader re-booking a
+ * figure the first one already placed. */
+export function figureAlreadyBooked(
+  contributions: Record<string, Contribution[]>,
+  target: string,
+  row: { docId?: string; page?: number; values?: Array<number | null> },
+): number | null {
+  const here = contributions[target] || [];
+  for (const v of row.values || []) {
+    if (typeof v !== "number" || !isFinite(v) || v === 0) continue;
+    const hit = here.find((c) =>
+      c.docId === (row.docId || "") && c.page === row.page &&
+      Math.abs(Math.abs(c.value) - Math.abs(v)) <= 0.005);
+    if (hit) return v;
+  }
+  return null;
+}
+
 export function manualApply(
   ent: Entity,
   lines: Record<string, LineValue>,
@@ -6967,6 +6995,11 @@ async function agentRun(entityId: string, log?: string[]): Promise<AgentRunResul
       refuse(`the agent suggested ${targetLabel(sg.target)} but the caption was printed under the "${row.section}" banner — refused as a documentary contradiction.`);
       continue;
     }
+    const dbl = figureAlreadyBooked(contributions, sg.target, row);
+    if (dbl !== null) {
+      refuse(`the agent suggested ${targetLabel(sg.target)} for ${dbl.toLocaleString()}, but that figure is already booked to the same line from page ${row.page} of the same document — one amount, read twice, so it was NOT added again.`);
+      continue;
+    }
     if (!manualApply(fresh, lines, contributions, relabels, sg.target, row, "groq")) {
       refuse(VALID_TARGETS.has(sg.target)
         ? `the agent suggested ${targetLabel(sg.target)} but the row has no single unambiguous current-year figure to book — enter it on the line directly.`
@@ -7207,6 +7240,11 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
         }
         if (row.section && !sectionOk(row.section, p.t)) {
           refuse(`AI proposed ${targetLabel(p.t)} but the caption was printed under the "${row.section}" banner — refused as a documentary contradiction.`);
+          continue;
+        }
+        const twice = figureAlreadyBooked(contributions, p.t, row);
+        if (twice !== null) {
+          refuse(`AI proposed ${targetLabel(p.t)} for ${twice.toLocaleString()}, but that figure is already booked to the same line from page ${row.page} of the same document — one amount, read twice, so it was NOT added again.`);
           continue;
         }
         if (!manualApply(fresh, lines, contributions, relabels, p.t, row, "groq")) {
