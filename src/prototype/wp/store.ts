@@ -11,7 +11,7 @@ import { pdfToDoc } from "./pdfText";
 import { parseQuestionnaire, type Questionnaire } from "./questionnaire";
 import { irsCountryCode } from "./countryCodes";
 import { entityInsights, summarizeReview, fileSignature, type ChoiceMemory } from "./insights";
-import { DETAIL_PNL_TITLE, bsSide, isProfitLine, isResultSubtotal, supplementaryDetailPages, collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, dropFurniture, dropMovementSchedules, equityOverride, expenseGainFlip, gridStructRows, outsidePrintedTotal, refeedBySection, sameIndentSubtotals, sectionOk, sectionRoute, structRows, tagSections, tagStatementGroups, type MapRow, type Section } from "./sections";
+import { DETAIL_PNL_TITLE, TRADING_PNL_TITLE, NOT_STATUTORY, bsSide, markContinuedPages, isProfitLine, isResultSubtotal, supplementaryDetailPages, collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, dropFurniture, dropMovementSchedules, equityOverride, expenseGainFlip, gridStructRows, outsidePrintedTotal, refeedBySection, sameIndentSubtotals, sectionOk, sectionRoute, structRows, tagSections, tagStatementGroups, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
   AI_BATCH, TPM_BUDGET, aiMode, askResume, classifyFailure, estTokens, maxTokensFor,
@@ -625,7 +625,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 17;
+export const RULE_CATALOGUE_VERSION = 19;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -651,6 +651,8 @@ const SKIP_ADDED_SINCE: Record<number, string[]> = {
   15: ["result before taxation", "result after taxation", "result before tax", "result after tax", "operating result", "gross operating result", "financial income and expenditure", "total financial income and expenditure", "result on ordinary activities", "net result"],
   // v17 (2026-10-01): Colombian (PUC) result subtotals.
   16: ["resultado bruto", "resultado operacional", "resultado antes de", "result. antes de", "resultado antes de impto", "resultado antes de corr"],
+  // v19 (2026-10-01): the Nordic pre-tax subtotal.
+  18: ["profit before appropriations", "profit (loss) before appropriations", "loss before appropriations", "profit before taxation", "loss before taxation", "profit/(loss) before taxation", "(loss)/profit before taxation", "shareholders' funds", "shareholders\u2019 funds", "shareholders funds", "total shareholders' funds"],
 };
 
 /** target → first keyword, for each group added at version 2. Identified by
@@ -704,6 +706,8 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
   15: ["housing costs", "interest and similar expenditure", "interest and similar income", "currency differences", "selling costs", "debts to participants", "debts to credit institutions"],
   // v17 (2026-10-01): Colombian (PUC) statements (Premium Care).
   16: ["antic. a trabajadores", "anticipo de clientes", "impto de renta"],
+  17: ["bienes ra\u00edces", "cta. participaci\u00f3n", "pr\u00e9stamo a plazo", "correcci\u00f3n monetaria", "impuesto 1era cat", "accum. dep", "talent fee"],
+  18: ["income taxes", "other current assets", "long-term receivables", "penalties for late payment"],
 };
 
 /** Keywords that MOVED to a different line at a given version. Adding a group
@@ -2625,8 +2629,19 @@ export const actions = {
           /* An entity still carrying the default "Entity 1" takes its legal
              name from the prior return later in the run (the header follows
              it), so with a prior return present there is nothing to say. */
-          if (!(me && /^entity\s+\d+$/i.test(me.name.trim()) && !String(me.profile.legalName || "").trim()
-            && bundles.some((b) => b.cls.kind === "prior-year-us-return" && !b.cls.duplicateOf))) rv({
+          const unnamed = !!me && /^entity\s+\d+$/i.test(me.name.trim()) && !String(me.profile.legalName || "").trim();
+          const priorReturn = bundles.some((b) => b.cls.kind === "prior-year-us-return" && !b.cls.duplicateOf);
+          /* No prior return to take the name from, and the statements name one
+             company with its legal form ("… SAS"): that IS the legal name.
+             Leaving "Entity 1" on Basic Information filed the default. */
+          if (unnamed && !priorReturn && me && LEGAL_FORM.test(docCompanies[0].nm.trim())) {
+            updateEntity(entityId, { profile: { ...me.profile, legalName: docCompanies[0].nm.trim() } });
+            rv({
+              id: `legal-name-from-statements-${entityId}`, level: "info", category: "profile", applied: true,
+              message: `Legal name set to "${docCompanies[0].nm.trim()}", the company every statement names. No prior-year Form 5471 was supplied to take it from — correct it in Basic Information if the registered name differs.`,
+              source: docCompanies[0].nm,
+            });
+          } else if (!(unnamed && priorReturn)) rv({
             id: `entity-name-differs-${entityId}`,
             level: "warn", category: "entity-scope",
             message: `Every document in this entity names "${docCompanies[0].nm}", but the entity is called "${me ? (me.profile.legalName || me.name) : "this entity"}". The documents were used, because only one company is named in the papers. Set the legal name in Basic Information if they are the same company, or move the documents if they are not.`,
@@ -2781,6 +2796,8 @@ export const actions = {
                being read as structure by anything downstream. */
             pdfIs = dropFurniture(pdfIs);
             pdfBs = dropFurniture(pdfBs);
+            pdfIs = markContinuedPages(pdfIs);
+            pdfBs = markContinuedPages(pdfBs);
             pdfIs = tagSections(pdfIs);
             pdfBs = tagSections(pdfBs);
             // A page that reconciles one account's movements is not a balance
@@ -2808,16 +2825,20 @@ export const actions = {
               // first few lines of the page) restate the face P&L in detail.
               const detailPages = new Set<number>();
               const firstRows = new Map<number, number>();
+              const notStatutory = pdf.rows.some((r) => NOT_STATUTORY.test(r.cells.map((c) => c.text).join(" ")));
               for (const r of pdf.rows) {
                 const n = firstRows.get(r.page) || 0;
                 if (n >= 4) continue;
                 firstRows.set(r.page, n + 1);
-                if (isPages.has(r.page) && DETAIL_PNL_TITLE.test(r.cells.map((c) => c.text).join(" "))) detailPages.add(r.page);
+                const head = r.cells.map((c) => c.text).join(" ");
+                if (isPages.has(r.page) && (DETAIL_PNL_TITLE.test(head) || (TRADING_PNL_TITLE.test(head) && notStatutory))) detailPages.add(r.page);
               }
               const sup = supplementaryDetailPages(pdfIs, detailPages);
               if (sup.dropped) {
                 pdfIs = sup.rows;
-                log.push(`${file.name}: the detailed profit and loss account (page${detailPages.size > 1 ? "s" : ""} ${[...detailPages].join(", ")}) restates the profit and loss account line by line — ${sup.dropped} row(s) set aside so nothing is booked twice; the face statement is booked`);
+                log.push(sup.abridged
+                  ? `${file.name}: the profit and loss account is abridged (it opens at gross profit), so the detailed account (page${detailPages.size > 1 ? "s" : ""} ${[...detailPages].join(", ")}) is booked and the ${sup.dropped} face row(s) it restates are set aside`
+                  : `${file.name}: the detailed profit and loss account (page${detailPages.size > 1 ? "s" : ""} ${[...detailPages].join(", ")}) restates the profit and loss account line by line — ${sup.dropped} row(s) set aside so nothing is booked twice; the face statement is booked`);
               }
             }
             let skipped = 0;
@@ -3386,7 +3407,7 @@ export const actions = {
            in brackets on the P&L and every creditor in brackets on a
            net-assets balance sheet; read literally, cost of sales, the tax
            charge and every liability came out negative. */
-        const printedSigns = new Map<string, { costNeg: number; costPos: number; liabNeg: number; liabPos: number }>();
+        const printedSigns = new Map<string, { costNeg: number; costPos: number; liabNeg: number; liabPos: number; netAssetsCreditor?: number }>();
         const COST_T = /^IS:(1[0-2]|2[6-9]|3\d|4\d|50|OD)$/;
         const LIAB_T = /^BS:(4[4-9]|5[0-6]|OCL|OL)$/;
         const signTally = (m: MapRow, target: string, routed: Array<{ field: string; value: number }>) => {
@@ -3395,6 +3416,12 @@ export const actions = {
             if (!r.value) continue;
             if (m.feed === "is" && r.field === "amount" && COST_T.test(target)) { if (r.value < 0) t.costNeg++; else t.costPos++; }
             if (m.feed === "bs" && r.field === "eoy" && LIAB_T.test(target)) { if (r.value < 0) t.liabNeg++; else t.liabPos++; }
+            /* The UK statutory caption "Creditors: amounts falling due within
+               one year (17,855)" is DEDUCTED on a net-assets balance sheet; its
+               brackets are the layout, whether one creditor line is printed or
+               several. */
+            if (m.feed === "bs" && r.field === "eoy" && LIAB_T.test(target) && r.value < 0
+              && /\bcreditors\b[^a-z]*amounts?\s+falling\s+due\b/i.test(String(m.row.label || ""))) t.netAssetsCreditor = (t.netAssetsCreditor || 0) + 1;
           }
           printedSigns.set(m.docId, t);
         };
@@ -3610,8 +3637,14 @@ export const actions = {
           // Only once the rules have failed: the banner's own routing. Last
           // resort, and honest about the assets side having no catch-all.
           if (!target && m.section) {
-            target = sectionRoute(m.section, m.row.label) || null;
-            if (target) via = "section";
+            const byBanner = sectionRoute(m.section, m.row.label) || null;
+            /* The banner's catch-all ("some cost": line 17) is the weakest
+               answer it gives. A heading whose printed figure this account
+               helps make up and that names a line itself ("Income taxes
+               125,980.48" over "9900, Prepayments") is better evidence. */
+            const sum = byBanner === null || byBanner === SECTION_FALLBACK[m.section] ? summaryHeadTarget(m) : null;
+            if (sum) { target = sum.target; inheritedFrom = sum.caption; via = "section"; }
+            else { target = byBanner; if (target) via = "section"; }
           }
           /* The group heading comes after the banner: the banner's routing
              knows captions ("Referral fee" is other income, "Directors and
@@ -3622,6 +3655,13 @@ export const actions = {
             target = "IS:26"; inheritedFrom = head.caption; via = "section";
           }
           if (!target && head && sectionOk(m.section, head.target)) { target = head.target; inheritedFrom = head.caption; via = "section"; }
+          /* Last of all: the heading whose printed figure this account helps
+             make up. "7500, Vehicle leasing" names no Schedule C line, but it
+             is part of "Other operating expenses 118,328.32", and that is. */
+          if (!target && ov === undefined) {
+            const sum = summaryHeadTarget(m);
+            if (sum) { target = sum.target; inheritedFrom = sum.caption; via = "section"; }
+          }
           if (inheritedFrom && head && head.target === "IS:26" && m.section === "cogs") rv({
             id: `group-compensation-${norm(head.caption)}`, level: "info", category: "mapping", applied: true,
             sourceLabel: head.caption,
@@ -3703,7 +3743,10 @@ export const actions = {
               target: `${SHEET.is}!F8`, source: m.docName,
             });
           }
-          if (Array.isArray(routed) && expenseGainFlip(target, m.section, routed[0]?.value)) {
+          /* A statement that prints its costs NEGATIVE prints a gain under
+             them positive ("Corrección Monetaria 12,169,483" after "GASTOS
+             TOTALES -87,228,811"): there the sign is already right. */
+          if (Array.isArray(routed) && expenseGainFlip(target, m.section, routed[0]?.value) && !costsPrintedNegative(mapRows, m.docId)) {
             const asPrinted = routed[0]?.value ?? 0;
             routed = routed.map((r) => ({ ...r, value: -r.value }));
             rv({
@@ -3717,13 +3760,31 @@ export const actions = {
              the group's own total is negative too. Under a positive total
              ("Other personnel costs 2,390.63" = 2,400.00 − 9.37) it is a
              genuine credit and keeps its sign. */
-          if (Array.isArray(routed) && deductionMagnitudeFlip(target, m.section, m.inTotal, routed[0]?.value) && parentTotalSign(mapRows, m) !== 1) {
+          /* The other-deductions pool flips only on a statement that prints
+             its costs negative: under positive costs a lone "Discount allowed
+             -0.87" is a genuine credit and keeps its sign. */
+          if (Array.isArray(routed) && deductionMagnitudeFlip(target, m.section, m.inTotal, routed[0]?.value) && parentTotalSign(mapRows, m) !== 1
+            && (target !== "IS:OD" || costsPrintedNegative(mapRows, m.docId))) {
             const asPrinted = routed[0]?.value ?? 0;
             routed = routed.map((r) => ({ ...r, value: -r.value }));
             rv({
               id: `deduction-magnitude-${target}-${norm(m.row.label)}`,
               level: "info", category: "mapping", sourceLabel: m.row.label,
               message: `"${m.row.label}" is a negative amount inside the statement's proved expense total, so it was booked to Schedule C deduction line ${target} as the positive magnitude ${r2(-asPrinted).toLocaleString()}.`,
+              target: `${SHEET.is}!F${target.split(":")[1]}`, source: m.docName,
+            });
+          } else if (Array.isArray(routed) && (routed[0]?.value ?? 0) > 0 && m.inTotal
+            && deductionMagnitudeFlip(target, m.section, m.inTotal, -(routed[0]?.value ?? 0)) && costsPrintedNegative(mapRows, m.docId)) {
+            /* The mirror of it. On a statement that prints its costs negative,
+               a POSITIVE figure among them is a credit to costs ("5990,
+               Natural benefits offset account 37,080" cancels the car benefit
+               booked above it). Taken as printed it was a second expense. */
+            const asPrinted = routed[0]?.value ?? 0;
+            routed = routed.map((r) => ({ ...r, value: -r.value }));
+            rv({
+              id: `deduction-credit-${target}-${norm(m.row.label)}`,
+              level: "info", category: "mapping", sourceLabel: m.row.label,
+              message: `"${m.row.label}" is printed positive (${asPrinted.toLocaleString()}) on a statement that prints its costs negative, so it is a credit to costs: it was booked to Schedule C deduction line ${target} as ${r2(-asPrinted).toLocaleString()}.`,
               target: `${SHEET.is}!F${target.split(":")[1]}`, source: m.docName,
             });
           }
@@ -3872,7 +3933,7 @@ export const actions = {
            reported one line at a time as possible sign errors. */
         for (const [docId, t] of printedSigns) {
           const costs = t.costNeg >= 2 && t.costPos === 0;
-          const creditors = t.liabNeg >= 2 && t.liabPos === 0;
+          const creditors = (t.liabNeg >= 2 || (t.netAssetsCreditor || 0) >= 1) && t.liabPos === 0;
           if (!costs && !creditors) continue;
           const keys = Object.keys(contributions).filter((k) =>
             (costs && /^IS:(1[0-2]|2[6-9]|3\d|4\d|50|6[23])$/.test(k)) || (creditors && /^BS:(4[4-9]|5[0-6])$/.test(k)));
@@ -4492,7 +4553,35 @@ export const actions = {
            once every contribution is in — see negativeDeductionTotals. */
         {
           const curD = state.entities.find((e) => e.id === entityId);
-          const flip = curD ? negativeDeductionTotals(curD.lines) : [];
+          let flip = curD ? negativeDeductionTotals(curD.lines) : [];
+          /* Line 17's detail rows hold one account each. A negative one there
+             is either a cost printed as a negative ("Frais bancaires -52.70")
+             or a genuine credit among positive costs ("Discount Allowed
+             -0.87", which the reviewed paper keeps negative). The statement's
+             own result decides: the row keeps its sign only when, as printed,
+             Schedule C reaches the stated result and re-signed it would not.
+             With no stated result it is re-signed, as before. */
+          if (curD && flip.length) {
+            const pool = flip.filter((k) => POOLS["IS:OD"].rows.includes(Number(k.split(":")[1])));
+            const signed = (keys: string[]) => {
+              const l = { ...curD.lines };
+              for (const k of keys) l[k] = { ...l[k], amount: -(l[k].amount as number) };
+              return l;
+            };
+            const fixed = flip.filter((k) => !pool.includes(k));
+            const stated = (curD.statedResults || []).filter((x) => x.feed === "is");
+            const gap = (l: Record<string, LineValue>): number | null => {
+              const booked = bookNetIncome(l);
+              return booked === null || !stated.length ? null : Math.abs(r2(stated.reduce((n, x) => n + x.value, 0) - booked));
+            };
+            for (const k of pool) {
+              const asPrinted = gap(signed(flip.filter((x) => x !== k)));
+              const resigned = gap(signed(flip));
+              // Kept as printed only when that is measurably closer to the result.
+              if (!(asPrinted !== null && resigned !== null && asPrinted + 0.005 < resigned)) fixed.push(k);
+            }
+            flip = fixed;
+          }
           if (curD && flip.length) {
             const lines = { ...curD.lines };
             for (const k of flip) {
@@ -4532,7 +4621,9 @@ export const actions = {
               | "ap" | "ocl" | "commonStock" | "re"
               | "badDebts" | "inventories" | "loansToShareholders" | "land"
               | "otherAssets" | "loansFromShareholders" | "otherLiabilities"
-              | "preferredStock" | "paidInSurplus" | "treasuryStock";
+              | "preferredStock" | "paidInSurplus" | "treasuryStock"
+              | "subsidiaries" | "otherInvestments" | "depletable" | "accumDepletion"
+              | "goodwill" | "organizationCosts" | "intangibles" | "accumAmort";
             /* Each key lists the template row(s) that can hold it. Sch F lines 5
                and 16 print as one figure but are =SUM() subtotals here (rows 15
                and 47) and are absent from BS_LINES, so a value seeded on the
@@ -4556,6 +4647,11 @@ export const actions = {
               ["preferredStock", [58], false], ["commonStock", [59], false],
               ["paidInSurplus", [60], false], ["re", [61], false],
               ["treasuryStock", [62], false],
+              ["subsidiaries", [21, 22, 23], false, "Investment in subsidiaries"],
+              ["otherInvestments", [25, 26, 27], false, "Other investments"],
+              ["depletable", [30], false], ["accumDepletion", [31], true],
+              ["goodwill", [34], false], ["organizationCosts", [35], false],
+              ["intangibles", [36], false], ["accumAmort", [37], true],
             ];
             const lines = { ...cur0.lines };
             const relabels = { ...cur0.relabels };
@@ -4575,7 +4671,9 @@ export const actions = {
               cash: "cash", ar: "trade receivables", inventories: "inventories",
               oca: "other current assets", loansToShareholders: "loans to shareholders",
               depreciable: "depreciable assets", land: "land",
-              otherAssets: "other assets",
+              otherAssets: "other assets", subsidiaries: "investment in subsidiaries",
+              otherInvestments: "other investments", depletable: "depletable assets",
+              goodwill: "goodwill", organizationCosts: "organization costs", intangibles: "intangibles",
             };
             /* The statements' own prior-year column is the opening balance
                sheet in the entity's own captions and currency, and the
@@ -4672,7 +4770,10 @@ export const actions = {
                 const le = lines[ke];
                 if (ke === kb || !ke.startsWith("BS:") || typeof le?.eoy !== "number" || typeof le?.boy === "number") return false;
                 const s2 = bsSide(ke) || (/^BS:(1[6-8])$/.test(ke) ? "assets" : /^BS:(4[89]|5[0-6])$/.test(ke) ? "liabilities" : null);
-                return !!side && s2 === side && Math.abs(Math.abs(le.eoy as number) - Math.abs(lb.boy as number)) <= tol;
+                /* Whole-dollar rounding at this rate, or 0.2% where the prior
+                   return used a slightly different rate ("3.673" for the
+                   3.6725 dirham peg). */
+                return !!side && s2 === side && Math.abs(Math.abs(le.eoy as number) - Math.abs(lb.boy as number)) <= Math.max(tol, Math.abs(lb.boy as number) * 0.002);
               });
               if (cands.length !== 1) continue;
               const ke = cands[0];
@@ -4687,7 +4788,47 @@ export const actions = {
               rv({
                 id: `boy-eoy-line-${kb}`, level: "info", category: "carry-forward", applied: true,
                 sourceLabel: caption,
-                message: `"${caption}" closes at ${(lines[kb]!.eoy as number).toLocaleString()} and the prior-year Form 5471 filed the same balance (${(lb.boy as number).toLocaleString()} opening) on Schedule F line ${kb.split(":")[1]}. This year's statements would have put it on line ${ke.split(":")[1]}; it was kept on the line the return was filed on so both columns show one account. Move it on Mapping & adjustments if the other line is right — and move the opening balance with it.`,
+                message: `"${caption}" closes at ${(lines[kb]!.eoy as number).toLocaleString()} and the prior-year Form 5471 filed the same balance (${(lb.boy as number).toLocaleString()} opening) on Schedule F line ${formRef(kb)}. This year's statements would have put it on line ${formRef(ke)}; it was kept on the line the return was filed on so both columns show one account. Move it on Mapping & adjustments if the other line is right — and move the opening balance with it.`,
+                target: `${SHEET.bs}!F${kb.split(":")[1]}`, source: cfSource,
+              });
+            }
+            /* The same, one account at a time. The account sits on a line
+               together with others this year ("Capital" beside "Fdo Rev.
+               Capital" on line 20b), while the prior return filed exactly its
+               balance on a line this year left empty (line 21, paid-in
+               surplus). The account follows its filed line. Only one account
+               of one line may match, and the line it leaves keeps the rest.
+               The tolerance covers whole-dollar rounding and a year-end rate
+               that differs from the one the return used by up to 0.5%. */
+            for (const kb of Object.keys(lines)) {
+              const lb = lines[kb];
+              if (!kb.startsWith("BS:") || typeof lb?.boy !== "number" || typeof lb?.eoy === "number" || !lb.boy) continue;
+              const ob = cur0.lines[kb];
+              if (ob && ob.boy === lb.boy) continue;
+              const side = bsSide(kb) || (/^BS:(1[6-8])$/.test(kb) ? "assets" : /^BS:(4[89]|5[0-6])$/.test(kb) ? "liabilities" : null);
+              if (!side) continue;
+              const tol2 = Math.max(Math.max(1, rate) * 1.01, Math.abs(lb.boy as number) * 0.005);
+              const hits: { ke: string; c: Contribution }[] = [];
+              for (const ke of Object.keys(contributions)) {
+                if (ke === kb || !ke.startsWith("BS:") || typeof lines[ke]?.eoy !== "number") continue;
+                const s2 = bsSide(ke) || (/^BS:(1[6-8])$/.test(ke) ? "assets" : /^BS:(4[89]|5[0-6])$/.test(ke) ? "liabilities" : null);
+                if (s2 !== side) continue;
+                const eoyCs = (contributions[ke] || []).filter((c) => c.field === "eoy");
+                if (eoyCs.length < 2) continue;    // a whole line is the case above
+                for (const c of eoyCs) if (c.value && Math.abs(Math.abs(c.value) - Math.abs(lb.boy as number)) <= tol2) hits.push({ ke, c });
+              }
+              if (hits.length !== 1) continue;
+              const { ke, c } = hits[0];
+              contributions[ke] = (contributions[ke] || []).filter((x) => x !== c);
+              contributions[kb] = [...(contributions[kb] || []), c];
+              lines[ke] = { ...lines[ke], eoy: r2((lines[ke]!.eoy as number) - c.value) };
+              lines[kb] = { ...lb, eoy: c.value };
+              if (!relabels[kb] && BS_LINES.find((l) => `BS:${l.row}` === kb)?.relabel) relabels[kb] = c.label;
+              aligned.push(`${c.label}: ${ke}→${kb}`);
+              rv({
+                id: `boy-eoy-line-${kb}`, level: "info", category: "carry-forward", applied: true,
+                sourceLabel: c.label,
+                message: `"${c.label}" closes at ${c.value.toLocaleString()} and the prior-year Form 5471 filed the same balance (${(lb.boy as number).toLocaleString()} opening) on Schedule F line ${formRef(kb)}. This year's statements would have put it on line ${formRef(ke)} with other accounts; it was kept on the line the return was filed on so both columns show one account. Move it on Mapping & adjustments if the other line is right — and move the opening balance with it.`,
                 target: `${SHEET.bs}!F${kb.split(":")[1]}`, source: cfSource,
               });
             }
@@ -5502,6 +5643,9 @@ export function bsBalance(lines: Record<string, LineValue>, field: "eoy" | "boy"
   return { assets: r2(assets), liabEquity: r2(liabEquity), diff: r2(assets - liabEquity) };
 }
 
+/** The form's own line reference for a Schedule F row ("BS:60" → "21"). */
+const formRef = (k: string): string => BS_LINES.find((l) => `BS:${l.row}` === k)?.ref || k.split(":")[1];
+
 /** Schedule F lines whose amount alone explains an imbalance: counted twice
     (or its partner missing) when it equals the gap, on the wrong side or
     with the wrong sign when it is half of it. "" when none does. */
@@ -5519,6 +5663,20 @@ export function bsSuspectText(lines: Record<string, LineValue>, field: "eoy" | "
   }
   if (!out.length) return "";
   return ` ${field === "boy" ? "The opening column comes from the prior-year return or the statements' prior-year column; " : ""}line(s) whose amount alone explains the gap: ${out.slice(0, 3).join("; ")}.`;
+}
+
+/** A company's name offered as an address line: it carries a legal form
+    (SAS, Ltd, LLC, GmbH, B.V., S.A. de C.V. …) and no digit, or it is the
+    entity's own legal or document name. Street addresses carry numbers. */
+const LEGAL_FORM = /(?:^|[\s,.])(s\.?\s?a\.?\s?s\.?|s\.?\s?a\.?|ltda?\.?|limited|llc|l\.l\.c\.|inc\.?|corp(?:oration)?\.?|gmbh|b\.?\s?v\.?|n\.?\s?v\.?|s\.?\s?r\.?\s?l\.?|s\.?\s?p\.?\s?a\.?|sarl|s\.?\s?de\s+r\.?\s?l\.?(?:\s+de\s+c\.?\s?v\.?)?|s\.?\s?a\.?\s+de\s+c\.?\s?v\.?|plc|pty|ag)\.?$/i;
+export function isCompanyNameNotAddress(value: string, ent: Pick<Entity, "name" | "profile" | "docClasses">): boolean {
+  const v = String(value || "").trim();
+  if (!v) return false;
+  const n = norm(v);
+  const names = [ent.profile?.legalName, ent.name, ...Object.values(ent.docClasses || {}).map((c) => (c as DocClass).entityName)]
+    .filter(Boolean).map((x) => norm(String(x)));
+  if (names.includes(n)) return true;
+  return !/\d/.test(v) && LEGAL_FORM.test(v);
 }
 
 /** Booked P&L rows that alone explain a net-income gap. A row booked twice,
@@ -5839,6 +5997,40 @@ function relatedPartyTarget(label: string, stems: Set<string>): "BS:19" | "BS:52
 /** The sign of the nearest row above this one, on the same page of the same
     document, that is printed further left and carries a figure — the total
     the row belongs to. 0 when there is none. */
+/** Does this document print its cost and expense rows as negative figures?
+    Decided by the rows themselves: more negative than positive figures among
+    the cost-section rows that are not structure. */
+/** What each banner routes an otherwise unplaceable caption to when nothing
+    in the caption itself says more: its catch-all. */
+const SECTION_FALLBACK: Partial<Record<Section, string>> = {
+  costs: "IS:OD", income: "IS:7", otherIncome: "IS:OI", cogs: "IS:12",
+  fixedAssets: "BS:28", equity: "BS:61", liabilities: "BS:OCL", termLiabilities: "BS:OL",
+};
+
+/** The innermost summary heading over this row that names a line of its own
+    and that the row's banner allows. */
+function summaryHeadTarget(m: MapRow): { target: string; caption: string } | null {
+  if (!m.summaryGroups || !m.summaryGroups.length || (m.feed !== "is" && m.feed !== "bs")) return null;
+  const sheet = m.feed === "is" ? "IS" : "BS";
+  for (const g of m.summaryGroups) {
+    const t = matchRuleScoped(g, state.rules, sheet);
+    if (t && t !== "SKIP" && sectionOk(m.section, t)) return { target: t, caption: g };
+  }
+  return null;
+}
+
+function costsPrintedNegative(rows: MapRow[], docId: string): boolean {
+  let neg = 0, pos = 0;
+  for (const r of rows) {
+    if (r.docId !== docId || r.skipReason || r.row.isBanner) continue;
+    if (r.section !== "costs" && r.section !== "cogs") continue;
+    const v = (r.row.values || [])[(r.row.values || []).length - 1];
+    if (typeof v !== "number" || !v) continue;
+    if (v < 0) neg++; else pos++;
+  }
+  return neg > pos;
+}
+
 function parentTotalSign(rows: MapRow[], m: MapRow): -1 | 0 | 1 {
   const at = rows.indexOf(m);
   const x = typeof m.x0 === "number" ? m.x0 : null;
@@ -7536,10 +7728,16 @@ export async function materializeCaseWrites(
 
   /* ---- Schedule M accounts receivable: known BOY only ---- */
   const rpBoy = ent.lines["BS:19"]?.boy;
+  const rpEoy = ent.lines["BS:19"]?.eoy;
   if (typeof rpBoy === "number" && rpBoy > 0) {
+    /* The closing balance is known whenever the year's balance sheet was
+       read; the warning used to say it was missing regardless. Nothing is
+       written either way: who the borrower is decides Schedule M. */
     rv({
       id: "schm-ar", level: "warn", category: "related-party",
-      message: `A related-party receivable of ${rpBoy.toLocaleString()} existed at the START of the year. Schedule M wants the year-end balance, which is unknown (missing 2024 balance sheet) — nothing was written; complete the accounts-receivable line when the balance sheet arrives.`,
+      message: typeof rpEoy === "number"
+        ? `A loan to shareholders or related persons (Schedule F line 6) opened the year at ${rpBoy.toLocaleString()} and closed it at ${rpEoy.toLocaleString()}. Schedule M wants the year-end balance if the borrower is a related person — nothing was written; confirm who the borrower is and enter it on the accounts-receivable line.`
+        : `A related-party receivable of ${rpBoy.toLocaleString()} existed at the START of the year. Schedule M wants the year-end balance, which is unknown (the year's balance sheet was not read) — nothing was written; complete the accounts-receivable line when the balance sheet arrives.`,
       target: `${SHEET.schM}!accounts receivable row`,
     });
   }
@@ -8645,6 +8843,11 @@ async function agentUnderstand(
       language: ([...langs.entries()].filter(([n]) => n !== "English").sort((a, b) => b[1] - a[1])[0]?.[0]) || "English",
       ocr: (ent.files || []).some((f) => f.id === docId && !!f.ocr),
       feedsLineItems: ["cfc-financial-statements", "cfc-tax-return", "trial-balance"].includes(cls.kind),
+      duplicateOf: cls.duplicateOf ?? null,
+      /* Only a column that actually carries a figure counts: a year printed
+         over an empty column is not a comparative statement. */
+      columnYears: [...new Set(rows.flatMap((m) => (m.row.years || []).filter((y, i) =>
+        typeof y === "number" && typeof (m.row.values || [])[i] === "number")) as number[])].sort((a, b) => b - a),
     });
   }
 
@@ -9296,6 +9499,19 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
           flags.push({
             id: `ai-profile-bad-${norm(cand.caption)}`, level: "warn", category: "profile", applied: false,
             message: `“${cand.caption}” was read as ${spec.label} = “${String(value).slice(0, 48)}” by the model, but that is another caption printed on the same form, not a value — NOT applied. Enter it in Basic Information if known.`,
+            source: cand.src?.doc || undefined,
+          });
+          continue;
+        }
+        /* An address line is never the company's own name. A statement
+           header ("PREMIUM CARE PLASTIC SURGERY SAS") offered as a candidate
+           was named an address line and the legal name landed in the
+           address column. */
+        if (/^addr[123]$/.test(p.t) && isCompanyNameNotAddress(String(value), fresh)) {
+          stillUnmatched.push(cand);
+          flags.push({
+            id: `ai-profile-bad-${norm(cand.caption)}`, level: "warn", category: "profile", applied: false,
+            message: `“${cand.caption}” was read as ${spec.label} = “${String(value).slice(0, 48)}” by the model, but that is the company's name, not an address — NOT applied. Enter the address in Basic Information if known.`,
             source: cand.src?.doc || undefined,
           });
           continue;

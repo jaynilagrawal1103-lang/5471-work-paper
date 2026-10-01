@@ -2367,3 +2367,148 @@ Each item was reproduced on the documents first; only confirmed items changed.
   RE tab F10 = 824,781.28 (= reviewer) and Sch J F15 824,781.28 (reviewer
   291,519 from a prior return not in the inputs); Kelt differs only by the
   freight conflict above.
+- Campbell feedback follow-up (after the round-21 push): an unnamed entity
+  ("Entity N", no legal name, no prior return) whose statements name one
+  company with a legal form takes that as its legal name (info
+  `legal-name-from-statements-*`, dist `EN9LEGALFROMSTMT`); an AI-proposed
+  address line that is the company's name (legal form, no digit, or equal to
+  the entity/document name) is refused (`isCompanyNameNotAddress`, dist
+  `EN9ADDRNOTNAME`); name/country/activity fields never take a bare figure
+  (`WORD_FIELDS`, dist `EN9WORDFLD` — "COSTOS DE ACTIVIDADES 0" had become
+  activity "0"). Campbell's PDFs carry no address, so it stays blank until a
+  questionnaire or prior 5471 is supplied. Campbell 12/12; 10 clients, Kelt,
+  Mancuso, Tanya, Sean identical; `test:round21` 16.
+
+### 2026-10-01 (22) — five-client ZIP: Sandra Federic, Ana Levy-Rincon, William Martinez, Santmyer/Gonzalez, Ryan Pulkrabek (both trees, uncommitted; owner said do not commit)
+
+Client files stay in the session scratchpad (`z5/`), never in the repo.
+
+- **Reading (pdfText.ts).** Machine-translated PDFs ("Machine Translated by
+  Google") print amounts ~0.7 line ABOVE their caption: `attachFloatingFigures`
+  (dist `EN9FLOATFIG`/`EN9attachFloat`) joins a figures-only row to the
+  caption-only row just below when closer than 0.85×text height and closer than
+  the row above (superscripts and real rows untouched). `CENTS_THEN_DIGIT`
+  (dist `EN9CENTSDIGIT`): a figure ending in its cents is complete, so
+  "145 455,70" + "687 949,47" are two cells.
+- **Column headers (engine.ts).** `periodSpanYear` ("1/2024 - 12/2024" = the
+  year; single months "12/2024" get no year) and `balanceDateYear` ("Opening
+  balance 01.01.2024" = 2023 closing; "Closing balance 31.12.2024" = 2024) in
+  `detectRulers` (dist `EN9SPANHDR`, `EN9SPANCELL`, `EN9SPANRULE`).
+- **Identification (classify.ts).** Title as a header field's value
+  ("Accounting report type | Income statement", `EN9TITLECELL`); pass 4b: a
+  shape/title page runs on to pages repeating its column header word for word
+  (`columnHeaderSignature`, dist `EN9colHdrSig`); pass 5: no statement page and
+  the schedule pages together show one statement's sides → that statement
+  (`EN9PASS5`). Year anchors "closing balance dd.mm.yyyy" and "m/yyyy - m/yyyy"
+  (`EN9LEDGERYEAR`). Company name drops a "… Company name" field label
+  (`EN9COLABEL`).
+- **Structure (sections.ts).** `snapIndents` (x within 1.2pt of its run's first
+  = one indent; dist `EN9SNAPIND`); `everyColumnAdds` (a group whose last
+  column is nil proves itself by every column, ≥1 non-nil; `EN9EVERYCOL`); a
+  value-less banner of another section ends a summary group, in structRows and
+  tagStatementGroups (`EN9BANNERBREAK`, `EN9SUMSECT`); `markContinuedPages`
+  (a page continues the statement unless the previous page ended on a
+  profit/result line; `EN9CONTPAGE`/`EN9markCont`); `summaryGroups` chain for
+  "summary of N rows" headings incl. banner-like captions with their own figure
+  (`EN9SUMCHAIN`, `EN9sumchain`).
+- **Booking (store.ts).** `summaryHeadTarget`: an account no rule places takes
+  the line of the proven summary heading it adds up to — before the banner's
+  catch-all (`SECTION_FALLBACK`) but never over a specific banner route, and as
+  last resort with no section (dist `EN9SUMHEADFN`, `EN9HEADAFTER`,
+  `EN9SUMHEAD`). Costs-negative statements: a positive cost is a credit
+  (`deduction-credit-*`, `EN9DEDCREDIT`); COGS lines IS:10-12 flip like
+  deductions. A DUPLICATE `EN9DEDMAG` block in dist was removed (it would have
+  undone the credit). Negative line-17 pool rows keep their sign only when that
+  is measurably closer to the stated P&L result (`EN9ODCREDIT` rewritten; the
+  earlier "never flip pool rows" broke Veillon −621 and Athletic Prime −52.70).
+  Bank loans under liabilities → OCL, never line 18 (`EN9BANKLOAN`). Sch M
+  receivable note quotes the closing balance when read (`EN9SCHMAR`).
+- **Prior return (carryForward.ts).** When no row prints both Sch F columns,
+  the (a)/(b) heading centres decide; a column-(a)-only figure is never carried
+  as closing (`columnHeadingCentres`, dist `EN9COLHEADS`).
+- **Lexicon/catalogue.** Banners 59 (Nordic: Materials and services = cogs;
+  Personnel expenses, Other operating expenses, Depreciation and impairment,
+  Interest expenses and other financial expenses = costs; Other interest and
+  financial income = otherIncome; Debt capital; Permanent/Variable
+  equivalents), banner length cap 60. Catalogue v19 (`EN9RULEV19A/S`): Income
+  taxes → 21a; other current assets / other receivables / other & short-term
+  loan receivables / loans granted / VAT receivable → OCA; long-term
+  receivables / construction in progress → line 13; late-payment penalties,
+  collection costs → 17; SKIP "profit before appropriations". PROFIT_LINE adds
+  "Profit (loss) for the period", "Result for the financial year".
+- Earlier in the round (Sandra/Ana/Martinez/Santmyer): BS:OI pool, catalogue
+  v18, prose-filter, costs-sign gating, BOY map + contribution-level BOY
+  alignment, netAssetsCreditor, detail-page groups, priorClosingUSD extras,
+  glued Sch J figures, columnBAnchor line numbers (see the code sentinels).
+- **Results.** Sandra IS 11/11, BS EOY 9/13, BOY USD 11/11; Ana IS 7/12, BS
+  6/14; Martinez IS 11/13, BS 9/12, BOY USD 11/11; Santmyer (Cecilia,
+  Charlie) BOY USD 9/11 and 10/10, EOY not verifiable (reviewer used ledgers
+  not supplied); Ryan vs filed 2024 Form 5471 23/43 (was 5/43): Sch C 1a-4, 11,
+  14, 19, 21a, 22 exact; Sch F cash, totals, AP, RE, L&E exact. Every
+  remaining difference is a reviewer classification (FX inside interest; AR vs
+  OCA; line 6 vs 13; EOY loan swap contradicting the return's own BOY) or a
+  missing document (fixed-asset register for 9a/9b; Charlie/Cecilia ledgers).
+- **Regression.** Mancuso, Kelt, Premium Care, Tanya, Sean, 10-client A/B
+  identical to Z9 except intended Martinez fixes. Suite 80 scripts, 79 pass
+  (`test:peg` pre-existing). New `test:r22` (30); updated `test:sections`
+  (59 banners, cap 60, fallback window), `test:detect` chunks 4-5,
+  `test:r17` (EN9matchColB signature), `test:uk` (EN9DETAILPNL helpers),
+  `test:p5` (section-route assertion).
+- **Owner decisions pending (reviewer conflicts):** FX on 8a vs inside
+  interest (Kelt reviewer vs Ryan's filed return); "Acreedores varios" AP vs
+  OL/OCL; face vs detailed P&L categories (Ana); staff/social costs line 11 vs
+  17; current receivables AR vs OCA; related-party evidence for line 6.
+
+### 2026-10-01 (23) — Heather Delaney / Gallium Ventures Limited (UK abridged accounts; both trees, uncommitted)
+
+Inputs used: 2023 Form 1040 (no Form 5471 — first year), Full and Registrar
+abridged statements (Registrar copy excluded as duplicate). 2024 return and
+reviewer WP held back as the answer key.
+
+- **Detail account recognised:** `TRADING_PNL_TITLE` ("(Abridged) Trading
+  Profit and Loss Account") counts as the detailed account only when the
+  document says it does "not form part of the statutory accounts"
+  (`NOT_STATUTORY`; dist `EN9TRADINGTITLE`, `EN9NSCALL`).
+- **Abridged face:** when the face P&L carries no turnover row and the detail
+  does, the detail is booked and the face rows it restates are skipped
+  (positional or year-keyed group sums — "-" cells leave rows one figure
+  short); `supplementaryDetailPages` returns `abridged: true`, own log line
+  (dist `EN9ABRIDGED`). Full face P&Ls (Ana) unchanged.
+- SKIP (catalogue v19 list extended): "profit before taxation" (the bare
+  "taxation" keyword booked it as tax), "shareholders' funds" (equity total
+  booked as retained earnings) (`EN9UKSKIP`).
+- `sectionOk("costs", "IS:7")` false: "Consultancy fees" under Administrative
+  Expenses had matched the service-income keyword (`EN9COSTSNOTGR`).
+- Wrapped captions: connectors within/after/than/less/due/by/with/at/current
+  ("Creditors: Amounts Falling Due Within" + "One Year"; "TOTAL ASSETS LESS
+  CURRENT" + "LIABILITIES" had booked net assets as a liability;
+  `EN9WRAPCONN`).
+- Tried and REVERTED: classifying a 5471-less Form 1040 as prior-year US
+  return — the statements were then read as a second corporation ("Entity 1").
+- Result: IS 3/15 → 10/15 (gross receipts, COGS, interest, totals, pre-tax
+  299,327, NI 223,652 exact); BS 1/10 → 2/10 but balanced (740,905 both sides).
+  Remaining are reviewer choices: compensation line 11 vs 17, FX 8a vs 8b,
+  21a sign (template), creditors netted into other current assets and net
+  assets as total assets (reviewer) vs gross AR/AP (tool), fixed assets
+  gross 9a/9b from the note vs net on line 13. Basic info gaps: address,
+  incorporation date, activity, books contact, ownership % (not in FS or need
+  questionnaire); client name shows "New stakeholder" (1040 not used).
+- `test:r22` 35; `test:schedc` SKIP-list window 3000 → 4000.
+
+### 2026-10-01 (24) — feedback "Unable to recognise the comparative P&L and Balance Sheet" (Heather Delaney; both trees, uncommitted)
+
+The statements' 2023 column WAS read and booked (Schedule F BOY 548,706 cash
+etc.; 5471 Schedule C has no prior-year column, so the P&L comparative is
+reference only). What was wrong was the agent's reporting:
+- `DocBrief.columnYears` (years heading a column that carries a figure) and
+  `DocBrief.duplicateOf`. `yearCheck`: when no prior-year document is present
+  but a current-year statement prints a `required-1` column, log "comparative
+  statements recognised" instead of the failure "no document covers 2023"
+  (dist `EN9COMPARATIVE-BEGIN/END`, `EN9CMPNOTE`, `EN9DOCCOLYEARS`).
+- `survey`: an excluded duplicate copy (Registrar accounts) reading no rows is
+  not "produced no readable line items" (`EN9DUPNOFAIL`).
+- `documentDiagnosis`: an unused prior-year file no longer says "Upload the
+  2024 statements" when the 2024 statements are booked (`EN9CYDOC`,
+  `EN9PRIORDIAG`).
+- Lines unchanged on every client; only those Review/log messages change.
+  `test:r22` 40.

@@ -65,9 +65,9 @@ const R = (label, amt, x0, page = 1) => ({
    only because of the heading it is printed under. */
 /* 49 since the Dutch cash group headings (Liquid assets, Checking/Saving accounts; 2Hats 2026-09-29); 48 since the Spanish P&L headings (Estado de Resultados, Ingresos, Costo de Ventas, Gastos; Veillon 2026-09-29); 44 since the QuickBooks "Accounts Receivable" group heading; 43 since UK (Companies Act) accounts: "Provisions for liabilities" and
    "Capital and reserves" (Barnomadics, 2026-09-28). */
-t("the two banner lexicons are the same 54 patterns", () => {
+t("the two banner lexicons are the same 59 patterns", () => {
   const BANNERS = load("src/prototype/wp/sectionBanners.ts").SECTION_BANNERS;
-  assert.strictEqual(BANNERS.length, 54);
+  assert.strictEqual(BANNERS.length, 59);
   assert.strictEqual(SHIPPED.SECTB.length, BANNERS.length);
   for (let i = 0; i < BANNERS.length; i++) {
     assert.strictEqual(String(BANNERS[i][0]), String(SHIPPED.SECTB[i][0]), "pattern " + i);
@@ -395,8 +395,8 @@ const store = fs.readFileSync(path.join(root, "src", "prototype", "wp", "store.t
 const engine = fs.readFileSync(path.join(root, "src", "prototype", "wp", "engine.ts"), "utf8");
 
 t("banners survive row hygiene and are emitted by the positioned reader", () => {
-  assert.ok(engine.includes("label.length <= 40 && isBannerLabel(label)"), "hygiene drops banners");
-  assert.ok(engine.includes("if (!opts?.raw && label.length <= 40 && isBannerLabel(label))"),
+  assert.ok(engine.includes("label.length <= 60 && isBannerLabel(label)"), "hygiene drops banners");
+  assert.ok(engine.includes("if (!opts?.raw && label.length <= 60 && isBannerLabel(label))"),
     "the reader does not emit banners, or emits them on raw pages");
 });
 
@@ -421,7 +421,7 @@ t("step 3 skips structure, applies the veto AFTER a target is chosen, then the f
   assert.ok(loop.includes("if (m.agentImportant && !m.row.isBanner) {"), "an important structural row reaches Review");
   assert.ok(/if \(m\.skipReason \|\| m\.row\.isBanner\) \{[\s\S]{0,2000}?continue;\s*\}/.test(loop), "and nothing in that branch books anything");
   const veto = loop.indexOf("if (target && m.section && !sectionOk(m.section, target)) target = null;");
-  const fallback = loop.search(/if \(!target && m\.section\) \{\s*target = sectionRoute\(m\.section, m\.row\.label\)/);
+  const fallback = loop.search(/if \(!target && m\.section\) \{\s*const byBanner = sectionRoute\(m\.section, m\.row\.label\)/);
   assert.ok(veto > 0 && fallback > veto, "the fallback must run after the veto, not before");
 });
 

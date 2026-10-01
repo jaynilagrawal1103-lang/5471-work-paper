@@ -67,7 +67,7 @@ a(dist.includes('EN9v=typeof a.value=="number"?(a.dp?EN9roundDp(a.value,a.dp):EN
 /* --- C2: the SKIP list --------------------------------------------------- */
 // The SKIP list keeps growing (v3 added the QuickBooks/Xero closing lines);
 // the bound is a safety net against a runaway match, not a size limit.
-const skip = dist.match(/P1=\[\{kw:\[([\s\S]{0,3000}?)\],t:"SKIP"\}/);
+const skip = dist.match(/P1=\[\{kw:\[([\s\S]{0,4000}?)\],t:"SKIP"\}/);
 a(!!skip, "the SKIP rule is findable in the bundle");
 const kws = skip ? skip[1].toLowerCase() : "";
 a(kws.includes('"total for income"'), "C2: QuickBooks 'Total for Income' is skipped");

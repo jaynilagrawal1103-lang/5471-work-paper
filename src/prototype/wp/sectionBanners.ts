@@ -80,7 +80,10 @@ export const SECTION_BANNERS: [RegExp, Section][] = [
   // Continental balance sheets name the two sides as capital, not as assets
   // and liabilities: "own capital" against "foreign capital".
   [/^(?:equity|share|own)\s+capital$/i, "equity"],
-  [/^(?:foreign|borrowed|outside|third.?party)\s+capital$/i, "liabilities"],
+  [/^(?:foreign|borrowed|outside|third.?party|debt)\s+capital$/i, "liabilities"],
+  /* Finnish "pysyvät / vaihtuvat vastaavat", as Google Translate renders it. */
+  [/^(?:permanent|fixed)\s+equivalents$/i, "fixedAssets"],
+  [/^(?:variable|current)\s+equivalents$/i, "assets"],
   /* OCR of a letter-spaced heading often drops the space
      ("CAPITAUXPROPRES", "ACTIFIMMOBILISE"); the joined form is the same
      heading. */
@@ -121,6 +124,15 @@ export const SECTION_BANNERS: [RegExp, Section][] = [
      printed under it was booked as a GAIN of 10.16 rather than a loss. */
   [/^other\s+expenses?$/i, "costs"],
   [/^(operating costs|operating expenses|expenses|costs|overheads|depreciations?|financial result|financial (?:income and )?expenses?|taxes|administrative expenses|selling expenses|personnel costs|employment expenses)$/i, "costs"],
+  /* The Nordic statutory layout (Finnish, Swedish), as printed in English or
+     machine-translated: "Materials and services" (the cost of the goods and
+     bought-in services sold: line 2), "Personnel expenses", "Depreciation
+     and impairment", "Other operating expenses". Without them every cost line
+     kept the "Turnover" banner and an unplaced cost was routed to gross
+     receipts. */
+  [/^(?:total\s+)?materials and services$/i, "cogs"],
+  [/^(?:total\s+)?(?:personnel expenses|staff expenses|other operating (?:expenses|charges)|depreciations? and (?:impairments?|amortisations?|amortizations?|write-?downs?)(?: losses)?|interest expenses and other financial expenses)$/i, "costs"],
+  [/^(?:other interest and financial income|income from other investments(?: in fixed assets)?)$/i, "otherIncome"],
   /* Bought-in cost of the goods sold. Its own section because a caption
      printed here can never be revenue, however it reads — see sectionOk. */
   [/^(?:total\s+)?(?:cost of (?:sales|goods sold)|cogs|cost of revenue|direct costs)$/i, "cogs"],

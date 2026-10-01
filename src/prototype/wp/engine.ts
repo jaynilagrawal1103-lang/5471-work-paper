@@ -192,6 +192,11 @@ export const POOLS: Record<string, { sheet: "is" | "bs"; rows: number[] }> = {
   "BS:OCA": { sheet: "bs", rows: [16, 17, 18] },
   "BS:OCL": { sheet: "bs", rows: [48, 49, 50] },
   "BS:OL": { sheet: "bs", rows: [54, 55, 56] },
+  /* Schedule F line 8, other investments: rows 25-27 under the =SUM in F24.
+     Without this pool a caption routed to "BS:OI" had no row to land on and
+     its balance was dropped silently (369 million of investments on one
+     Chilean balance sheet). */
+  "BS:OI": { sheet: "bs", rows: [25, 26, 27] },
 };
 
 /* Formula cells per sheet — buildWrites refuses these; the runtime belt in
@@ -368,6 +373,11 @@ export const DEFAULT_RULES: MappingRule[] = [
     "result before taxation", "result after taxation", "result before tax", "result after tax", "operating result", "gross operating result", "financial income and expenditure", "total financial income and expenditure", "result on ordinary activities", "net result",
     /* v17: Colombian (PUC) result subtotals. */
     "resultado bruto", "resultado operacional", "resultado antes de", "result. antes de", "resultado antes de impto", "resultado antes de corr",
+    /* v19: the Nordic pre-tax subtotal ("before appropriations and taxes"). */
+    "profit before appropriations", "profit (loss) before appropriations", "loss before appropriations",
+    /* v19: UK small-company statements — the pre-tax subtotal spelled out
+       ("taxation" alone is the tax charge) and the equity total. */
+    "profit before taxation", "loss before taxation", "profit/(loss) before taxation", "(loss)/profit before taxation", "shareholders' funds", "shareholders\u2019 funds", "shareholders funds", "total shareholders' funds",
   ], t: "SKIP" },
   { kw: ["gross receipt", "turnover", "revenue", "sales", "chiffre d'affaires", "ingresos", "ingresos operacionales", "ventas netas", "receita", "营业收入"], t: "IS:7" },
   { kw: ["service income", "services income", "consulting fees", "consultancy fees", "fees earned"], t: "IS:7" },
@@ -448,6 +458,24 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["antic. a trabajadores", "anticipo a trabajadores", "anticipos a trabajadores", "antic. imptos", "anticipo de impuestos", "anticipos de impuestos", "anticipo impuestos", "saldo a favor de impuestos"], t: "BS:OCA" },
   { kw: ["anticipo de clientes", "anticipos de clientes", "ingresos recibidos para terceros", "cesantias consolidadas", "cesant\u00edas consolidadas", "intereses sobre cesantias", "ints sobre cesantias", "vacaciones consolidadas", "vacaciones consolidas", "primas consolidadas", "ret. y aportes de nomina", "aportes de nomina", "retencion en la fuente", "retenci\u00f3n en la fuente", "retenciones ica"], t: "BS:OCL" },
   { kw: ["impto de renta", "impuesto de renta y complementarios", "impuesto de renta"], t: "IS:62" },
+  // Catalogue v18 (Chilean statements): real estate, participation accounts,
+  // term loans and current accounts, monetary correction, first-category tax
+  // printed among the expenses above the pre-tax result.
+  { kw: ["bienes ra\u00edces", "bienes raices", "bien ra\u00edz", "bien raiz", "inmuebles"], t: "BS:28" },
+  { kw: ["cta. participaci\u00f3n", "cta participaci\u00f3n", "cta. participacion", "cta participacion", "cta. particip.", "cta particip.", "cuenta en participaci\u00f3n", "cuentas en participaci\u00f3n", "cuenta en participacion"], t: "BS:OI" },
+  { kw: ["pr\u00e9stamo a plazo", "prestamo a plazo", "pr\u00e9stamos a largo plazo", "prestamos a largo plazo", "cta. cte.", "cta cte"], t: "BS:OL" },
+  { kw: ["correcci\u00f3n monetaria", "correccion monetaria"], t: "IS:20" },
+  { kw: ["talent fee", "talent fees", "performer fees", "crew fees"], t: "IS:10" },
+  { kw: ["accu. dep", "accum. dep", "accum dep", "acc. dep", "accumulated dep", "accum. depreciation", "accu. depreciation"], t: "BS:29" },
+  { kw: ["impuesto 1era cat", "impuesto 1era categor\u00eda", "impuesto 1era categoria", "impuesto primera categor\u00eda", "impuesto primera categoria", "impuesto de primera categor\u00eda"], t: "IS:32" },
+
+  /* v19: statutory captions of the Nordic layout, in English or machine
+     translated ("Income taxes" closing the P&L, current and long-term
+     receivables, construction in progress, late-payment penalties). */
+  { kw: ["income taxes", "income taxes for the period", "income taxes for the financial period"], t: "IS:62" },
+  { kw: ["other current assets", "other receivables", "other loan receivables", "short-term loan receivables", "current loan receivables", "loans granted", "value added tax receivable", "vat receivable"], t: "BS:OCA" },
+  { kw: ["long-term receivables", "long-term loan receivables", "construction in progress", "unfinished construction", "assets under construction"], t: "BS:39" },
+  { kw: ["penalties for late payment", "late payment penalties", "collection costs"], t: "IS:OD" },
   /* v16: annual accounts drawn up the Dutch way (Collaborate and Eight):
      housing is rent, "interest and similar expenditure" is interest, currency
      and payment differences are exchange results, debts to participants are
@@ -722,6 +750,11 @@ export function matchRuleScoped(label: string, rules: MappingRule[], sheet: "IS"
      bare "capital" keyword claimed the equity total for common stock and
      booked the whole accumulated deficit onto Schedule F line 20b. */
   if (/^sumas?\s+de(l|\s+l[ao]s?)?\b/.test(l)) return "SKIP";
+  /* An abbreviated accumulated depreciation ("Accu. Dep - Furniture &
+     fixtures") is the contra line, whatever asset it names: the asset's own
+     keyword is longer and would otherwise win, netting the depreciation into
+     line 9a. */
+  if (sheet !== "IS" && !/^total\b/.test(l) && /(?:^|[^a-z])(?:accu|accum|acc)\.?\s*dep(?:r|reciation)?\b/.test(l)) return "BS:29";
   // Spanish totals can put "total" at either end. Catch them before broad
   // ingresos/gastos keywords see a second revenue or deduction line.
   if (/^(?:total(?:es)?\s+(?:de\s+)?)?(?:ingresos|gastos|costos|activos|pasivos|patrimonio)(?:\s+totales?)?$/.test(l)) return "SKIP";
@@ -1023,8 +1056,9 @@ export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
     /* A short caption with no figure that names a section is not noise: it is
        the banner that tells every row beneath it which statement it belongs
        to. Kept, flagged, and never booked. Length-capped because a long line
-       with no number is prose, not a heading. */
-    if (label.length <= 40 && isBannerLabel(label)) {
+       with no number is prose, not a heading; 60 characters, because
+       "Interest expenses and other financial expenses" is a heading. */
+    if (label.length <= 60 && isBannerLabel(label)) {
       return { ...row, label, values: [], years, isBanner: true };
     }
     return null;
@@ -1039,9 +1073,10 @@ export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
      of a sentence, so the whole row was discarded before anything could map
      it. A stop after a token of three letters or fewer is an abbreviation,
      and so is one after a capitalised short word or an all-capitals word
-     ("ANTIC. A TRABAJADORES", "(-) Depr. Acumulada", "RESULT. ANTES DE"):
+     ("ANTIC. A TRABAJADORES", "(-) Depr. Acumulada", "RESULT. ANTES DE",
+     "Cta. Particip. Haidrex" — a capitalised word of up to ten letters):
      a sentence ends on a lower-case word. */
-  const prose = label.replace(/\b([A-Za-z]{1,3}|[A-Z][A-Za-z]{0,5}|[A-Z]{2,8})\.(?=\s)/g, "$1");
+  const prose = label.replace(/\b([A-Za-z]{1,3}|[A-Z][A-Za-z]{0,9}|[A-Z]{2,8})\.(?=\s)/g, "$1");
   if (/[.!?]\s+\S/.test(prose) || /\n/.test(label)) return null;
   if (label.split(/\s+/).length > 9) return null;
   /* Unmatched brackets mean the caption is the tail (or head) of a sentence
@@ -1385,11 +1420,42 @@ const REG_NO_NAMED = /^(?:company|registered|registration)\s*(?:no\.?|number|nr\
 
     A header cell that is not a bare year has to be confirmed by a second year
     column, so a single dated caption cannot rule a page on its own. */
+/* Two header styles a ledger export uses instead of a bare year.
+
+   A period range heads the year-to-date column of a monthly report:
+       12/2024 | 12/2023 | 1/2024 - 12/2024 | 1/2023 - 12/2023
+   "12/2024" alone is December only; the range is the year. Without this the
+   two ranges counted as stray caption text, no ruler was found, and the row's
+   first number (one month) was all that could be taken.
+
+   A dated balance heads a balance sheet column:
+       Opening balance 01.01.2024 | Balance change | Closing balance 31.12.2024
+   The column is the balance AT that date, so an opening balance on the first
+   day of a year is the previous year's closing figure. */
+const PERIOD_SPAN = /^(?:(?:\d{1,2}|[A-Za-z]{3,9})[\s./-]*){0,2}((?:19|20)\d{2})\s*[-–—]\s*(?:(?:\d{1,2}|[A-Za-z]{3,9})[\s./-]*){0,2}((?:19|20)\d{2})$/;
+export function periodSpanYear(text: string): number | null {
+  const m = PERIOD_SPAN.exec(String(text ?? "").trim());
+  if (!m) return null;
+  const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+  return b === a || b === a + 1 ? b : null;
+}
+const BALANCE_DATE = /\b(opening|beginning|closing|ending)\s+balance\b[^0-9]{0,12}(\d{1,2})[./-](\d{1,2})[./-]((?:19|20)\d{2})\s*$/i;
+export function balanceDateYear(text: string): { year: number; at: number } | null {
+  const t = String(text ?? "").trim();
+  const m = BALANCE_DATE.exec(t);
+  if (!m) return null;
+  const d = parseInt(m[2], 10), mo = parseInt(m[3], 10), y = parseInt(m[4], 10);
+  // Day-first unless that is impossible; 1 January either way.
+  const firstOfYear = d === 1 && mo === 1;
+  return { year: firstOfYear ? y - 1 : y, at: m.index };
+}
+
 export function detectRulers(doc: PdfDoc): ColumnRuler[] {
   const out: ColumnRuler[] = [];
   for (const r of doc.rows) {
     const years: Array<{ year: number; x0: number; x1: number; bare: boolean }> = [];
     const worded: Array<{ year: number; x0: number; x1: number }> = [];
+    const spans: Array<{ year: number; x0: number; x1: number }> = [];
     const rest: PdfCell[] = [];
     let notes: { x0: number; x1: number } | undefined;
     // A registration number is only recognised on a line that names it.
@@ -1398,6 +1464,16 @@ export function detectRulers(doc: PdfDoc): ColumnRuler[] {
       const t = c.text.trim();
       if (NOTES_HEAD.test(t)) { notes = { x0: c.x0, x1: c.x1 }; continue; }
       if (named && (REG_NO_LABEL.test(t) || REG_NO.test(t))) continue;
+      const span = periodSpanYear(t);
+      if (span !== null) { spans.push({ year: span, x0: c.x0, x1: c.x1 }); continue; }
+      const bd = balanceDateYear(t);
+      if (bd) {
+        // "Balance change Closing balance 31.12.2024" can arrive as one cell;
+        // the column starts where its own words do.
+        const x0 = c.x0 + ((c.x1 - c.x0) * bd.at) / Math.max(1, t.length);
+        years.push({ year: bd.year, x0, x1: c.x1, bare: false });
+        continue;
+      }
       const bare = /^(19|20)\d{2}$/.test(c.text);
       const y = bare ? parseInt(c.text, 10) : headerYear(c.text);
       if (bare) years.push({ year: y as number, x0: c.x0, x1: c.x1, bare: true });
@@ -1408,6 +1484,14 @@ export function detectRulers(doc: PdfDoc): ColumnRuler[] {
     }
     // Whatever else is on the line is the row's caption, never a figure.
     const quiet = !(rest.length > 1 || rest.some((c) => c.text.length > 14 || numericCell(c.text) !== null));
+    /* Year-to-date ranges rule the row; the single-month columns beside them
+       are left without a year, so their figures are never taken. */
+    if (spans.length && !worded.length && quiet && years.every((x) => !x.bare) &&
+        new Set(spans.map((x) => x.year)).size === spans.length) {
+      out.push({ page: r.page, y: r.y, cols: spans.map((x) => ({ year: x.year, x0: x.x0, x1: x.x1 })), ...(notes ? { notes } : {}) });
+      continue;
+    }
+    if (spans.length) continue;
     if (years.length >= 1 && years.length <= 4 && !worded.length && quiet &&
         (years.every((x) => x.bare) || years.length >= 2)) {
       out.push({ page: r.page, y: r.y, cols: years.map((x) => ({ year: x.year, x0: x.x0, x1: x.x1 })), ...(notes ? { notes } : {}) });
@@ -1612,7 +1696,7 @@ export function extractPositionedRows(
          a section is the banner the rows beneath it belong to, so it is
          emitted rather than dropped. Never on a raw page: those are narrative
          (equity movements), where a bare line is prose, not a heading. */
-      if (!opts?.raw && label.length <= 40 && isBannerLabel(label)) {
+      if (!opts?.raw && label.length <= 60 && isBannerLabel(label)) {
         out.push({ label, values: [], years: undefined, page: row.page, x0, isBanner: true });
       }
       continue;

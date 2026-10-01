@@ -13,13 +13,18 @@
  *   --cols F,H                                  score these columns only (e.g.
  *                                               the current-year columns when
  *                                               no prior-year return was given)
+ *   --lines                                     score form lines only (rows whose
+ *                                               caption starts with a line number
+ *                                               such as "17", "9a" or "b"): the
+ *                                               totals a return reports, not the
+ *                                               detail rows beneath them
  *   --json out.json                             also write the full result
  *
  * What counts as a "checked line": a row, on a scored sheet, where either
  * work paper holds a non-zero figure. Rows are paired by their caption text
  * (columns A–C), not their address, so rows a reviewer inserts do not shift
  * the comparison. A line matches when every figure on it agrees within the
- * tolerance (or 0.01% of the reviewer's figure, whichever is larger). Text,
+ * tolerance (or 0.00001% of the reviewer's figure, whichever is larger). Text,
  * dates, line numbers and blank-versus-zero differences are not scored.
  *
  * The tool writes formulas without cached results, so a plain reader sees
@@ -46,12 +51,13 @@ const DEFAULT_SHEETS = [
 ];
 
 function args(argv) {
-  const out = { files: [], sheets: DEFAULT_SHEETS, tol: 1, recalc: true, json: null, cols: null };
+  const out = { files: [], sheets: DEFAULT_SHEETS, tol: 1, recalc: true, json: null, cols: null, lines: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--sheets") out.sheets = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
     else if (a === "--tol") out.tol = Number(argv[++i]);
     else if (a === "--no-recalc") out.recalc = false;
+    else if (a === "--lines") out.lines = true;
     else if (a === "--json") out.json = argv[++i];
     else if (a === "--cols") out.cols = new Set(argv[++i].split(",").map((c) => c.trim().toUpperCase()).filter(Boolean));
     else out.files.push(a);
@@ -127,6 +133,8 @@ function rowsOf(cells) {
     const r = byRow.get(row);
     if (c.text && c.text.trim() && col.length === 1 && col <= "C") r.text.push([col, c.text.trim()]);
     if (typeof c.v === "number") r.nums.set(col, c.v);
+    // A form line number printed as a number in column A or B ("13", "17").
+    if ((col === "A" || col === "B") && typeof c.v === "number" && Number.isInteger(c.v) && c.v > 0 && c.v < 30) r.lineNo = true;
   }
   const seen = new Map();
   return [...byRow.values()].sort((a, b) => a.row - b.row).map((r) => {
@@ -134,7 +142,7 @@ function rowsOf(cells) {
     const base = text.toLowerCase().replace(/\s+/g, " ");
     const n = (seen.get(base) || 0) + 1;
     seen.set(base, n);
-    return { row: r.row, key: base ? base + "#" + n : "", caption: text.slice(0, 70), nums: r.nums };
+    return { row: r.row, key: base ? base + "#" + n : "", caption: text.slice(0, 70), nums: r.nums, lineNo: !!r.lineNo };
   });
 }
 
@@ -190,7 +198,9 @@ async function main() {
     const a = ref[name], b = tool[name];
     if (!a || !b) { result.sheets.push({ name, missing: !a ? "reviewer" : "tool" }); continue; }
     let checked = 0, matched = 0;
+    const LINE_ROW = /^(\d{1,2}\s?[a-d]?|[a-d])\s*\|/i;
     for (const [ra, rb] of alignRows(rowsOf(a), rowsOf(b))) {
+      if (o.lines && !(ra && ra.lineNo) && !(rb && rb.lineNo) && !LINE_ROW.test((ra && ra.caption) || (rb && rb.caption) || "")) continue;
       const cols = new Set([...(ra ? ra.nums.keys() : []), ...(rb ? rb.nums.keys() : [])]);
       let figures = 0, ok = true;
       const diffs = [];
@@ -200,7 +210,7 @@ async function main() {
         if (Math.abs(xv) < 0.005 && Math.abs(yv) < 0.005) continue;
         if (isLabelNumber(xv, yv)) continue;
         figures++;
-        if (Math.abs(xv - yv) > Math.max(o.tol, Math.abs(xv) * 1e-4)) { ok = false; diffs.push({ col, reviewer: xv, tool: yv }); }
+        if (Math.abs(xv - yv) > Math.max(o.tol, Math.abs(xv) * 1e-7)) { ok = false; diffs.push({ col, reviewer: xv, tool: yv }); }
       }
       if (!figures) continue;
       checked++;
@@ -216,7 +226,7 @@ async function main() {
   }
   result.pct = result.checked ? Math.round((result.matched / result.checked) * 1000) / 10 : null;
 
-  console.log(`Scorecard — ${result.tool} against ${result.reviewer} (${recalc}${o.cols ? `; columns ${[...o.cols].join(", ")} only` : ""})`);
+  console.log(`Scorecard — ${result.tool} against ${result.reviewer} (${recalc}${o.cols ? `; columns ${[...o.cols].join(", ")} only` : ""}${o.lines ? "; form lines only" : ""})`);
   for (const s of result.sheets) {
     if (s.missing) console.log(`  ${s.name.padEnd(20)} not in the ${s.missing}'s workbook`);
     else if (s.checked) console.log(`  ${s.name.padEnd(20)} ${String(s.matched).padStart(4)} of ${String(s.checked).padEnd(4)} ${s.pct}%`);

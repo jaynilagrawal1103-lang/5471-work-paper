@@ -483,7 +483,7 @@ function mergeWrappedLabels(doc: PdfDoc): PdfDoc {
       /[A-Za-z]/.test(s.cells[0].text) && !NUMERIC_TEXT.test(s.cells[0].text) &&
       Math.abs(r.cells[0].x0 - s.cells[0].x0) <= 30 &&
       (/^[a-z]/.test(s.cells[0].text) ||
-        /(?:\b(?:and|of|or|for|to|in|the|from|on|before|per|not)|[-–,])$/i.test(r.cells[0].text.trim()))
+        /(?:\b(?:and|of|or|for|to|in|the|from|on|before|per|not|within|after|than|less|due|by|with|at|current)|[-–,])$/i.test(r.cells[0].text.trim()))
     ) {
       s.cells[0] = { ...s.cells[0], text: r.cells[0].text.trim() + " " + s.cells[0].text, x0: r.cells[0].x0 };
       continue;   // drop the orphan; the continuation row is pushed on its turn
@@ -526,6 +526,7 @@ async function pdfjsToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
   });
   const doc = await task.promise;
   const rows: PdfRow[] = [];
+  const heights: number[] = [];   // tallest run on each row, parallel to rows
   let pageCount = 0;
   try {
     pageCount = doc.numPages;
@@ -571,10 +572,13 @@ async function pdfjsToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
             // Gaps are in points here: beyond ~1.2 em it is a column boundary.
             close();
             buf = it.text; x0 = it.x; end = it.x + it.w;
-          } else if (gap > it.h * 0.12 && TWO_FIGURES(buf, it.text)) {
+          } else if (gap > it.h * 0.12 && (TWO_FIGURES(buf, it.text) || CENTS_THEN_DIGIT(buf, it.text))) {
             /* Two complete figures a space apart are two columns, however
                close: a three-year statement sets its columns tighter than
-               the 1.2 em rule above expects. */
+               the 1.2 em rule above expects. A figure that already ends in
+               its cents is complete too, so the next run of digits starts a
+               new column even when it is the head of a space-grouped figure
+               ("145 455,70" then "687 949,47"). */
             close();
             buf = it.text; x0 = it.x; end = it.x + it.w;
           } else {
@@ -586,20 +590,58 @@ async function pdfjsToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
         const cleaned = cells
           .map((c) => ({ ...c, text: c.text.trim() }))
           .filter((c) => c.text !== "");
-        if (cleaned.length) rows.push({ page: p, y: baseline, cells: cleaned });
+        if (cleaned.length) { rows.push({ page: p, y: baseline, cells: cleaned }); heights.push(Math.max(...line.map((x) => x.h))); }
         line = [];
       };
+      const first = rows.length;
       for (const it of items) {
         const tol = Math.max(2, it.h * 0.4);
         if (Math.abs(it.y - baseline) > tol) { flush(); baseline = it.y; }
         line.push(it);
       }
       flush();
+      attachFloatingFigures(rows, heights, first);
     }
   } finally {
     await doc.destroy();
   }
   return { pageCount, rows };
+}
+
+/** The running cell ends in a figure with its cents and the next item opens
+    with a digit: the figure is finished, so the digits begin the next one. */
+export const CENTS_THEN_DIGIT = (buf: string, next: string) =>
+  /^[-\u2212(]?\d+[.,]\d{2}\)?-?$/.test(buf.trim().split(/\s+/).pop() || "") &&
+  /^[-\u2212(]?\d/.test(next.trim());
+
+/* A machine-translated PDF (Google Translate's "Machine Translated by
+   Google" output) re-sets every caption in a new font, so its baseline drops
+   about two-thirds of a line below the amounts it belongs to:
+       658.1                     970,46   -242,61   727,85
+       653.6  Machinery and equipment
+   Read line by line, the amounts become a row with no caption and the caption
+   a row with no amounts, and nothing on the page maps. A figures-only row is
+   joined to the caption-only row just below it when that caption sits closer
+   than a normal line feed (under 0.85 of the text height) and closer than the
+   row above. Superscripts (smaller text) and real rows (a full line apart)
+   are left alone. */
+const FIGURES_ONLY = /^[-\u2212(]?[\d][\d\s.,']*\)?-?$/;
+const AMOUNT_LIKE = /\d[.,]\d{2}\)?-?$|\d{1,3}(?:[\s.,]\d{3})+/;
+export function attachFloatingFigures(rows: PdfRow[], heights: number[], from: number): void {
+  for (let i = rows.length - 2; i >= from; i--) {
+    const r = rows[i], s = rows[i + 1];
+    if (!r || !s || r.page !== s.page) continue;
+    const hr = heights[i], hs = heights[i + 1];
+    const dy = r.y - s.y;
+    if (!(dy > 0 && dy <= 0.85 * Math.max(hr, hs) && hr >= 0.75 * hs)) continue;
+    if (!r.cells.every((c) => FIGURES_ONLY.test(c.text)) || !r.cells.some((c) => AMOUNT_LIKE.test(c.text))) continue;
+    if (!/[A-Za-z\u00C0-\u024F]/.test(s.cells[0].text) || s.cells.some((c) => FIGURES_ONLY.test(c.text))) continue;
+    const q = i > from ? rows[i - 1] : null;
+    if (q && q.page === r.page && q.y - r.y <= dy) continue;
+    s.cells = [...s.cells, ...r.cells];
+    rows.splice(i, 1);
+    heights.splice(i, 1);
+  }
 }
 
 /** The last word of the running cell and the next item are both complete

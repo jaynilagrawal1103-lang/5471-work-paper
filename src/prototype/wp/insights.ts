@@ -222,6 +222,11 @@ export function documentDiagnosis(ent: InsightEntity): InsightItem[] {
   const cy = Number((/(\d{2,4})\s*$/.exec(ent.profile.cyEnd || "") || [])[1]) || null;
   const cyYear = cy === null ? null : cy < 100 ? 2000 + cy : cy;
   const me = ent.profile.legalName || ent.name || "";
+  /* The work paper year's own statements, already booked. When they are in,
+     a prior-year file left unused is not a missing document: their
+     comparative column already supplied the opening balances. */
+  const cyDoc = cyYear === null ? undefined : Object.values(ent.docClasses || {}).find((d) =>
+    !d.duplicateOf && d.statementYear === cyYear && STATEMENT_KINDS.has(d.kind) && d.kind !== "unknown" && booked.get(d.fileName));
   for (const c of Object.values(ent.docClasses || {})) {
     if (c.duplicateOf || !STATEMENT_KINDS.has(c.kind)) continue;
     if (booked.get(c.fileName)) continue;
@@ -245,6 +250,10 @@ export function documentDiagnosis(ent: InsightEntity): InsightItem[] {
       why = "it is a foreign tax return, not a set of financial statements — only its income and expense boxes can be used";
       next = "Keep it for Schedule E (tax), and ask for the financial statements for the balance sheet.";
       need = "the financial statements (balance sheet and profit and loss) for the same year";
+    } else if (cyDoc && cyYear && c.statementYear === cyYear - 1) {
+      why = `it reports on ${c.statementYear}, the prior year; the ${cyYear} figures and the ${c.statementYear} opening column come from the comparative statements in ${cyDoc.fileName}`;
+      next = "Nothing to upload for this year. Keep it as reference, or set its document type on the Documents tab if its own figures are needed.";
+      need = `none for ${cyYear} — last year's Form 5471, if one was filed, for Schedule J's opening E&P`;
     } else if (c.statementYear && cyYear && c.statementYear !== cyYear) {
       why = `it reports on ${c.statementYear}, not the work paper year ${cyYear}`;
       next = `Upload the ${cyYear} statements, or change the work paper year if ${c.statementYear} is the year being prepared.`;

@@ -75,6 +75,9 @@ export type MapRow = {
       banners not. Read when the account's own caption matches no rule: the
       statement's heading says what it is. Set by tagStatementGroups. */
   groups?: string[];
+  /** Headings whose printed figure is the sum of this row and its siblings,
+      innermost first. Used only to place a row nothing else places. */
+  summaryGroups?: string[];
   /** Set by the agent's understanding phase when it judged a row the structure
       pass dropped to be a line item after all. Carries the reason, so the
       Review row can quote it. Never books anything by itself. */
@@ -124,6 +127,7 @@ export const amtOf = (m: MapRow): number | null => {
 export function tagStatementGroups(rows: MapRow[]): MapRow[] {
   const label = (r: MapRow) => String(r.row.label || "").trim();
   const chain = new Map<MapRow, Array<{ caption: string; size: number }>>();
+  const summaryChain = new Map<MapRow, Array<{ caption: string; size: number }>>();
   for (let i = 0; i < rows.length; i++) {
     const m = rows[i];
     const why = m.skipReason || "";
@@ -134,7 +138,10 @@ export function tagStatementGroups(rows: MapRow[]): MapRow[] {
     let caption = "";
     let withParent: MapRow | null = null;
     if (/^summary of the \d+ row\(s\) indented beneath it$/.test(why)) {
-      for (let j = i + 1; j < rows.length && sameDoc(rows[j]) && indentOf(rows[j]) > ind; j++) members.push(rows[j]);
+      /* The same boundary structRows used to prove the summary: a heading of
+         another section ends it ("Turnover" does not own the costs). */
+      const otherSection = (r: MapRow) => !!r.row.isBanner && !!r.section && !!m.section && r.section !== m.section;
+      for (let j = i + 1; j < rows.length && sameDoc(rows[j]) && indentOf(rows[j]) > ind && !otherSection(rows[j]); j++) members.push(rows[j]);
       caption = label(m);
     } else if (/^total of ".+" and the \d+ row\(s\) beneath it$/.test(why)) {
       let j = i - 1;
@@ -155,6 +162,21 @@ export function tagStatementGroups(rows: MapRow[]): MapRow[] {
       }
       caption = label(m).replace(TOTAL_WORD, "").replace(/^[\s:–-]+/, "").trim();
     } else continue;
+    /* The heading of a proven summary is weaker evidence than a printed
+       "Total <heading>" (on a scan the indent is the OCR's guess), so it is
+       kept apart: it only places an account that no rule, banner or printed
+       group could ("7500, Vehicle leasing" under "Other operating expenses
+       118,328.32"), and never overrides one that something else placed. A
+       caption that reads like a section banner counts here: carrying its own
+       proven figure ("Other current assets 1,848.16"), it is a group. */
+    if (caption && /^summary of/.test(why)) {
+      for (const r of members) {
+        if (r.row.isBanner || r.skipReason || amtOf(r) === null || TOTAL_WORD.test(label(r))) continue;
+        const c = summaryChain.get(r) || [];
+        if (!c.some((g) => g.caption === caption)) c.push({ caption, size: members.length });
+        summaryChain.set(r, c);
+      }
+    }
     if (!caption || isBannerLabel(caption)) continue;
     /* The whole chain, outer groups included: an account's own group may be
        a heading no rule knows ("1301 · Bar Stock") while the group around it
@@ -177,6 +199,7 @@ export function tagStatementGroups(rows: MapRow[]): MapRow[] {
     for (const r of leaves) if (!r.group) r.group = caption;
   }
   for (const [r, c] of chain) r.groups = c.sort((a, b) => a.size - b.size).map((g) => g.caption);
+  for (const [r, c] of summaryChain) r.summaryGroups = c.sort((a, b) => a.size - b.size).map((g) => g.caption);
   return rows;
 }
 
@@ -242,6 +265,34 @@ export function dropFurniture(rows: MapRow[]): MapRow[] {
   });
 }
 
+/** A statement that runs onto the next page keeps its section there. The
+    page reset (each new page starts with no section) stops a balance sheet
+    inheriting the profit and loss's "costs" — but a P&L whose page 3 opens
+    with "7990, Other entertainment expenses" is still in its expenses, and
+    with the reset those rows lost the banner that places them. The page is
+    marked as continuing when the same document's previous page carried on to
+    its last row without closing the statement (no profit or result line last)
+    and the new page does not open with a heading of its own. */
+export function markContinuedPages<T extends MapRow>(rows: T[]): T[] {
+  let prevPage: number | null = null, prevDoc: string | null = null;
+  let lastValued: T | null = null;
+  const out: T[] = [];
+  for (const m of rows) {
+    const page = m.row && m.row.page;
+    if (typeof page !== "number") { out.push(m); continue; }
+    if (page !== prevPage || m.docId !== prevDoc) {
+      const lastLabel = lastValued ? String(lastValued.row.label || "") : "";
+      const cont = prevPage !== null && m.docId === prevDoc && page === prevPage + 1 && !m.row.isBanner
+        && !!lastValued && !isProfitLine(lastLabel) && !isResultSubtotal(lastLabel);
+      if (m.docId !== prevDoc) lastValued = null;
+      prevPage = page; prevDoc = m.docId as string;
+      out.push(cont && !m.continuesSection ? { ...m, continuesSection: true } : m);
+    } else out.push(m);
+    if (!m.row.isBanner && m.row.values && m.row.values.length) lastValued = m;
+  }
+  return out;
+}
+
 /* ---------- structural subtotals ---------- */
 
 /* "NET OTHER INCOME" and "NET OPERATING INCOME" are QuickBooks' own summary
@@ -284,9 +335,52 @@ export const same = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.02, 
 
     The reason is kept on the row rather than deleting it, so the log can name
     what was dropped and the preparer can disagree. */
+/** Indents a hair apart are one indent. A machine-translated statement
+    re-sets each caption in its own font, so rows that are visually flush sit
+    at 56.0, 56.2 and 56.6: read literally, "Sales, securities and real
+    estate" at 56.6 became a child of "General sales accounts" at 56.0, no
+    group added up, and a heading was booked on top of its own accounts.
+    Within one document, x positions closer than 1.2 points to the first of
+    their run are snapped to it; real indent steps are several points wide. */
+function snapIndents(rows: MapRow[]): void {
+  const byDoc = new Map<string, MapRow[]>();
+  for (const m of rows) {
+    if (typeof m.x0 !== "number") continue;
+    const k = String(m.docId ?? "");
+    if (!byDoc.has(k)) byDoc.set(k, []);
+    byDoc.get(k)!.push(m);
+  }
+  for (const list of byDoc.values()) {
+    const xs = [...new Set(list.map((m) => m.x0 as number))].sort((a, b) => a - b);
+    const rep = new Map<number, number>();
+    let start = xs[0];
+    for (const x of xs) { if (x - start > 1.2) start = x; rep.set(x, start); }
+    for (const m of list) m.x0 = rep.get(m.x0 as number);
+  }
+}
+
+/** A row whose LAST figure is nil can still prove itself a group's total by
+    its other columns. "Profit (loss) for the period  281,466.94  0.00" over
+    "2370, Result for the financial period  281,466.94  0.00" is one figure
+    printed twice; tested on the closing column alone (nil, which proves
+    nothing) both were booked and the opening retained earnings doubled.
+    Every column must add up, and at least one of them must be non-nil. */
+function everyColumnAdds(m: MapRow, kids: MapRow[]): boolean {
+  const v = (m.row.values || []) as number[];
+  if (v.length < 2 || !kids.length || !kids.every((k) => ((k.row.values || []) as number[]).length === v.length)) return false;
+  let nonNil = false;
+  for (let c = 0; c < v.length; c++) {
+    const sum = kids.reduce((n, k) => n + ((k.row.values as number[])[c] || 0), 0);
+    if (!same(sum, v[c])) return false;
+    if (v[c] !== 0) nonNil = true;
+  }
+  return nonNil;
+}
+
 export function structRows(rows: MapRow[]): MapRow[] {
   const out = dropFurniture(rows).map((m) => ({ ...m }));
   if (!out.length) return out;
+  snapIndents(out);
 
   let outermost: number | null = null;
   for (const m of out) {
@@ -303,6 +397,10 @@ export function structRows(rows: MapRow[]): MapRow[] {
     const below: MapRow[] = [];
     for (let j = i + 1; j < out.length; j++) {
       if (indentOf(out[j]) <= ind) break;
+      /* A heading that opens another section ends the group, however deep it
+         is printed: "Turnover" sits left of "Materials and services", and
+         without this the costs were counted into turnover's components. */
+      if (out[j].row.isBanner && out[j].section && m.section && out[j].section !== m.section) break;
       below.push(out[j]);
     }
     const summary = kidsSum(below);
@@ -328,7 +426,7 @@ export function structRows(rows: MapRow[]): MapRow[] {
       m.skipReason = "a nil total";
       continue;
     }
-    if (provable && summary && !invertedByIndent && same(summary.sum, amt)) {
+    if (summary && !invertedByIndent && (provable ? same(summary.sum, amt) : everyColumnAdds(m, summary.rows))) {
       m.skipReason = `summary of the ${summary.rows.length} row(s) indented beneath it`;
       for (const kid of summary.rows) (kid as MapRow).inTotal = true;
       continue;
@@ -340,7 +438,7 @@ export function structRows(rows: MapRow[]): MapRow[] {
       above.unshift(out[j]);
     }
     const total = kidsSum(above);
-    if (provable && total && same(total.sum, amt)) {
+    if (total && (provable ? same(total.sum, amt) : everyColumnAdds(m, total.rows))) {
       m.skipReason = `total of the ${total.rows.length} row(s) above it`;
       for (const kid of total.rows) (kid as MapRow).inTotal = true;
       continue;
@@ -701,7 +799,12 @@ export const deductionMagnitudeFlip = (
   inTotal?: boolean,
   printed?: number,
 ) =>
-  /^IS:(2[6-9]|3\d|4\d|50)$/.test(String(target || "")) &&
+  /* "IS:OD" is the other-deductions pool before a row is chosen for it:
+     line 17's accounts are deductions too, and printed negative inside a
+     negative proved total they were booked as credits. Cost of goods sold
+     (lines 2's components, IS:10-12) is a cost the same way: a statement
+     that prints its costs negative printed "4210, Purchases" as -2,469.54. */
+  /^IS:(1[0-2]|2[6-9]|3\d|4\d|50|OD)$/.test(String(target || "")) &&
   (section === "costs" || section === "cogs") &&
   !!inTotal && typeof printed === "number" && printed < 0;
 
@@ -756,7 +859,13 @@ export function tagSections<T extends MapRow>(rows: T[], opts?: { headingsOnly?:
       if (re.test(label)) { current = section; self = true; break; }
     }
     let own: Section | null = null;
-    if (!self && !(figures && opts?.headingsOnly) && !(figures && TITLE_NOT_BANNER_WITH_FIGURES.test(label))) {
+    /* Any total printed inside the cash group closes it, whatever it is
+       called ("Total Cash and cash equivalents 0.00"). Left open, the bank
+       account, the inventory and the prepayments printed after it were all
+       booked as cash. */
+    let cashClosed = false;
+    if (figures && current === "cash" && /^total\b/i.test(label)) { own = "cash"; current = "assets"; cashClosed = true; }
+    if (!cashClosed && !self && !(figures && opts?.headingsOnly) && !(figures && TITLE_NOT_BANNER_WITH_FIGURES.test(label))) {
       for (const [re, section] of SECTION_BANNERS) {
         if (!re.test(label)) continue;
         /* Cash is an asset. On the liabilities or equity side a caption that
@@ -868,12 +977,16 @@ export function sectionOk(section: Section | null | undefined, target: string | 
   if (section === "assets" || section === "liabilities") {
     if (!isBs) return false;
     const side =
-      target === "BS:OCA" ? "assets"
+      target === "BS:OCA" || target === "BS:OI" ? "assets"
       : target === "BS:OCL" || target === "BS:OL" ? "liabilities"
       : bsSide(target);
     return !side || side === section;
   }
-  if (section === "income" || section === "costs") return !isBs;
+  /* A caption printed under an expense heading is never turnover: the
+     service-income keyword ("consultancy fees") would otherwise book a cost as
+     gross receipts. */
+  if (section === "costs") return !isBs && target !== "IS:7";
+  if (section === "income") return !isBs;
   return true;
 }
 
@@ -954,13 +1067,23 @@ export function sectionRoute(section: Section | null | undefined, label: string)
        sheet says which side it is on THIS year by where it prints it. */
     if (/current account|\bloan\b/.test(s) && !/vat|tax/.test(s)) return "BS:19";
     if (/\b(vat|tax|gst|prepaid|deposit|accrued income)/.test(s)) return "BS:OCA";
+    /* A bank account named only by its bank ("WAIO Bank 285,588.12") is cash
+       — never a loan, an overdraft or a card, which are not assets here. */
+    if (/\b(bank|banco|banque)\b/.test(s) && !/\b(loan|overdraft|credit card|charges?|fees?)\b/.test(s)) return "BS:10";
     return null;
   }
   if (section === "liabilities") {
     if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
     if (/reserve|retained earning|accumulated (profit|loss|deficit)|distributable/.test(s)) return "BS:61";
     if (/\b(unearned|deferred)\s+(income|revenue)|invoices? to be received|accrued/.test(s)) return "BS:OCL";
+    /* A loan from a bank or other lender is borrowing, not a shareholder's
+       money: "Loans from financial institutions" is an other current
+       liability, never line 18. */
+    if (/\bloans?\b/.test(s) && /\b(banks?|financial institutions?|credit institutions?|lenders?|bank loans?)\b/.test(s)) return "BS:OCL";
     if (/current account|loan/.test(s) && !/vat|tax/.test(s)) return "BS:52";
+    /* A participation account ("cuenta en participación", a joint venture's
+       capital held for a partner) is a long-term obligation: line 19. */
+    if (/\b(cta\.?|cuentas?)\s+(?:de\s+|en\s+)?particip/.test(s)) return "BS:OL";
     // A tax owed is an other current liability, not a trade payable.
     if (/\btax/.test(s)) return "BS:OCL";
     if (/\b(creditor|payable)/.test(s)) return "BS:46";
@@ -1057,8 +1180,21 @@ export function collapsedSections<T extends MapRow>(rows: T[]): T[] {
    reappear on them (the same current- and prior-year pair), which is what
    makes them the same statement rather than a second one. */
 export const DETAIL_PNL_TITLE = /^\s*detailed\s+(?:trading\s+(?:and|&)\s+)?(?:profit\s*(?:and|&)\s*loss(?:\s+account)?|income\s+statement|statement\s+of\s+(?:comprehensive\s+)?income)\b/i;
+/* A UK small-company pack names its detailed account "Trading Profit and Loss
+   Account" (abridged accounts: "Abridged Trading Profit and Loss Account") and
+   says, on its contents page or the page itself, that those pages "do not form
+   part of the statutory accounts". The title alone is also a face statement's
+   in some packs, so it counts only with that sentence in the document. */
+export const TRADING_PNL_TITLE = /^\s*(?:abridged\s+)?trading\s+(?:and\s+)?profit\s*(?:and|&)\s*loss(?:\s+account)?\b/i;
+export const NOT_STATUTORY = /\bdo(?:es)?\s+not\s+form\s+part\s+of\s+the\s+statutory\s+(?:accounts|financial\s+statements)\b/i;
 
-export function supplementaryDetailPages<T extends MapRow>(rows: T[], detailPages: Set<number>): { rows: T[]; dropped: number } {
+/** A result line inside a P&L ("Gross profit", "Operating loss"): it closes
+    the group of accounts printed above it. */
+const GROUP_RESULT = /\b(gross|operating|trading|net)\s+(profit|loss|margin|income|result)\b|\bprofit\b.*\b(before|after)\b/i;
+
+const REVENUE_CAPTION = /\b(turnover|revenue|sales|income from (?:sales|services))\b/i;
+
+export function supplementaryDetailPages<T extends MapRow>(rows: T[], detailPages: Set<number>): { rows: T[]; dropped: number; abridged?: boolean } {
   if (!detailPages.size) return { rows, dropped: 0 };
   const valued = (m: MapRow) => !m.row.isBanner && !!(m.row.values && m.row.values.length);
   const detail = rows.filter((m) => detailPages.has(m.row.page ?? -1) && valued(m));
@@ -1066,8 +1202,84 @@ export function supplementaryDetailPages<T extends MapRow>(rows: T[], detailPage
   if (!detail.length || face.length < 3) return { rows, dropped: 0 };
   const same = (a: number[], b: number[]) =>
     a.length >= 2 && a.length === b.length && a.every((v, i) => Math.abs(Math.abs(v) - Math.abs(b[i])) <= 0.5);
-  const restated = face.filter((f) => detail.some((d) => same(f.row.values, d.row.values))).length;
-  if (restated < Math.max(3, Math.ceil(face.length / 2))) return { rows, dropped: 0 };
+  /* Judged page by page. The P&L feed also carries the notes pages (fixed
+     assets, debtors, creditors), whose rows the detailed account never
+     restates; counted together with the face they outvoted it, nothing was set
+     aside, and turnover, cost of sales and expenses were booked twice. One
+     face page whose rows the detail restates is enough. */
+  const byPage = new Map<number, T[]>();
+  for (const f of face) {
+    const pg = f.row.page ?? -1;
+    if (!byPage.has(pg)) byPage.set(pg, []);
+    byPage.get(pg)!.push(f);
+  }
+  /* The detailed account itemises a face line under a heading of the same
+     name and often prints the group's total without a caption, which the row
+     reader cannot keep ("Administrative expenses" … 47,090 on the face, nine
+     accounts under that heading on the detail page). The group's sum is the
+     face line restated. */
+  const groupSums: number[][] = [];
+  {
+    let cur: number[] | null = null;
+    const ordered = rows.filter((m) => detailPages.has(m.row.page ?? -1));
+    for (const m of ordered) {
+      const v = (m.row.values || []) as number[];
+      if (m.row.isBanner || !v.length) { if (cur) groupSums.push(cur); cur = []; continue; }
+      // A result line ("Gross profit") closes the group above it.
+      const lab = String(m.row.label || "").trim();
+      if (isProfitLine(lab) || isResultSubtotal(lab) || TOTAL_WORD.test(lab) || GROUP_RESULT.test(lab)) { if (cur && cur.length) groupSums.push(cur); cur = null; continue; }
+      if (m.skipReason || cur === null) continue;
+      if (!cur.length) cur = v.map(() => 0);
+      if (cur.length !== v.length) continue;
+      cur = cur.map((n, i) => n + (Number(v[i]) || 0));
+    }
+    if (cur && cur.length) groupSums.push(cur);
+  }
+  const restatedPage = [...byPage.values()].some((list) => {
+    const restated = list.filter((f) => detail.some((d) => same(f.row.values, d.row.values))
+      || groupSums.some((g) => same(f.row.values, g))).length;
+    return restated >= Math.max(3, Math.ceil(list.length / 2));
+  });
+  if (!restatedPage) return { rows, dropped: 0 };
+  /* An ABRIDGED face statement opens at gross profit: the company was allowed
+     to leave turnover and cost of sales off the statutory accounts, and only
+     the detailed account prints them. Keeping the face there booked no gross
+     receipts at all; keeping both counted every expense twice. So when the
+     face carries no turnover line and the detail does, the detail is booked
+     and the face rows it restates are set aside instead. */
+  const revenue = (m: MapRow) => m.section === "income" || REVENUE_CAPTION.test(String(m.row.label || ""));
+  if (!face.some(revenue) && detail.some(revenue)) {
+    /* The detail prints "-" for a year with nothing in it, so such a row
+       carries one figure and the positional sums above skip it. Summed by the
+       year each figure sits under, the group still restates the face line. */
+    const yearGroups: Map<number, number>[] = [];
+    {
+      let cur: Map<number, number> | null = null;
+      for (const m of rows.filter((x) => detailPages.has(x.row.page ?? -1))) {
+        const v = (m.row.values || []) as number[];
+        const lab = String(m.row.label || "").trim();
+        if (m.row.isBanner || !v.length) { if (cur && cur.size) yearGroups.push(cur); cur = new Map(); continue; }
+        if (isProfitLine(lab) || isResultSubtotal(lab) || TOTAL_WORD.test(lab) || GROUP_RESULT.test(lab)) { if (cur && cur.size) yearGroups.push(cur); cur = null; continue; }
+        if (m.skipReason || cur === null || !m.row.years) continue;
+        m.row.years.forEach((y, i) => { if (typeof y === "number") cur!.set(y, (cur!.get(y) || 0) + (Number(v[i]) || 0)); });
+      }
+      if (cur && cur.size) yearGroups.push(cur);
+    }
+    const yearRestated = (m: MapRow) => {
+      const ys = m.row.years, v = (m.row.values || []) as number[];
+      if (!ys || v.length < 2 || ys.some((y) => typeof y !== "number")) return false;
+      return yearGroups.some((g) => ys.every((y, i) => g.has(y as number) && Math.abs(Math.abs(g.get(y as number) as number) - Math.abs(v[i])) <= 0.5));
+    };
+    let dropped = 0;
+    const out = rows.map((m) => {
+      if (detailPages.has(m.row.page ?? -1) || !valued(m) || m.skipReason) return m;
+      const restated = detail.some((d) => same(m.row.values, d.row.values)) || groupSums.some((g) => same(m.row.values, g)) || yearRestated(m);
+      if (!restated) return m;
+      dropped++;
+      return { ...m, skipReason: "restated by the detailed account, which the abridged face statement summarises" };
+    });
+    return { rows: out, dropped, abridged: true };
+  }
   const kept = rows.filter((m) => !detailPages.has(m.row.page ?? -1));
   return { rows: kept, dropped: rows.length - kept.length };
 }
@@ -1103,7 +1315,11 @@ export function collapsedRoute(label: string, section: Section): string | null {
    the profit captions only. */
 const PROFIT_LINE = new RegExp(
   "^(net\\s+(income|earnings|profit|loss)"
-  + "|(profit|loss)\\s+(for|of)\\s+the\\s+(year|period)"
+  /* "Profit (loss) for the period", "Profit / loss for the financial year"
+     and "Result for the financial year": how a Nordic statement (and
+     Google's English of one) closes its P&L. */
+  + "|(profit|loss)\\s*(?:\\(\\s*(?:profit|loss)\\s*\\)|\\/\\s*(?:profit|loss))?\\s+(for|of)\\s+the\\s+(financial\\s+)?(year|period)"
+  + "|result\\s+for\\s+the\\s+(financial\\s+)?(year|period)"
   + "|current[-\\s]year\\s+(earnings|profit|net\\s+income|result)"
   /* The same line in the languages the statements arrive in. A Mexican
      balance sheet closes its equity block with "Utilidad o Pérdida del

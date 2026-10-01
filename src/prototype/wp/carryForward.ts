@@ -11,7 +11,11 @@ import type { ParsedDoc } from "./engine";
 import type { PdfRow } from "./pdfText";
 import { refIdToken, splitGluedRefId, type Block5471, type DocClass, type PageKind } from "./classify";
 
-export type SourcedValue = { value: number; page: number; rowText: string };
+export type SourcedValue = { value: number; page: number; rowText: string;
+  /** Every figure glued onto the caption's cell, in printed order, when the
+      text layer ran a row's columns into the caption ("… 77,526,813.
+      45,611,773."). Positions are lost there, so only the order is known. */
+  glued?: number[] };
 
 export type CarryForward = {
   /** Prior-year Schedule J line 14 — the opening E&P for the current year. */
@@ -31,7 +35,11 @@ export type CarryForward = {
     // exactly that, so it could not balance.
     | "badDebts" | "inventories" | "loansToShareholders" | "land"
     | "otherAssets" | "loansFromShareholders" | "otherLiabilities"
-    | "preferredStock" | "paidInSurplus" | "treasuryStock",
+    | "preferredStock" | "paidInSurplus" | "treasuryStock"
+    // Investments and intangibles. Line 8 alone carried US$444,017 on one
+    // Chilean return, and the opening column came out short by exactly that.
+    | "subsidiaries" | "otherInvestments" | "depletable" | "accumDepletion"
+    | "goodwill" | "organizationCosts" | "intangibles" | "accumAmort",
     SourcedValue
   >>;
   shares?: { classOfShares: string; boy: number; eoy: number; page: number };
@@ -93,7 +101,7 @@ export type CarryForward = {
   /** Captions from the return's attached statements ("STATEMENT 10 — OTHER
       CURRENT ASSETS: SUB-CONTRACTOR"), keyed like priorClosingUSD, each tied
       to its Schedule F line by the statement's own total. */
-  statementCaptions?: Partial<Record<"oca" | "otherAssets" | "ocl" | "otherLiabilities", { label: string; page: number; statement: string;
+  statementCaptions?: Partial<Record<"oca" | "otherAssets" | "ocl" | "otherLiabilities" | "otherInvestments", { label: string; page: number; statement: string;
     /** Every line of the attached statement with its end-of-year figure,
         when they add up to the line's filed total. */
     lines?: { label: string; value: number }[] }>>;
@@ -370,12 +378,36 @@ const rowsOnPages = (parsed: ParsedDoc, pages: Set<number>): { page: number; cel
 function columnBAnchor(rows: PdfRow[]): number | null {
   const rights: number[] = [];
   for (const r of rows) {
-    const nums = figureCells(r.cells).filter((c) => numericCell(c.text) !== null);
+    /* A form line number ("4", "12a") printed again beside an empty line is
+       not an amount. Counted as one, every blank line voted for the
+       line-number column, the anchor sat there, and no amount in column (b)
+       was carried at all (a new CFC's return with only column (b) filled). */
+    const nums = figureCells(r.cells).filter((c) => numericCell(c.text) !== null && !/^\d{1,2}[a-d]?$/.test(c.text.trim()));
     if (nums.length >= 2) rights.push(nums[nums.length - 1].x0);
   }
   if (rights.length < 3) return null;           // too little evidence to judge
   rights.sort((a, b) => a - b);
   return rights[Math.floor(rights.length / 2)]; // median resists a stray total
+}
+
+/** The centres of Schedule F's two column headings, "(a) Beginning of
+    annual accounting period" and "(b) End of annual accounting period".
+    Used only when no row prints both columns: a return filed for the year an
+    entity was set up, or one whose closing column was left blank, gives
+    columnBAnchor nothing to measure, and "the rightmost value" then read the
+    OPENING figure as the closing one — a 2023 return with only column (a)
+    filled carried 2022's balances into 2024's opening column. */
+function columnHeadingCentres(rows: PdfRow[]): { a: number; b: number } | null {
+  let a: number | null = null, b: number | null = null;
+  for (const r of rows) {
+    for (const c of r.cells) {
+      const t = (c.text || "").trim();
+      const mid = (c.x0 + c.x1) / 2;
+      if (a === null && (/\bbeginning of annual\b/i.test(t) || /^\(a\)$/.test(t))) a = mid;
+      if (b === null && (/\bend of annual\b/i.test(t) || /^\(b\)$/.test(t))) b = mid;
+    }
+  }
+  return a !== null && b !== null && b - a > 40 ? { a, b } : null;
 }
 
 /** Money off a Schedule F caption row, taking the value that sits in column
@@ -386,6 +418,7 @@ export function matchFormLineAtColumn(
   labelRe: RegExp,
   anchorX: number | null,
   tolerance = 45,
+  headings: { a: number; b: number } | null = null,
 ): SourcedValue | null {
   for (const r of rows) {
     for (let i = 0; i < r.cells.length; i++) {
@@ -402,14 +435,24 @@ export function matchFormLineAtColumn(
         .trim();
       if (!labelRe.test(bare)) continue;
       const cands = figureCells(r.cells.slice(i + 1))
-        .map((c) => ({ v: numericCell(c.text), x: c.x0 }))
-        .filter((c): c is { v: number; x: number } => c.v !== null);
+        .map((c) => ({ v: numericCell(c.text), x: c.x0, x1: c.x1 }))
+        .filter((c): c is { v: number; x: number; x1: number } => c.v !== null);
       if (!cands.length) continue;
       // Drop the line number the form echoes to the right of the caption.
       const ln = /^(\d{1,2})[a-c]?\b/.exec(cell)
         || /^(\d{1,2})[a-c]?$/.exec((r.cells[i - 1]?.text || "").trim());
       const kept = ln && cands.length && cands[0].v === Number(ln[1]) ? cands.slice(1) : cands;
       if (!kept.length) continue;
+      if (anchorX === null && headings) {
+        // Nearer heading decides the column; a column (a) figure is not EOY.
+        const inB = kept.filter((c) => {
+          const mid = (c.x + c.x1) / 2;
+          return Math.abs(mid - headings.b) < Math.abs(mid - headings.a);
+        });
+        if (!inB.length) continue;
+        const best = inB[inB.length - 1];
+        return { value: best.v, page: r.page, rowText: r.cells.map((c) => c.text).join(" | ") };
+      }
       if (anchorX === null) {
         // No geometry to judge by — fall back to the rightmost value.
         const last = kept[kept.length - 1];
@@ -473,16 +516,21 @@ function matchFormLine(
          ("…(combine lines 7 through 13) -118306568."). Only a whole amount
          (grouped, or four digits or more) at the very end is taken, so a
          caption's own line references ("through 13)") never are. */
+      /* Several columns can be glued on together ("… 77,526,813.
+         45,611,773." — Schedule J line 14 columns (a) and (b)); all of them
+         are taken, in order, so "first" is column (a) and not the last one. */
+      let glued: number[] | undefined;
       if (!nums.length) {
-        const tail = /\s(\(?-?(?:\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d*)?\)?)$/.exec(cell);
-        const v = tail ? numericCell(tail[1]) : null;
-        if (v !== null) nums = [v];
+        const tail = /((?:\s\(?-?(?:\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d*)?\)?)+)$/.exec(cell);
+        const vs = tail ? tail[1].trim().split(/\s+/).map((t) => numericCell(t)).filter((n): n is number => n !== null) : [];
+        if (vs.length) { nums = vs; if (vs.length > 1) glued = vs; }
       }
       if (!nums.length) continue;
       return {
         value: pick === "first" ? nums[0] : nums[nums.length - 1],
         page: r.page,
         rowText: r.cells.join(" | "),
+        ...(glued ? { glued } : {}),
       };
     }
   }
@@ -523,6 +571,12 @@ export function extractCarryForward(
   out.openingEP = matchFormLine(schJ, /balance at beginning of next year/i, "first") ?? undefined;
   {
     const ptep = readPriorPtep(rowsOnPagesGeo(parsed, intersect(pagesOfKind(cls, "us-5471-schJ"), pageFilter)));
+    /* Line 14's columns glued onto its caption leave no geometry for the
+       reader above. In printed order the second figure is column (b),
+       post-1986 E&P not previously taxed (the store raises cf-opening-ptep). */
+    if (!ptep.b && out.openingEP?.glued && out.openingEP.glued.length >= 2) {
+      ptep.b = { value: out.openingEP.glued[1], page: out.openingEP.page, rowText: out.openingEP.rowText };
+    }
     if (Object.keys(ptep).length) out.priorPtep = ptep;
   }
 
@@ -561,7 +615,8 @@ export function extractCarryForward(
      EOY; where only one prints, only its x tells us which column it is. */
   const schFGeo = rowsOnPagesGeo(parsed, intersect(pagesOfKind(cls, "us-5471-schF"), pageFilter));
   const colB = columnBAnchor(schFGeo);
-  const f = (re: RegExp) => matchFormLineAtColumn(schFGeo, re, colB) ?? undefined;
+  const heads = colB === null ? columnHeadingCentres(schFGeo) : null;
+  const f = (re: RegExp) => matchFormLineAtColumn(schFGeo, re, colB, 45, heads) ?? undefined;
   out.priorClosingUSD.cash = f(/^cash$/i);
   out.priorClosingUSD.ar = f(/^trade notes and accounts receivable/i);
   out.priorClosingUSD.oca = f(/^other current assets/i);
@@ -585,6 +640,14 @@ export function extractCarryForward(
   out.priorClosingUSD.preferredStock = f(/^preferred stock/i);
   out.priorClosingUSD.paidInSurplus = f(/^paid-in or capital surplus/i);
   out.priorClosingUSD.treasuryStock = f(/^less cost of treasury stock/i);
+  out.priorClosingUSD.subsidiaries = f(/^investment in subsidiaries/i);
+  out.priorClosingUSD.otherInvestments = f(/^other investments/i);
+  out.priorClosingUSD.depletable = f(/^depletable assets/i);
+  out.priorClosingUSD.accumDepletion = f(/^less accumulated depletion/i);
+  out.priorClosingUSD.goodwill = f(/^goodwill/i);
+  out.priorClosingUSD.organizationCosts = f(/^organization costs/i);
+  out.priorClosingUSD.intangibles = f(/^patents, trademarks/i);
+  out.priorClosingUSD.accumAmort = f(/^less accumulated amortization/i);
 
   /* The attached statements. Schedule F prints "Other current assets (attach
      statement)" with only the total; the caption itself sits on a STATEMENT
@@ -599,6 +662,7 @@ export function extractCarryForward(
   const STATEMENT_LINES: [keyof NonNullable<CarryForward["statementCaptions"]>, RegExp][] = [
     ["oca", /^other current assets$/i], ["otherAssets", /^other assets$/i],
     ["ocl", /^other current liabilities$/i], ["otherLiabilities", /^other liabilities$/i],
+    ["otherInvestments", /^other investments$/i],
   ];
   const everyRow = parsed.pdf.rows.map((r) => ({ page: r.page, cells: r.cells.map((c) => c.text.trim()).filter(Boolean) }));
   const HEADER_WORD = /^(description|beg\.?|end|of|annual|accounting|period|functional|currency|exchange|rate|u\.s\.|dollars|amount)$/i;

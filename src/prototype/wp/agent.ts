@@ -160,6 +160,13 @@ export type DocBrief = {
       A prior-year return and a client questionnaire feed the carry-forward and
       the profile; reading no line items from them is correct, not a failure. */
   feedsLineItems?: boolean;
+  /** Set when this file repeats another one and was excluded from mapping.
+      An excluded copy reading nothing is the exclusion working, not a failure. */
+  duplicateOf?: string | null;
+  /** The years the document's own figure columns are headed with. A set of
+      accounts prints last year's column beside this year's, so a current-year
+      statement can itself carry the opening balances. */
+  columnYears?: number[];
 };
 
 /** Something the document says that the rules alone would let past. */
@@ -540,7 +547,7 @@ const survey = (state: AgentState) => {
   ];
   const failures: AgentFailure[] = [];
   for (const d of docs) {
-    if (d.rowsRead === 0 && d.feedsLineItems) {
+    if (d.rowsRead === 0 && d.feedsLineItems && !d.duplicateOf) {
       failures.push({
         stage: "understand", what: `${d.name} produced no readable line items`, doc: d.name,
         reason: d.ocr ? "the page was recognised by OCR but no caption/figure pairs came out of it" : "no caption/figure pairs could be read from any page",
@@ -619,7 +626,16 @@ const yearCheck = (state: AgentState) => {
   /* The opening column has to come from somewhere. When nothing in the pile
      reports on the year before the one being prepared, the work paper opens
      blank — and that is a fact about the evidence, not an error to hide. */
-  if (required !== null && !docs.some((d) => d.role === "prior-year-input")) {
+  /* A current-year set of accounts that prints a column for the year before
+     IS the evidence for the opening column — the comparative balance sheet and
+     profit and loss. Saying "nothing covers it" there sent preparers looking
+     for a document they had already supplied. */
+  const comparative = required === null ? undefined : docs.find((d) =>
+    d.role === "current-year" && d.feedsLineItems && !d.duplicateOf && (d.columnYears || []).includes(required - 1));
+  const notes: string[] = [];
+  if (required !== null && comparative && !docs.some((d) => d.role === "prior-year-input")) {
+    notes.push(`Agent: comparative statements recognised — ${comparative.name} prints a ${required - 1} column beside ${required}; the opening balance sheet (Schedule F beginning of year) is read from it. Schedule J's opening E&P still comes from last year's Form 5471.`);
+  } else if (required !== null && !docs.some((d) => d.role === "prior-year-input")) {
     failures.push({
       stage: "understand",
       what: `no document covers ${required - 1}, the year this work paper opens from`,
@@ -631,7 +647,7 @@ const yearCheck = (state: AgentState) => {
   const mism = docs.filter((d) => d.match === "mismatch" || d.match === "unclear").length;
   return {
     docs, failures,
-    notes: [required
+    notes: [...notes, required
       ? `Agent: tax year check — documents report ${state.detectedYears.length ? state.detectedYears.join(", ") : "no year"}; work paper year ${required} (${state.yearSource === "selected" ? "you chose it" : "from the documents"}); current ${required}, prior ${required - 1}. ${docs.filter((d) => d.match === "match").length} document(s) match, ${mism} need a decision`
       : "Agent: tax year check — no year could be established from the documents, so nothing was placed against one"],
   };

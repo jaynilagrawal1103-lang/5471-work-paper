@@ -195,8 +195,13 @@ const pageRowTexts = (doc: PdfDoc, page: number): string[] =>
  * FIRST title on the page is the page's own. */
 export function titleRowIndex(doc: PdfDoc, page: number): number {
   const rows = pageRowTexts(doc, page);
+  /* A ledger export prints the title as the value of a header field
+     ("Accounting report type | Income statement"), so the title starts a
+     cell rather than the line. */
+  const cells = doc.rows.filter((r) => r.page === page).map((r) => r.cells.map((c) => foldAccents(c.text.trim())));
   for (let i = 0; i < rows.length; i++) {
     if (STATEMENT_TITLE_FOLDED.test(foldAccents(rows[i]))) return i;
+    if ((cells[i] || []).filter((c) => STATEMENT_TITLE_FOLDED.test(c) && c.length <= 40).length === 1) return i;
   }
   return -1;
 }
@@ -544,6 +549,19 @@ const CONTINUABLE = new Set<PageKind>([
   "tax-form",
 ]);
 
+/** The first row on the page that heads two or more columns with a year
+    and carries no money — the report's column header, as printed. */
+function columnHeaderSignature(doc: PdfDoc, page: number): string | null {
+  for (const r of doc.rows) {
+    if (r.page !== page) continue;
+    const dated = r.cells.filter((c) => /(?:19|20)\d{2}/.test(c.text)).length;
+    if (dated >= 2 && !r.cells.some((c) => MONEY_CELL.test(c.text.trim()))) {
+      return r.cells.map((c) => c.text.trim().toLowerCase()).join(" | ");
+    }
+  }
+  return null;
+}
+
 export function classifyPages(doc: PdfDoc): PageInfo[] {
   // Pass 1 — page-local rules.
   const out: PageInfo[] = [];
@@ -594,6 +612,33 @@ export function classifyPages(doc: PdfDoc): PageInfo[] {
     const info = classifyPdfPage(doc, out[i].page, { shapes: true });
     if (info.kind !== "unknown") out[i] = info;
   }
+  /* Pass 4b — a page identified by its shape or title in pass 4 runs on
+     like a titled one, but only onto a page that repeats its column header
+     word for word ("12/2024 | 12/2023 | 1/2024 - 12/2024 | …"): that is the
+     same report continuing, where a supporting schedule prints its own. */
+  for (let i = 1; i < out.length; i++) {
+    const prev = out[i - 1];
+    if (out[i].kind !== "fs-schedule" || (prev.kind !== "fs-pnl" && prev.kind !== "fs-balance-sheet")) continue;
+    const a = columnHeaderSignature(doc, prev.page), b = columnHeaderSignature(doc, out[i].page);
+    if (a && a === b) out[i] = { page: out[i].page, kind: prev.kind, score: 1 };
+  }
+  /* Pass 5 — the shape of the whole document. A balance sheet that runs over
+     two pages prints its assets on the first and its equity and liabilities
+     on the second, so neither page alone shows both sides and each was filed
+     as a supporting schedule (an exported ledger report whose title is a
+     machine-translated "Level" names nothing). When no page of the document
+     is a statement and its schedule pages TOGETHER show one statement's
+     sides, they are that statement. Never when the sides are mixed. */
+  if (!out.some((p) => p.kind === "fs-balance-sheet" || p.kind === "fs-pnl")) {
+    const sched = out.filter((p) => p.kind === "fs-schedule");
+    if (sched.length) {
+      const sides = new Set<BannerSide>();
+      for (const p of sched) for (const s of bannerSides(doc, p.page)) sides.add(s);
+      const bs = sides.has("assets") && (sides.has("liabilities") || sides.has("equity")) && !sides.has("income") && !sides.has("costs");
+      const pl = sides.has("income") && sides.has("costs") && !sides.has("assets");
+      if (bs || pl) for (const p of sched) { const i = out.indexOf(p); out[i] = { page: p.page, kind: bs ? "fs-balance-sheet" : "fs-pnl", score: 1 }; }
+    }
+  }
   return out;
 }
 
@@ -627,6 +672,11 @@ const YEAR_ANCHORS: RegExp[] = [
   /balance sheet (?:as )?(?:at|of) (\d{4})\b/,
   /(?:until|up to|to) (?:the )?end of (\d{4})\b/,
   /\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4}\s*(?:-|\u2013|\u2014|to|through|t\/m)\s*\d{1,2}[\/.-]\d{1,2}[\/.-](\d{4})\b/,
+  /* A ledger export: the balance sheet heads its last column "Closing balance
+     31.12.2024", the monthly profit and loss its year-to-date column
+     "1/2024 - 12/2024" (the first range printed is the current year). */
+  /closing balance[^0-9]{0,12}\d{1,2}[\/.-]\d{1,2}[\/.-](\d{4})\b/,
+  /(?:^|\s)\d{1,2}[\/.-]\d{4}\s*[-\u2013\u2014]\s*\d{1,2}[\/.-](\d{4})\b/,
 ];
 
 /* ---------- the period the statements themselves report on ----------
@@ -897,6 +947,10 @@ function findCompanyNames(doc: PdfDoc, pages: number[]): string[] {
     if (/statement|report|schedule|form\b/i.test(t) || NAME_ROW_NOISE.test(t)) return;
     const cleaned = t
       .replace(/^name of (company|entity|corporation)\s*/i, "")
+      /* A ledger export's header band: "Printed 07.03.2025 09:33:01 Company
+         name Terasyte Oy". The field label and whatever precedes it on the
+         line are not part of the name. */
+      .replace(/^.*?\b(?:company|entity|corporation|business)\s+name\s*:?\s+/i, "")
       /* A covering letter's address block: "To the directors of Collaborate
          and Eight B.V." names the company after a salutation that is not
          part of its name. */

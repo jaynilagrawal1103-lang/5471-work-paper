@@ -140,6 +140,26 @@ t("a prior return's run-together columns are still read figure by figure", () =>
   assert.ok(DIST.includes("EN9cfCells(r.cells.slice(n+1)).forEach"));
 });
 
+t("a company name is never an address, and a figure is never an activity", () => {
+  const S = load("src/prototype/wp/store.ts");
+  const ent = { name: "Entity 1", profile: {}, docClasses: {} };
+  assert.ok(S.isCompanyNameNotAddress("PREMIUM CARE PLASTIC SURGERY SAS", ent));
+  assert.ok(S.isCompanyNameNotAddress("Blue Water Grill Ltd.", ent));
+  assert.ok(!S.isCompanyNameNotAddress("Bocagrande, Carrera 3 No 4-21 of 302, Ed Cibeles", ent));
+  assert.ok(!S.isCompanyNameNotAddress("Cartagena 30205 Colombia", ent));
+  assert.ok(S.isCompanyNameNotAddress("Acme Trading", { name: "Entity 1", profile: { legalName: "Acme Trading" }, docClasses: {} }));
+  assert.ok(DIST.includes("/*EN9ADDRNOTNAME*/") && DIST.includes("/*EN9ADDRNOTNAME-BEGIN*/"));
+  const DP = load("src/prototype/wp/detectProfile.ts");
+  assert.ok(fs.readFileSync(path.join(__dirname, "..", "src", "prototype", "wp", "detectProfile.ts"), "utf8").includes("WORD_FIELDS.has(m.key)"));
+  assert.ok(DIST.includes("/*EN9WORDFLD*/"));
+  assert.ok(DP);
+});
+
+t("an unnamed entity with no prior return takes the legal name its statements print", () => {
+  assert.ok(STORE_SRC.includes("legal-name-from-statements-${entityId}") && STORE_SRC.includes("LEGAL_FORM.test(docCompanies[0].nm.trim())"));
+  assert.ok(DIST.includes("/*EN9LEGALFROMSTMT*/") && DIST.includes('"legal-name-from-statements-"+t'));
+});
+
 /* ---------- the opening balance read from the balance sheet ---------- */
 
 t("no prior return: opening E&P and retained earnings come from the earnings brought forward", () => {

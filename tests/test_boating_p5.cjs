@@ -150,7 +150,7 @@ t("I · an exchange rate keeps its precision on the way to the cell; amounts sti
 
 t("N · a section-heading placement is recorded as such, not as a keyword rule", () => {
   assert.ok(store.includes('via: "rule" | "section" | "groq" | "manual"'));
-  assert.ok(/target = sectionRoute\(m\.section, m\.row\.label\) \|\| null;\n\s+if \(target\) via = "section";/.test(store));
+  assert.ok(/const byBanner = sectionRoute\(m\.section, m\.row\.label\) \|\| null;[\s\S]{0,700}?else \{ target = byBanner; if \(target\) via = "section"; \}/.test(store));
   assert.ok(/target = collapsedRoute\(m\.row\.label, m\.collapsed\);\n\s+if \(target\) \{\n\s+via = "section";/.test(store));
   assert.ok(/target = ov\.to;\n\s+via = "manual";/.test(store), "a standing override is the preparer's decision");
   assert.ok(store.includes("year: r.year, via,"));

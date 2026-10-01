@@ -90,6 +90,9 @@ export function cleanCurrency(raw: string): string | null {
   return null;
 }
 
+/** Fields whose value is always words, never a bare figure. */
+const WORD_FIELDS = new Set(["legalName", "entityShort", "clientName", "countryInc", "booksPerson", "activity"]);
+
 const MATCHERS: Matcher[] = [
   { key: "legalName", labels: ["legal name of entity", "legal name", "entity legal name", "company name", "name of entity", "registered name", "dénomination sociale", "razón social"] },
   { key: "entityShort", labels: ["entity name", "short name", "trading name"] },
@@ -308,6 +311,10 @@ export function detectProfile(rows: string[][] | null, meta?: { doc?: string }):
                   !m.clean && !/\p{L}/u.test(raw) ? null : accept(raw))
               : null;
           if (cleaned === null) return true;   // the matcher claimed it and rejected the value
+          /* A name, a country or an activity is words. A figure in its place
+             means the caption matched a statement line ("Menos: COSTOS DE
+             ACTIVIDADES 0" read as the business activity "0"). */
+          if (WORD_FIELDS.has(m.key) && !/\p{L}/u.test(cleaned)) return true;
 
           into.set(m.key, {
             key: m.key,

@@ -110,7 +110,7 @@ t("nothing moves when the prior return used common stock, the caption names a cl
 t("the prior return's line 20a is read when the heading and its first sub-line print as one row", () => {
   const CF = load("src/prototype/wp/carryForward.ts");
   const fnText = (() => {
-    const b = dist.indexOf("function EN9matchColB(rows,re,anchor,tol){");
+    const b = dist.indexOf("function EN9matchColB(");
     let d = 0, j = dist.indexOf("{", b);
     for (; j < dist.length; j++) { if (dist[j] === "{") d++; else if (dist[j] === "}" && --d === 0) break; }
     return dist.slice(b, j + 1);

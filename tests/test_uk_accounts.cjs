@@ -189,7 +189,11 @@ const block = (name) => {
 const Oa = ENG.numericCell;
 
 t("dist: the detailed-P&L filter behaves like src", () => {
-  const f = new Function(block("EN9DETAILPNL") + ";return {EN9supplementaryDetail,EN9DETAILTITLE};")();
+  // The detail filter closes a group at a result line; the shipped bundle
+  // defines those tests elsewhere, so the src ones stand in for them here.
+  const tw = dist.indexOf("var EN9TOTALW="), twEnd = dist.indexOf(";", dist.indexOf("/i", tw));
+  const EN9TOTALW = new Function(dist.slice(tw, twEnd) + ";return EN9TOTALW;")();
+  const f = new Function("EN9isProfitLine", "EN9isResultSubtotal", "EN9TOTALW", block("EN9DETAILPNL") + ";return {EN9supplementaryDetail,EN9DETAILTITLE};")(SECT.isProfitLine, SECT.isResultSubtotal, EN9TOTALW);
   const toDist = (m) => ({ ...m, EN9skip: m.skipReason });
   const r = f.EN9supplementaryDetail([...FACE, ...DETAIL].map(toDist), new Set([16, 17]));
   assert.strictEqual(r.dropped, DETAIL.length);
