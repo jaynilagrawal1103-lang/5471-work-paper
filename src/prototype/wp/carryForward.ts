@@ -6,7 +6,7 @@
    becomes a review item. Never touches the 1120/5472 pages — those describe
    the US parent. */
 
-import { numeric, numericCell } from "./engine";
+import { multiNumericTokens, numeric, numericCell, numericTokenCells } from "./engine";
 import type { ParsedDoc } from "./engine";
 import type { PdfRow } from "./pdfText";
 import { refIdToken, splitGluedRefId, type Block5471, type DocClass, type PageKind } from "./classify";
@@ -16,6 +16,10 @@ export type SourcedValue = { value: number; page: number; rowText: string };
 export type CarryForward = {
   /** Prior-year Schedule J line 14 — the opening E&P for the current year. */
   openingEP?: SourcedValue;
+  /** Schedule J line 14 of columns (b)–(d) and the previously-taxed-E&P
+      columns (e)(i)–(x), keyed "b".."d" or by the roman numeral. The opening
+      column (a) alone left a filed section 951A PTEP balance behind. */
+  priorPtep?: Record<string, SourcedValue>;
   /** Prior-year Schedule F column (b) — closing USD balances as filed. */
   priorClosingUSD: Partial<Record<
     "cash" | "ar" | "oca" | "totalAssets" | "ap" | "ocl" | "re"
@@ -89,7 +93,10 @@ export type CarryForward = {
   /** Captions from the return's attached statements ("STATEMENT 10 — OTHER
       CURRENT ASSETS: SUB-CONTRACTOR"), keyed like priorClosingUSD, each tied
       to its Schedule F line by the statement's own total. */
-  statementCaptions?: Partial<Record<"oca" | "otherAssets" | "ocl" | "otherLiabilities", { label: string; page: number; statement: string }>>;
+  statementCaptions?: Partial<Record<"oca" | "otherAssets" | "ocl" | "otherLiabilities", { label: string; page: number; statement: string;
+    /** Every line of the attached statement with its end-of-year figure,
+        when they add up to the line's filed total. */
+    lines?: { label: string; value: number }[] }>>;
   /** Schedule R as filed with the explicit "NONE" row — no distributions. */
   schRNone?: { page: number; date?: string };
 };
@@ -109,6 +116,76 @@ const intersect = (a: Set<number>, b?: Set<number>): Set<number> =>
 
 const rowsOnPagesGeo = (parsed: ParsedDoc, pages: Set<number>): PdfRow[] =>
   parsed.pdf ? parsed.pdf.rows.filter((r) => pages.has(r.page)) : [];
+
+/** Schedule J's previously taxed E&P, line 14, by column.
+
+    The form prints the PTEP columns (e)(i)–(x) across two pages, each block
+    headed by its roman numerals and numbered 1a…14 down the left. A figure
+    on a "14" row belongs to the nearest column heading at or left of where
+    it starts (amounts sit inside their column). Column (e)'s own spanning
+    heading is ignored; (a) (read as openingEP) and (f) (the total) are kept
+    only as column boundaries. */
+const ROMANS = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
+export function readPriorPtep(rows: PdfRow[]): Record<string, SourcedValue> {
+  const out: Record<string, SourcedValue> = {};
+  let head: { key: string; x: number }[] = [];
+  let inData = false;
+  for (const r of rows) {
+    /* A heading cell can hold two columns' headings ("(iv) Reclassified …
+       (v) Reclassified section 245A(d) PTEP"): each numeral is placed by its
+       share of the cell's width. "245A(d)" is a section number, not a
+       column — a heading starts the cell or follows a space. */
+    const tokens: { key: string; x: number }[] = [];
+    for (const c of r.cells) {
+      const text = c.text;
+      for (const m of text.matchAll(/(^|\s)\(([ivx]+|[a-df])\)(?=\s|$)/gi)) {
+        const key = m[2].toLowerCase();
+        if (!ROMANS.includes(key) && !/^[a-df]$/.test(key)) continue;
+        const at = (m.index ?? 0) + m[1].length;
+        tokens.push({ key, x: c.x0 + (text.length ? ((c.x1 - c.x0) * at) / text.length : 0) });
+      }
+    }
+    if (tokens.length) {
+      if (inData) { head = []; inData = false; }
+      head.push(...tokens);
+      continue;
+    }
+    const first = (r.cells[0]?.text || "").trim();
+    if (/^(1a|1b|1c|2a|2b|3|4|5a|5b|6|7|8|9|10|11|12|13)$/i.test(first)) { inData = true; continue; }
+    if (!/^14$/.test(first) || !head.length) continue;
+    inData = true;
+    const cols = [...head].sort((a, b) => a.x - b.x);
+    /* Adjacent columns can come out of the PDF as one cell ("-18582369.
+       -16680312."): every figure in it is placed by its share of the width. */
+    const figs: { v: number; x1: number }[] = [];
+    for (const c of r.cells.slice(1)) {
+      const parts = c.text.trim().split(/\s+/);
+      if (parts.length > 1 && parts.every((w) => numericCell(w) !== null)) {
+        let at = 0;
+        const txt = c.text.trim();
+        for (const w of parts) {
+          const start = txt.indexOf(w, at);
+          at = start + w.length;
+          figs.push({ v: numericCell(w) as number, x1: c.x0 + ((c.x1 - c.x0) * at) / txt.length });
+        }
+        continue;
+      }
+      const v = numericCell(c.text);
+      if (v !== null) figs.push({ v, x1: c.x1 });
+    }
+    for (const c of figs) {
+      const v = c.v;
+      /* Amounts are right-aligned inside their column, so the right edge
+         says which column: a total that starts under column (x) still ends
+         under (f). */
+      let col: { key: string; x: number } | undefined;
+      for (const h of cols) if (h.x <= c.x1 - 2) col = h;
+      if (!col || !(ROMANS.includes(col.key) || /^[bcd]$/.test(col.key)) || out[col.key]) continue;
+      out[col.key] = { value: v, page: r.page, rowText: r.cells.map((x) => x.text).join(" | ") };
+    }
+  }
+  return out;
+}
 
 /** A cell that is a form caption, not a value. */
 /* ---------- item 2d caption detection (wrap-independent) ----------
@@ -155,6 +232,21 @@ export const isFormStructure = (t: string): boolean => {
   if (/^for paperwork reduction|^see instructions|^form \d{3,}/i.test(v)) return true;
   return false;
 };
+
+/** The figures in a row's cells. A return's text layer often runs two
+    adjacent columns into one cell ("-18582369. -16680312."); numericCell
+    refuses such a cell, so it is read figure by figure instead of being
+    lost — the first figure is the column the caption's line prints first. */
+function cellNums(cells: string[]): number[] {
+  return cells
+    .flatMap((c) => (multiNumericTokens(c) ? String(c).trim().split(/\s+/) : [c]))
+    .map((c) => numericCell(c))
+    .filter((n): n is number => n !== null);
+}
+/** The same for positioned cells, each figure keeping its own position. */
+function figureCells(cells: PdfRow["cells"]): PdfRow["cells"] {
+  return cells.flatMap((c) => (multiNumericTokens(c.text) ? numericTokenCells(c) : [c]));
+}
 
 export const looksLikeCaption = (t: string): boolean =>
   /reference id|identif\w* number|previous reference|^instructions|country under whose laws|^[b-d]\(?\d?\)?\s|^\(?see instructions/i.test(t.trim());
@@ -278,7 +370,7 @@ const rowsOnPages = (parsed: ParsedDoc, pages: Set<number>): { page: number; cel
 function columnBAnchor(rows: PdfRow[]): number | null {
   const rights: number[] = [];
   for (const r of rows) {
-    const nums = r.cells.filter((c) => numericCell(c.text) !== null);
+    const nums = figureCells(r.cells).filter((c) => numericCell(c.text) !== null);
     if (nums.length >= 2) rights.push(nums[nums.length - 1].x0);
   }
   if (rights.length < 3) return null;           // too little evidence to judge
@@ -289,7 +381,7 @@ function columnBAnchor(rows: PdfRow[]): number | null {
 /** Money off a Schedule F caption row, taking the value that sits in column
     (b). A value outside that column is left alone: on a filing, a line the
     preparer must fill in is safer than one carried from the wrong year. */
-function matchFormLineAtColumn(
+export function matchFormLineAtColumn(
   rows: PdfRow[],
   labelRe: RegExp,
   anchorX: number | null,
@@ -301,11 +393,15 @@ function matchFormLineAtColumn(
       if (!cell) continue;
       const bare = cell
         .replace(/^\d{1,2}\s*[a-d]?\s+/i, "")
+        /* A heading line and its first sub-line read as one row: "20 Capital
+           stock: a Preferred stock" is line 20a, "12 Intangible assets:
+           a Goodwill" is line 12a. */
+        .replace(/^[a-z][^:]{2,40}:\s*[a-d]\s+/i, "")
         .replace(/^[a-d]\s+/i, "")
         .replace(/[\s~.·•…_-]+$/, "")
         .trim();
       if (!labelRe.test(bare)) continue;
-      const cands = r.cells.slice(i + 1)
+      const cands = figureCells(r.cells.slice(i + 1))
         .map((c) => ({ v: numericCell(c.text), x: c.x0 }))
         .filter((c): c is { v: number; x: number } => c.v !== null);
       if (!cands.length) continue;
@@ -351,13 +447,17 @@ function matchFormLine(
          and common stock (US$4,973) to the last two. */
       const bare = cell
         .replace(/^\d{1,2}\s*[a-d]?\s+/i, "")
+        /* A heading line and its first sub-line read as one row: "20 Capital
+           stock: a Preferred stock" is line 20a, "12 Intangible assets:
+           a Goodwill" is line 12a. */
+        .replace(/^[a-z][^:]{2,40}:\s*[a-d]\s+/i, "")
         .replace(/^[a-d]\s+/i, "")
         .replace(/[\s~.·•…_-]+$/, "")
         .trim();
       if (!labelRe.test(bare)) continue;
       // Strict cells only: numeric() would book the digit residue of prose
       // like "(combine lines 7 through 13)" as −713 on the legacy parser path.
-      let nums = r.cells.slice(i + 1).map((c) => numericCell(c)).filter((n): n is number => n !== null);
+      let nums = cellNums(r.cells.slice(i + 1));
       // IRS forms repeat the line number to the right of the caption. Strip it
       // whenever it leads, not only when a value follows it: on a line the
       // filer left blank the line number is the ONLY number on the row, and
@@ -368,6 +468,16 @@ function matchFormLine(
       // to be wrong.
       const ln = /^(\d{1,2})[a-c]?\b/.exec(cell) || /^(\d{1,2})[a-c]?$/.exec((r.cells[i - 1] || "").trim());
       if (ln && nums.length && nums[0] === Number(ln[1])) nums = nums.slice(1);
+      /* A figure printed close to the end of its caption is glued onto the
+         caption cell by the text layer — a negative sign moves it left
+         ("…(combine lines 7 through 13) -118306568."). Only a whole amount
+         (grouped, or four digits or more) at the very end is taken, so a
+         caption's own line references ("through 13)") never are. */
+      if (!nums.length) {
+        const tail = /\s(\(?-?(?:\d{1,3}(?:,\d{3})+|\d{4,})(?:\.\d*)?\)?)$/.exec(cell);
+        const v = tail ? numericCell(tail[1]) : null;
+        if (v !== null) nums = [v];
+      }
       if (!nums.length) continue;
       return {
         value: pick === "first" ? nums[0] : nums[nums.length - 1],
@@ -411,6 +521,10 @@ export function extractCarryForward(
 
   // Schedule J line 14 — the single most important carry-forward number.
   out.openingEP = matchFormLine(schJ, /balance at beginning of next year/i, "first") ?? undefined;
+  {
+    const ptep = readPriorPtep(rowsOnPagesGeo(parsed, intersect(pagesOfKind(cls, "us-5471-schJ"), pageFilter)));
+    if (Object.keys(ptep).length) out.priorPtep = ptep;
+  }
 
   /* The separate-category code prints as "Separate Category (Enter code …) | GEN"
      on Schedules J, E, H and P alike; any one of them will do, J first. */
@@ -494,21 +608,30 @@ export function extractCarryForward(
     for (let i = 0; i < everyRow.length; i++) {
       const head = /^form 5471\s+(.+?)\s+statement\s*(\d+)$/i.exec(everyRow[i].cells.join(" ").replace(/\s+/g, " "));
       if (!head || !titleRe.test(head[1].trim())) continue;
-      let caption: { label: string; page: number; statement: string } | null = null;
+      let caption: { label: string; page: number; statement: string; lines?: { label: string; value: number }[] } | null = null;
       let total: number | null = null;
+      const stmtLines: { label: string; value: number }[] = [];
       for (let j = i + 1; j < Math.min(i + 40, everyRow.length); j++) {
         const cells = everyRow[j].cells;
         const joined = cells.join(" ");
         if (/^total to 5471/i.test(joined)) {
-          const nums = cells.map((c) => numericCell(c)).filter((n): n is number => n !== null);
+          const nums = cellNums(cells);
           total = nums.length ? nums[nums.length - 1] : null;
           break;
         }
-        if (caption) continue;
-        const hasValue = cells.some((c) => numericCell(c) !== null);
+        const hasValue = cellNums(cells).length > 0;
         const li = cells.findIndex((c) => /[A-Za-z]{3}/.test(c) && numericCell(c) === null && !c.split(/\s+/).every((w) => HEADER_WORD.test(w)));
+        /* Every line, with its end-of-year (last) figure: the opening column
+           of a shared line is split by them, one row per account. */
+        if (hasValue && li >= 0) {
+          const nums = cellNums(cells);
+          stmtLines.push({ label: cells[li], value: nums[nums.length - 1] });
+        }
+        if (caption) continue;
         if (hasValue && li >= 0) caption = { label: cells[li], page: everyRow[j].page, statement: `Statement ${head[2]}` };
       }
+      if (caption && total !== null && stmtLines.length > 1
+          && Math.abs(stmtLines.reduce((n, l) => n + l.value, 0) - total) < 1) caption.lines = stmtLines;
       if (caption && total !== null && Math.abs(total - filed) < 1) {
         (out.statementCaptions ||= {})[key] = caption;
         break;
@@ -524,7 +647,7 @@ export function extractCarryForward(
   for (const r of schR) {
     const cells = r.cells.map((c) => c.trim()).filter(Boolean);
     if (!cells.some((c) => /^(1\s+)?none$/i.test(c))) continue;
-    const amounts = cells.filter((c) => !/^\d$/.test(c)).map((c) => numericCell(c)).filter((n): n is number => n !== null);
+    const amounts = cellNums(cells.filter((c) => !/^\d$/.test(c)));
     if (amounts.some((n) => n !== 0)) continue;
     const date = /\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/.exec(cells.join(" "));
     out.schRNone = { page: r.page, ...(date ? { date: date[1] } : {}) };
@@ -579,6 +702,17 @@ export function extractCarryForward(
        country the tax was paid to. Take the last candidate, and where a
        package glues the whole lot into one cell ("VALPARAISO CHILE CHILE"),
        keep only the trailing word it repeats. */
+    if (!out.countryInc && /country under whose laws incorporated/i.test(text)) {
+      /* Item 1c has its own column, to the right of the corporation's
+         address. The cell printed under that caption IS the country; only
+         when the geometry is missing does the row's last word stand in for
+         it — never the address line, which merely ends in a country too. */
+      const cap = faceGeo[ri]?.cells.find((c) => /country under whose laws/i.test(c.text));
+      const below = cap ? faceGeo.slice(ri + 1, ri + 2).filter((g) => g && g.page === r.page) : [];
+      const under = below.flatMap((g) => g.cells).find((c) => c.x0 >= cap!.x0 - 12 && /^[A-Za-z][A-Za-z .'-]{2,30}$/.test(c.text.trim())
+        && !/^[a-h]\s|\b(?:date|incorporation|principal|functional|currency|code|business|activity)\b/i.test(c.text.trim()));
+      if (under) out.countryInc = under.text.trim();
+    }
     if (!out.countryInc && /country under whose laws incorporated/i.test(text)) {
       const cands = (nextRows[0]?.cells || [])
         .map((c) => c.trim())
@@ -654,6 +788,34 @@ export function extractCarryForward(
         }
         const gJoin = (buckets.g || []).filter((c) => /[A-Za-z]/.test(c) && !isFragment(c)).join(" ").trim();
         if (gJoin) out.activity = gJoin;
+        /* The code and the description printed together ("512110 MOTION
+           PICTURE PRODUCTION"), or the description drifted under the code
+           caption: either way item g stayed empty and Basic Information
+           showed no principal business activity. */
+        if (!out.activity) {
+          for (const c of [...(buckets.f || []), ...(buckets.g || [])]) {
+            const m = /^(\d{4,6})\s+([A-Za-z][A-Za-z ,.&'/-]{2,})$/.exec(c.trim());
+            if (m && !isFragment(m[2])) { out.activityCode = out.activityCode || m[1]; out.activity = m[2].trim(); break; }
+          }
+        }
+        /* Items d to g printed as ONE cell under the date caption:
+           "10/25/23 UNITED ARAB EMIRATE code no. 512100 DESIGN & VIDEO PR".
+           The date was taken and the rest thrown away as a caption fragment,
+           so the place, the code and the activity were all lost. */
+        if (!out.activity && dJoin) {
+          const tail = dJoin.replace(/^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\s*/, "");
+          const m = /^(.*?)\s*(?:code\s*no\.?\s*)?\b(\d{4,6})\s+([A-Za-z][A-Za-z0-9 ,.&'/()-]{2,}?)\s*$/i.exec(tail);
+          if (m && !isFragment(m[3])) {
+            out.activityCode = out.activityCode || m[2];
+            out.activity = m[3].trim();
+            const place = m[1].replace(/\s*code\s*no\.?\s*$/i, "").trim();
+            if (!out.principalPlace && place && /^[A-Za-z][A-Za-z ,.'&-]*$/.test(place) && !isFragment(place)) out.principalPlace = place;
+          }
+        }
+        if (!out.activity) {
+          const fWords = (buckets.f || []).filter((c) => /^[A-Za-z][A-Za-z ,.&'/-]{2,}$/.test(c.trim()) && !isFragment(c)).join(" ").trim();
+          if (fWords) out.activity = fWords;
+        }
         const hTok = (buckets.h || []).find((c) => /^[A-Z]{3}$/.test(c));
         if (hTok) out.functionalCurrency = hTok;
       }
@@ -1081,4 +1243,27 @@ export function directoryShareholders(rows: { page: number; cells: string[] }[])
     if (found.length) return found;
   }
   return [];
+}
+
+/* NAICS sectors (the first two digits of the activity code on the 5471 face),
+   plus the few four-digit groups the engagements actually carry. Used only
+   when the face prints a code and no description could be read. */
+const NAICS: Record<string, string> = {
+  "11": "Agriculture, forestry, fishing and hunting", "21": "Mining, quarrying, and oil and gas extraction", "22": "Utilities",
+  "23": "Construction", "31": "Manufacturing", "32": "Manufacturing", "33": "Manufacturing", "42": "Wholesale trade",
+  "44": "Retail trade", "45": "Retail trade", "48": "Transportation and warehousing", "49": "Transportation and warehousing",
+  "51": "Information", "52": "Finance and insurance", "53": "Real estate and rental and leasing",
+  "54": "Professional, scientific, and technical services", "55": "Management of companies (holding companies)",
+  "56": "Administrative and support services", "61": "Educational services", "62": "Health care and social assistance",
+  "71": "Arts, entertainment, and recreation", "72": "Accommodation and food services", "81": "Other services",
+  "5121": "Motion picture and video industries", "5122": "Sound recording industries", "5415": "Computer systems design and related services",
+  "5411": "Legal services", "5412": "Accounting, tax preparation, bookkeeping, and payroll services", "5416": "Management, scientific, and technical consulting services",
+  "5418": "Advertising, public relations, and related services", "7111": "Performing arts companies", "7113": "Promoters of performing arts, sports, and similar events",
+  "7139": "Other amusement and recreation industries", "5313": "Activities related to real estate", "5239": "Other financial investment activities",
+};
+/** The description for a principal business activity code, or null. */
+export function naicsDescription(code: string | undefined): string | null {
+  const c = String(code || "").replace(/\D/g, "");
+  if (c.length < 2) return null;
+  return NAICS[c.slice(0, 4)] || NAICS[c.slice(0, 2)] || null;
 }

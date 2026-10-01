@@ -33,7 +33,7 @@ const MODELS = path.join(root, ".cache", "ppocrv5");
 const page = fs.readFileSync(DIST, "utf8");
 const commit = /MODEL_COMMIT:"([0-9a-f]{40})"/.exec(page)?.[1];
 const ortVersion = /ORT_VERSION:"([\d.]+)"/.exec(page)?.[1];
-const sha = Object.fromEntries([...page.matchAll(/\b(det|rec|cls):"([0-9a-f]{64})"/g)].map((m) => [m[1], m[2]]));
+const sha = Object.fromEntries([...page.matchAll(/\b(det|rec|cls|dict):"([0-9a-f]{64})"/g)].map((m) => [m[1], m[2]]));
 if (!commit || !ortVersion || !sha.det) throw new Error("dist/index.html does not carry the OCR layer (no MODEL_COMMIT / ORT_VERSION / hashes)");
 
 const digest = (buf) => createHash("sha256").update(buf).digest("hex");
@@ -41,7 +41,10 @@ const digest = (buf) => createHash("sha256").update(buf).digest("hex");
 async function model(name, rel) {
   const dst = path.join(MODELS, name);
   if (!fs.existsSync(dst)) {
-    const url = `https://media.githubusercontent.com/media/jingsongliujing/OnnxOCR/${commit}/onnxocr/models/ppocrv5/${rel}`;
+    // weights are Git LFS objects (media.*); the dictionary is a plain file,
+    // which media.* answers 404 for, so it comes from raw.*
+    const host = rel.endsWith(".onnx") ? `https://media.githubusercontent.com/media/jingsongliujing/OnnxOCR/` : `https://raw.githubusercontent.com/jingsongliujing/OnnxOCR/`;
+    const url = `${host}${commit}/onnxocr/models/ppocrv5/${rel}`;
     process.stdout.write(`  fetching ${rel}\n`);
     const r = await fetch(url);
     if (!r.ok) throw new Error(`could not download ${rel}: ${r.status}`);
@@ -49,7 +52,7 @@ async function model(name, rel) {
     fs.writeFileSync(dst, Buffer.from(await r.arrayBuffer()));
   }
   const buf = fs.readFileSync(dst);
-  const key = name.replace(/\.onnx$/, "");
+  const key = name.endsWith("_dict.txt") ? "dict" : name.replace(/\.onnx$/, "");
   if (sha[key] && digest(buf) !== sha[key]) throw new Error(`${name} does not match the hash the page pins — refusing to build`);
   return buf;
 }

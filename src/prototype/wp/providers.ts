@@ -258,6 +258,78 @@ export async function fxOfxAverage(
   }
 }
 
+/** ECB reference-rate average over a period, through Frankfurter's time
+    series — the second average-rate fallback. The ECB publishes rates for
+    currencies OFX does not carry (the Romanian leu among them) every working
+    day. Refuses a thin window rather than guessing. */
+export async function fxFrankfurterAverage(
+  code: string,
+  startIso: string,
+  endIso: string,
+): Promise<ProviderResult<{ rate: number; points: number; from: string; to: string }>> {
+  try {
+    const c = String(code || "").toUpperCase().trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startIso) || !/^\d{4}-\d{2}-\d{2}$/.test(endIso) || endIso <= startIso) throw new Error("bad period");
+    const data = await getJson(`https://api.frankfurter.dev/v1/${startIso}..${endIso}?base=USD&symbols=${encodeURIComponent(c)}`);
+    const rates = data?.rates && typeof data.rates === "object" ? Object.values(data.rates as Record<string, Record<string, number>>) : [];
+    const vals = rates.map((r) => Number(r?.[c])).filter((v) => isFinite(v) && v > 0);
+    if (vals.length < 40) throw new Error(vals.length ? `only ${vals.length} ECB rates in ${startIso}..${endIso}` : `ECB publishes no ${c} rate`);
+    const rate = vals.reduce((n, v) => n + v, 0) / vals.length;
+    return { ok: true, value: { rate: Math.round(rate * 1e6) / 1e6, points: vals.length, from: startIso, to: endIso }, provider: "frankfurter", units: 1 };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message, provider: "frankfurter", units: 1 };
+  }
+}
+
+/** Market mid-rates from the public currency-api dataset (jsDelivr CDN),
+    sampled on the 1st and 15th of each month in the period — the third
+    average-rate fallback, for when neither OFX nor the ECB answers. One small
+    file per date; dates the dataset lacks are skipped, and fewer than twelve
+    usable dates is refused rather than averaged. */
+export async function fxCurrencyApiAverage(
+  code: string,
+  startIso: string,
+  endIso: string,
+): Promise<ProviderResult<{ rate: number; points: number; from: string; to: string }>> {
+  try {
+    const c = String(code || "").toLowerCase().trim();
+    const start = new Date(startIso + "T00:00:00Z"), end = new Date(endIso + "T00:00:00Z");
+    if (!isFinite(start.getTime()) || !isFinite(end.getTime()) || end <= start) throw new Error("bad period");
+    const dates: string[] = [];
+    for (let d = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1)); d <= end; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) {
+      for (const day of [1, 15]) {
+        const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), day));
+        if (x >= start && x <= end) dates.push(x.toISOString().slice(0, 10));
+      }
+    }
+    const one = async (iso: string): Promise<number | null> => {
+      const [y, m, d] = iso.split("-").map(Number);
+      const urls = [
+        `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${y}.${m}.${d}/v1/currencies/usd.min.json`,
+        `https://${iso}.currency-api.pages.dev/v1/currencies/usd.min.json`,
+      ];
+      for (const u of urls) {
+        try {
+          const data = await getJson(u);
+          const v = Number(data?.usd?.[c]);
+          if (isFinite(v) && v > 0) return v;
+        } catch { /* next mirror */ }
+      }
+      return null;
+    };
+    const vals: number[] = [];
+    for (let i = 0; i < dates.length; i += 6) {
+      const got = await Promise.all(dates.slice(i, i + 6).map(one));
+      for (const v of got) if (v !== null) vals.push(v);
+    }
+    if (vals.length < 12) throw new Error(`only ${vals.length} sample dates available from currency-api`);
+    const rate = vals.reduce((n, v) => n + v, 0) / vals.length;
+    return { ok: true, value: { rate: Math.round(rate * 1e6) / 1e6, points: vals.length, from: startIso, to: endIso }, provider: "currency-api", units: 1 };
+  } catch (err) {
+    return { ok: false, error: (err as Error).message, provider: "currency-api", units: 1 };
+  }
+}
+
 /** Frankfurter (ECB). Accepts an ISO date for historical lookups. */
 export async function fxFrankfurter(code: string, date?: string): Promise<ProviderResult<LiveRate>> {
   try {

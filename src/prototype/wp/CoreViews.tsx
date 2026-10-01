@@ -4,7 +4,7 @@ import { useState, useSyncExternalStore } from "react";
 import { Callout, SectionHeader, StatusPill } from "../primitives";
 import type { ViewId } from "../Shell";
 import { BS_LINES, CATEGORY_CELLS, IS_LINES, OWNERSHIP_FIELDS, explainUnreadable } from "./engine";
-import { displayLabel } from "./captions";
+import { bilingualLabel, displayLabel } from "./captions";
 import {
   actions, allReviewItems, buildWrites, cellCount, getSnapshot, readDetail, readState, subscribe, validateEntity,
   PROCESS_STEPS, type Entity,
@@ -236,7 +236,7 @@ const DOC_KIND_CHOICES: { label: string; kind: string; pageHint?: "fs-pnl" | "fs
   { label: "Related-party ledger", kind: "related-party-ledger" },
   { label: "Client questionnaire", kind: "client-questionnaire" },
   { label: "Related-party salary schedule", kind: "related-party-salary" },
-  { label: "Trial balance", kind: "trial-balance" },
+  { label: "Trial balance / statement spreadsheet", kind: "trial-balance" },
   { label: "Exclude (terms / other)", kind: "terms-and-conditions" },
 ];
 
@@ -501,7 +501,7 @@ export function MappingView() {
                             return (
                               <div key={caption} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3, flexWrap: "wrap" }}>
                                 <span>
-                                  {caption}{" "}
+                                  {bilingualLabel(ent.translations, caption)}{" "}
                                   <small>
                                     ({group.map((c) => `${c.field} ${c.value.toLocaleString()}${c.year ? ` · ${c.year}` : ""}${c.period ? ` · ${c.period}` : ""}`).join(", ")}
                                     {group[0].docName ? ` · ${group[0].docName}${group[0].page ? ` p.${group[0].page}` : ""}` : ""}

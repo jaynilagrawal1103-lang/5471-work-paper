@@ -187,6 +187,707 @@ On 2026-09-15 the owner landed a local UX pass and the Parnasa reconciliation re
 
 Residue from that pass is in Open issues below.
 
+2026-09-28 in-browser PaddleOCR asset loading (layer only, NOT committed at
+owner's request; extraction/mapping/calculation untouched):
+- Root cause of "Could not download …/ppocrv5_dict.txt (404)" and the silent
+  switch to Tesseract.js: the dictionary is an ordinary git file in the pinned
+  OnnxOCR commit, but the page fetched it from media.githubusercontent.com,
+  which serves only Git LFS objects. det/rec/cls are LFS (media.* is right
+  for them; raw.* returns a 132-byte LFS pointer). `EN9PPOCR.urls()` now
+  returns a list per file: weights from media.*, dictionary from raw.* then
+  cdn.jsdelivr.net/gh. A hand-set `en9OcrModelsUrl` still serves all four.
+- `MODEL_SHA` was pinned but never checked. Now `EN9PPOCR.check()` refuses an
+  empty file, an LFS pointer, an HTML page or a sha256 mismatch for built-in,
+  stored (IndexedDB) and downloaded copies; a bad stored copy is deleted and
+  fetched again. Dictionary pinned: sha256 d1979e9f…af1b, 18,383 lines.
+- `fetchFile(urls,label,asset,sha)`: each place tried twice on a network
+  error (1.5 s apart); a 4xx or wrong file moves to the next place; every
+  reason is kept in the thrown error. Network errors name the URL.
+- After the sessions start, `recClasses()` must equal blank+dictionary+space
+  (18,385 for this commit) or the engine stops with the reason.
+- Tesseract.js is still the fallback when PaddleOCR cannot be recovered; its
+  row reads "Primary OCR unavailable — fallback OCR used; review recommended."
+  with the real error in Details. A later successful load clears the reason.
+- `scripts/build-standalone-ocr.mjs` and `tests/e2e/ocr_browser_e2e.mjs`
+  fetched the dictionary from media.* too (the e2e hid it by serving every
+  media.* path from a local cache); both use raw.* now and the e2e route
+  answers 404 for non-LFS paths on media.*, as the real host does.
+- `test:ocrbrowser` +5 cases (hosts, refusal matrix, purge, retry, classes).
+  `test:e2e-ocr-browser` 89/89 (it had been failing at its first wait since
+  the engine line moved into the closed Advanced disclosure; now waits for
+  "attached", and reads `urls().rec[0]`).
+
+2026-09-28 (7) OCR: Tesseract.js second opinion when PaddleOCR fails or is
+unsure (layer only; NOT committed).
+- `en9OcrRun` page loop: PaddleOCR's page result goes through
+  `en9OcrSecondOpinion`. Unsure = error on the page, no text, mean word
+  confidence < `EN9OCR.UNSURE_MEAN` (0.85), or > `EN9OCR.UNSURE_LOW` (25%) of
+  words under 0.80 (`en9OcrUnsure`, `en9OcrPageConf`). Then
+  `realIO.fallbackRecognize` reads the same rendered page with Tesseract.js
+  (loaded on demand, one worker per run, terminated at the end). Tesseract is
+  used when PaddleOCR failed/read nothing, or it is surer AND reads ≥ 60% as
+  many words; otherwise PaddleOCR's reading stays. Tesseract unavailable
+  (offline build) → PaddleOCR kept; crash + no Tesseract → page fails
+  visibly. Sidecar: per-page `engine`, info flag `engine-fallback` with the
+  reason, `chain` [paddle, tesseract.js], backend "… · Tesseract.js 5 on
+  page(s) N (PaddleOCR failed or was unsure there)". A confident page is
+  unchanged (Tesseract never loaded).
+- Verified in Chromium on a 3-year scan: normal (no fallback), forced unsure
+  (Tesseract 96% < Paddle 99% → Paddle kept), forced crash (Tesseract read
+  both pages, 2023 booked). `test:ocrbrowser` +6 (29), e2e-ocr-browser 89/89.
+- Investigation same day: 3-year statements — OCR reads every year and
+  amount correctly; the year the preparer sets controls the column. The
+  gluing of tight columns and the Andrew Ban gaps are fixed in (8).
+
+2026-09-30 (18) Jacob Kelt / SHORI CORPORATION. QuickBooks P&L + BS printed as
+"Power Real Group, LLC"; 2023 US return with ONE 5471 (SHORI CORPORATION,
+SHORI01). Harness `$SP/kelt2.mjs` (MODE none | confirm | diff; accepts the
+re-process dialog). Gaps 1-3 FIXED in both trees, NOT committed:
+- `booksNameAlias` (dist `EN9booksAlias`, `EN9BOOKSALIAS`): one named 5471 in
+  the prior return(s) + exactly one other company name on the current papers
+  (none naming the CFC itself, no other entity owning either name, preparer
+  did not answer "different") = the same company's books/trading name. The
+  page scope counts both names as this entity's (`namesOf`, entry `names`;
+  dist `EN9ALIASSCOPE`), so no page is held back; warn `entity-books-name`.
+- The prior return is used PROVISIONALLY in that case (currency USD, Belize,
+  SHORI01, opening balances, holders; `EN9BOOKSPROV`) and `nameMismatch`
+  stays set until answered (`EN9BOOKSASK`) → `cf-name-unconfirmed` blocks
+  generation. Without it the statements alone gave currency PHP from the
+  account "1024 Paypal PHP".
+- Fan-out: the block waiting for the name answer is not an additional 5471
+  (`pendingBlock`, dist `EN9pend`/`EN9PENDBLOCK`) → no duplicate entity.
+- `confirmLegalName(same)` stores `Entity.nameAliases` (dist `EN9ALIASKEEP`);
+  "different" clears what the prior return supplied (detected values still
+  unchanged, holders, categories, card name; `EN9DIFFCLEAR`). Agent case
+  context/risks and insights read the aliases (`EN9ALIASHINT/CTX/RISK`).
+- Result: first run = 1 entity "SHORI CORPORATION", 30 lines, all Sch C/F
+  figures, opening balances, only blocker the name question; confirm → no
+  blocker. "Different company" → Power Real WP + separate SHORI entity.
+  Other 10 clients identical (lines, contributions, unmatched, writes, review
+  items). Suite 75: 74 pass (`test:peg` as at HEAD); new `test:booksname` (6);
+  e2e 45/45, 89/89.
+- Kelt gaps 5-16 (second pass, both trees, NOT committed):
+  - FX: plain "exchange gain/loss" → IS:19 (8a; Sch I-1 subtracts 8a); only
+    "realised/realized exchange" → 8b. Catalogue v14 (move 13 → IS:19;
+    dist `EN9RULEV14MOVE`). Martinez FX -81.37 moves 8b → 8a.
+  - Statement sub-groups: `tagStatementGroups` (sections.ts; dist
+    `EN9tagGroups`, `EN9GROUPS`, call `EN9GROUPCALL`) tags accounts with the
+    innermost group a proven total closes (not section banners, not outer
+    groups); `resolvePool(…, group)` gives a group one row, captioned with
+    the group from its 2nd account (dist `EN9POOLGROUP`). Zero-value rows
+    take no pool row (`EN9POOLZERO`). Kelt: "Credit Cards", 6790/7300
+    groups; 2Hats: "Office costs" 132.12 as its reviewer.
+  - Opening split: prior attached statement lines kept (`statementCaptions
+    .lines`, dist `EN9STMTLINES`) and each opens on the row with the same
+    words (`EN9BOYSPLIT`, vars EN9bs*). Kelt 11,410 / 51,481; HMC OCL split.
+  - PTEP: `readPriorPtep` (carryForward.ts; dist `EN9readPtep`) reads prior
+    Sch J line 14 columns (b)-(d) and (e)(i)-(x) (headings glued in one cell
+    placed by width; amounts by right edge; glued figures split) → Sch J
+    row 15 H/J/L, N..AF, info `cf-opening-ptep`. Matches reviewed WPs: Kelt
+    AB15 9,321; HMC X15 -2,416; TEZ H15 -16,680,312.
+  - USD rounding: `usdRoundingGaps` (src validate; dist `EN9usdRound` in the
+    tie-out) warns `usd-rounding-eoy/boy` with the RE fix; template row 64
+    still shows it (reference hides it by rounding its total).
+  - One rate (USD or 3 equal rates): `re-equity-movement` (F25) replaces
+    `re-translation-adjustment`; sign-off writes F25 (`EN9EQMOVE*`).
+  - Categories written "X" (`EN9CATX`); Sch Q C57 = books name when the
+    entity has one (`EN9SCHQBOOKS`).
+  - Lesson: dist `var`s are function-scoped — a loop named EN9q overwrote
+    the questionnaire var and froze processing; new dist names are unique.
+  - Left, reviewers disagree: line 16 vs 19 (prior return filed 16), Sch E
+    nil row (2Hats fills, others blank; template formulas stay), category
+    5a, C36, address split, date format, "4000 Cost of goods sold" row,
+    accounting+legal merged by the reviewer. Also open: "different company"
+    answer sniffs PHP from "Paypal PHP".
+- Tests: new `test:keltr18` (9); suite 76: 75 pass (`test:peg` as at HEAD);
+  e2e 45/45, 89/89. Live A/B: only the intended changes above.
+
+2026-09-29 (17) Full regression of rounds (6)-(16), then its gaps fixed. Both
+trees, NOT committed. Live UI flow on 10 clients / 13 entities
+(`$SP/reg2.mjs` waits for EVERY entity; the old harness waited for the first
+only, so a fan-out sibling read 0 lines — a harness artefact, not a defect).
+- Regression fixed: `missingDocuments` said "a balance sheet was found … could
+  not be read" from a balance sheet inside the prior-year U.S. return
+  (Santmyer) or a sister company's statements (DELINK). `seen` now counts only
+  this entity's current statements (not prior-year-us-return, not a document
+  naming another company). dist = EN9INSIGHTS rebuilt.
+- Catalogue v13 (dist `EN9RULEVER=13`, `EN9RULEV13`, `EN9RULEV13MOVE`):
+  short-term debt/loans/borrowings → BS:OL (line 19) like every other
+  borrowing (Macroroots' filed return: line 16 blank, line 19 = the debt);
+  taxes payable stay BS:OCL; v12 catalogues get a MOVE. Section route under a
+  non-current heading no longer forces "short-term" to OCL — only "current
+  portion" (`EN9SHORTTERM`). New group "deudores diversos / deudores varios /
+  otros deudores / sundry debtors" → BS:OCA (not trade receivables; "trade and
+  other debtors" unchanged).
+- Prior Sch F parser: "20 Capital stock: a Preferred stock" (heading + first
+  sub-line in one row) is line 20a (`EN9SUBLINE`, both matchers). Capital
+  printed without a class keeps the prior return's class: prior 20a > 0 and
+  20b blank → BS:59 moves to BS:58 unless the caption names a class, the
+  preparer assigned it, or 20a is already filled (`capitalClassFromPrior`,
+  dist `EN9CAPCLASSFN`/`EN9CAPCLASS`, info `capital-class-prior`).
+- Result: Macroroots IS+BS = reviewed WP (ALL MATCH); EL KIJ other current
+  assets = reviewed WP. Every other client identical (lines, contributions,
+  unmatched, writes). Suite 74: 73 pass, `test:peg` as at HEAD; new
+  `test:r17` (8); `test:multiyear` updated; e2e 45/45, 89/89.
+- Left, NOT changed (existing catalogue rules or reviewer disagreement; owner
+  decision): "gastos financieros"/interest → line 13 (EL KIJ/TEZ/2Hats WPs use
+  17, Joyce/HMC use 13); FX loss on 8a (2Hats WP: 17); taxes/social-security
+  payable OCL (Wiener/2Hats WPs: AP; Andrew/Joyce/HMC: OCL); TEZ advances to
+  suppliers, prepaid taxes; HMC staff wages split; C36 "10% corporate
+  shareholder" (no formula uses it; reviewed WPs answer Yes and No for the
+  same ownership pattern).
+
+2026-09-29 (16) 2Hats / William Phillippe feedback (fixture 2hats_rows.json = the
+real annual accounts' rows). Both trees, NOT committed.
+- "Short-term liabilities 27.032,10" is a liabilities banner (was not → the
+  equity banner ran on and every creditor went to retained earnings).
+- Cash group headings printed with totals ("Liquid assets", "Checking
+  accounts", "Saving accounts") open the cash section (`CASH_GROUP`, dist
+  `EN9CASHGRP` + tagSections branch) → both IBAN accounts to cash 28,447.17.
+- deductionMagnitudeFlip only when the row's parent total is not positive
+  (`parentTotalSign`, dist `EN9parentSign`/`EN9DEDPARENT`): "40990 Other
+  personnel costs -9,37" under "Other personnel costs 2.390,63" keeps its sign
+  → compensation 186,640.63 = the reviewed WP.
+- Result: BS balances 29,641.42; RE -1,890.68; common stock 4,500 once;
+  9a 1,449.37 / 9b -1,390.12. Placement differs from the reviewed WP only
+  inside liabilities (tool: creditors 259.24 → AP, NSSO 6,087 → OCL, director
+  current account 5,568.69 → line 18; WP: NSSO → AP, the rest OCL).
+- Banner count 49 (`test:sections`); `test:veillon` 16. Suite 72/73 (peg as at
+  HEAD), e2e 45/45 + 89/89, A/B other clients identical.
+
+2026-09-29 (15) AI-agent review priorities (owner: "fix all priorities"). Both
+trees, NOT committed. Rules decide; the wording is the agent's style; no
+figure is changed by any of it.
+- New pure module `insights.ts` (dist: the same module compiled by esbuild
+  into `/*EN9INSIGHTS-BEGIN/END*/`, global `EN9INS`; rebuild with
+  `$SP/rebuild_ins.py`). Called from `validateEntity` (dist `w8`,
+  `EN9INSCALL`) and, for the two summaries, from `allReviewItems` (dist
+  `gn`, `EN9INSSUM`, shown FIRST in the Exception Center). Each check runs in
+  its own try; all items are warn/info, never block.
+  - `missingDocuments`: doc-missing-balance-sheet / -pnl / -prior-return /
+    -ownership, each naming the schedule it blocks ("Balance Sheet is
+    required because Schedule F …").
+  - `ocrSummary`: ocr-summary-<file> (overall, tables, figures, per page,
+    figures < 90%) and ocr-page-low-<file>-p<n> for pages < 85%.
+  - `documentDiagnosis`: doc-diagnosis-<file> for a statement document that
+    booked nothing — why (no text / low OCR / tax return / wrong year /
+    captions unmatched / unidentified), next step, document needed. Skips
+    documents naming another company.
+  - `calculationExplanation`: calc-explain (gross profit → net income, tied
+    to the statement's own result; reads src `value` or dist `values/years`).
+  - `ownershipExplanation`: ownership-basis (sources of %, CFC, 10% corp).
+  - `memorySuggestions`: memory-doctype-<file>, memory-fx-<CCY> from
+    localStorage `en9ChoiceMemory` (recorded by setDocKind and by typing the
+    average rate; dist `EN9MEMDOC`, `EN9MEMFX`). Suggestions only.
+  - `summarizeReview`: review-priorities (top 5 by block/category/amount)
+    and reconciliation-summary (✓/✗ per cross-document check).
+- Duplicates: a caption+figure already booked to the same line from ANOTHER
+  document (current-year fields) is not booked again; warn dup-doc-<line>-<cap>
+  (src; dist `EN9DUPDOC`). The existing document-level dedupe (value
+  fingerprint ≥80% / containment ≥90%) already drops whole duplicate files in
+  any format; this catches partial overlaps (tested live: an extract repeating
+  "Services 312,687" keeps IS:7 at 366,772).
+- Translation: `bilingualLabel` ("English (original: …)") on the Provenance
+  source caption, the attached-schedules sheet, the "Caption remapped" log
+  and the Mapping screen (dist `EN9BILABEL`). Shared translation memory in
+  localStorage `en9TermMemory`: every stored translation is remembered
+  (updateEntity / dist `rt`, `EN9TERMMEM`) and reused before mapping
+  (`termsFromMemory`, dist `EN9TERMREUSE`).
+- Kept: a manual assignment still also learns a global keyword rule (existing
+  behaviour; turning it into a suggestion is the owner's call).
+- Tests: new `test:insights` (10). Suite 73: 72 pass, `test:peg` as at HEAD;
+  e2e 45/45, 89/89. A/B all clients: lines, contributions, unmatched, writes
+  identical. Veillon live: ocr-summary 95% overall / tables 97% / figures 98%,
+  calc-explain ties to "GANANCIA O (PERDIDA) NETA DEL PERIODO" -621.
+
+2026-09-29 (14) Veillon / Pacific Malibu Properties (Panama, Spanish, scanned).
+Both trees, NOT committed. First pass on a stand-in rebuilt from the tool WP's
+Provenance (`$SP/veillon/gen.mjs`); then verified live on the real PDFs.
+- Defect: pages 6 (cash flow), 8 (notes) and 9 (ID card) inherited the balance
+  sheet page kind and its sticky equity banner → 14 rows (cash-flow lines, the
+  note's "Descripción 2024", note Total 621, ID digits) booked to RE = 3,357;
+  P&L (Anualidad de Agente Residente 321, Tasa Única 300) not booked.
+- Sections (`tagSections`, dist `EN9SECRESET`): section resets at every new
+  page and at a cash-flow / notes title (`SECTION_RESETS`, dist
+  `EN9SECTRESET`), EXCEPT a page that repeats the previous page's statement
+  title (a banner-matching furniture row): `dropFurniture` marks its first row
+  `continuesSection` (dist `EN9CONTTITLE`). A strict reset broke HMC page 7
+  (Team Building etc. → Review); the title rule keeps it.
+- Spanish P&L banners: Estado de Resultados / Ingresos → income, Costo(s) de
+  Venta(s) → cogs, Gastos (+ generales/administrativos/…) → costs (dist
+  `EN9ESPNL`); banner count 44 → 48. Side banners accept plurals ("Activos no
+  Corrientes").
+- Page kinds (`nonStatementKind`, dist `EN9NONSTMT`): `fs-cashflow` (title in
+  the first six figure-less rows, no BS/P&L title there), `fs-notes`
+  ("Notas a los estados financieros", bare "Notas"), `non-financial` (ID card:
+  identity word + birth/issue/expiry date). Signature page after a statement
+  → `non-financial` instead of inheriting it (`EN9SIGNPAGE`). Feeds:
+  non-financial none, fs-cashflow profile, for every document kind.
+- Column-header year row ("Descripción 2024": header word + only years
+  1990-2100) dropped as furniture (`isYearHeaderRow`, dist `EN9YEARHDR`).
+- `sameIndentSubtotals` tests single-column rows too when the caption is a
+  total word (note "Total 621" = 321 + 300; dist `EN9NOTETOTAL`).
+- Booking: the P&L's own result line with no rule ("Pérdida del Periodo") is
+  SKIP, never an expense (`EN9RESULTSKIP`); a BS:46 payable naming
+  accionistas/socios/shareholders/related parties → BS:52 (`EN9SHLOAN`).
+- Stand-in result = corrected WP: IS 321 + 300 (line 17), BS 9a 175,000,
+  line 18 175,621, RE -621 (corrected WP shows it on its extra "CY net income"
+  row). Pages 6/7/8/9 book nothing. A/B (HMC, Rise, Wiener ×2, Santmyer ×2,
+  Romy, Joyce, 2Hats, Martinez, Andrew Ban): identical.
+- Tests: new `test:veillon` (9); `test:sections` banner count 48;
+  `test:spanish` finds the figure row (banner rows now kept). Suite 72: 71
+  pass, `test:peg` as at HEAD; e2e-agent 45/45, e2e-ocr-browser 89/89.
+- Real PDFs received (scanned, PaddleOCR). Live run found 4 more gaps, fixed
+  in both trees:
+  - OCR drops spaces in bold capitals ("TOTAL DEACTIVOS", "PASIVOSNO
+    CORRIENTES", "GANANCIAO (PERDIDA)ANTES DEIMPUESTOS"). `deglue()`
+    (sectionBanners.ts, dist `EN9DEGLUE`) splits a word only when every piece
+    is a known statement word ("no"/"mas" only before corrientes/patrimonio);
+    used for MATCHING in `bannerKey` (dist `EN9bk`), `matchRuleScoped` (dist
+    `Tv`) and `isProfitLine`; the stored caption is unchanged.
+  - "Notas" column: note refs under it are not amounts (`NOTES_HEAD`, dist
+    `EN9NOTESH`).
+  - Spanish running results (GANANCIA O (PÉRDIDA) BRUTA / OPERATIVA / ANTES DE
+    IMPUESTOS / NETA) are SKIP when no rule matched (`isResultSubtotal`, dist
+    `EN9RESULTSUB`); PROFIT_LINE knows "ganancia o (pérdida) neta del periodo".
+  - "Índice" contents page (page numbers were booked as gross receipts) →
+    fs-cover (`CONTENTS_TITLE`, dist `EN9CONTENTS`), also when OCR joins
+    "Pages" onto the heading.
+- Live real result = corrected WP: IS line 17 G&A 621; BS EOY 9a 175,000,
+  line 18 175,621, RE -621; BOY (prior return) 173,000 / 163,650 / 10,000 /
+  -650. Pages 2, 6, 7, 8, 9 book nothing. Left: C36 "10% corporate
+  shareholder" No (holders are individuals) vs WP Yes; "Estado de Cambios en
+  el Patrimonio" reads as a balance-sheet page (its rows go to Review only).
+- Veillon feedback round (same day): country of incorporation is read from
+  the cell under the item 1c caption (first row below, never a caption
+  fragment; the old last-word rule is the fallback), source "5471 item 1c"
+  (`EN9COUNTRYCOL`). A first version read two rows down and gave Rise
+  "h Functional currency code" — caught by A/B, fixed. Spanish dated balance
+  rows ("Balance/Saldo al 1 de enero de …", "saldo inicial/final") count for
+  movement pages (`EN9DATEDES`); the Veillon equity page still shows 2 rows in
+  Review because its opening row prints no figure. C36 left as is: the
+  reviewed WPs disagree (individual holders → Yes for Macroroots/Veillon,
+  No for Barnomadics), no rule fits all.
+- `test:veillon` 15; `test:detect` snapshot chunk 4 (EN9NOTESH) re-synced;
+  `test:feedback10` loads EN9DEGLUE. The `.cache/pdfjs-3.11.174` harness cache
+  was re-fetched from npm (gitignored).
+
+2026-09-29 (13) Andrew Ban feedback gaps (book2 rows 76-84). Both trees, NOT
+committed.
+- Ownership: item C is lowered to the Part I U.S. total (rule from (6)/(11))
+  only while the filer's own Part I stake is >= 10%. Below 10% the filer is a
+  filer only through attributed stock, so item C stays as filed and
+  `cf-own-pct` warns with the 958(b)(1) caveat (dist `EN9KEEPITEMC`). CFC =
+  Yes also when item C (as kept) > 50 (`EN9icc`). Andrew 100/Yes (matches the
+  reviewed WP); Joyce 40/No and Charlie Brawn 20/No unchanged.
+- Equity dividend line: `equityDividendLine().addsToEquity` (sum of printed
+  values > 0; dist `EN9DIVSIGN`). Printed POSITIVE (Andrew "Dividend Payouts"
+  43,478 adds to equity) → Dividends tab + RE only; Schedule R keeps the
+  prior NONE row, Sch J F33 and Sch M are not written (`EN9fromEq`,
+  `EN9EQNOSCH`). Printed NEGATIVE (Martinez "Dividend disbursed" -100,000) →
+  paid: Dividends tab, Sch R, Sch J, Sch M as before, with its own
+  `dividend-from-equity-line` warning (`EN9DIVPAID`).
+- Schedule E tax branch: O16 = |IS:62| and E57 (E-1 line 4) = same, warn
+  `sch-e-current-tax` (was a zero-placeholder block). M16 is a template
+  formula. HMC now gets 179 (FY2025 column; 5,235 with WP year 2024, = its
+  reviewed WP).
+- Provenance: new last column "Where it was read" — page or spreadsheet, row
+  caption, year column, and every year the row prints (`EN9WHERE`,
+  `EN9whereCol`).
+- Average rate chain: IRS → OFX → ECB → currency-api public market mid-rates
+  (1st and 15th of each month via jsdelivr, then pages.dev; ≥12 dates;
+  `fxCurrencyApiAverage`, dist `EN9CAPIAVG`/`EN9CAPICHAIN`, tag "Market") →
+  estimate offer. Andrew with real 2024 npm data (19 dates from 03/15): 4.600619.
+  The reviewed WP's 4.788045 is close to the 12/31 spot, not an average.
+- Remaining vs reviewed WP: C36 "10% corporate shareholder" No (both holders
+  are individuals) vs WP Yes; Sch M line 19 112,680 (related-party
+  compensation, not in the statements).
+- Tests: `test:andrewban` 7; `test:p5` expects the new Sch R NONE condition.
+  Suite 71: 70 pass, `test:peg` fails as at HEAD. e2e-agent 45/45,
+  e2e-ocr-browser 89/89. A/B vs round 12 (HMC, Rise, Wiener ×2, Santmyer ×2,
+  Romy, Joyce, 2Hats, Martinez): lines, contributions, ownership, dividends
+  identical; only Sch E O16/E57 now filled for HMC (179) and Barnomadics
+  (23,813 — book2 row 56 asked for it).
+
+2026-09-28 (12) Andrew Ban live (real xlsx names + 2023US). Both trees, NOT
+committed.
+- C59 average: IRS table has no RON; OFX does not carry it. Chain is now IRS
+  → OFX → ECB daily average (`fxFrankfurterAverage`, frankfurter.dev time
+  series, ≥40 points; dist `EN9ecbAvg`/`EN9AVGCHAIN`) → nothing: an ESTIMATE
+  (mean of prior/current Treasury year-end) is stored on
+  `fxMeta.avgRateNote.estimate` and offered as `suggestedValue` on the
+  `fx-avg-missing` blocker — never written (dist `EN9AVGEST`, `EN9ESTOFFER`).
+  Stored on the note, not a review item: processing overwrites reviewItems.
+- Work paper year: `deriveCaseYears` also uses a prior return with no period
+  end read yet (face period is read later) when nothing else states a year
+  (dist `EN9PRIORONLY`); before `materializeCaseWrites` the year is resolved
+  again if still unknown (dist `EN9CYAGAIN`). Andrew Ban's step 1 said "not
+  established", so schedules were built with no year and the dividend skipped.
+- Dividend line inside equity ("Dividend Payouts") → the year's distribution
+  (`equityDividendLine`, dist `EN9eqDivLine`/`EN9DIVEQ`): Dividends tab,
+  Sch R, Sch J F33; `dividend-from-equity-line` warns (and the filer's share
+  when < 100%). Sch F keeps the statement as printed.
+- RE roll-forward: distributions use the planned dividend; new local check
+  `re-books-not-rolling` (opening + NI − dividends ≠ closing in functional
+  currency) and then NO translation-adjustment offer (dist `EN9BOOKSROLL`).
+  `re-opening-mismatch` is now info: E&P vs book RE differ by nature.
+- "Other revenues/sales" in the income section (feed ≠ bs) → IS:7 (dist
+  `EN9OTHERREV`).
+- Period: agent facts pick this year's accounts, not the prior return
+  (dist `EN9STMTDOC`); agent period findings skipped when those accounts
+  confirm the period (`EN9PERIODOK`); stmtPeriod accepts trial-balance grids
+  (`EN9TBPERIOD`), so no false `period-end-assumed`.
+- The early `entity-name-differs` warning is skipped while the entity still
+  has its default "Entity N" name and a prior return is present — the
+  existing name sync renames it to the legal name later (dist `EN9AUTONAME`;
+  an auto-rename was tried and dropped: it pre-empted HMC's legal-name case).
+  Kind label "Trial balance / statement spreadsheet".
+- `re-books-not-rolling` uses only an opening RE READ from the statements'
+  own prior-year column (BS:61 boy contributions); an opening carried from
+  the prior return keeps the translation comparison (Rise unchanged).
+- Result: MACROROOTS…, 12/31/24; IS:7 366,772 (= Total net sales); dividend
+  43,478 recorded; ECB mocked → C59 4.5895 (261 points); offline → estimate
+  4.639 offered. Remaining blockers are the preparer's: confirm RON, answer
+  officer/director.
+- Tests: new `test:andrewban` (5). Full suite 72: 71 pass, `test:peg` fails as
+  at HEAD. e2e-agent 45/45, e2e-ocr-browser 89/89. A/B (9 entities, 2Hats,
+  Martinez, Romy real): every line, contribution identical. Differences:
+  Rise loses a false agent period note (its 2024 statements state the
+  period); Romy (no-OCR impact run) now knows its year → days owned 366,
+  transition No, and a true `period-end-assumed`.
+
+2026-09-28 (11) Martinez real files received (2023 return, DFRNT BS, P&L).
+Both trees, NOT committed.
+- 5471 face items d-g printed as ONE cell ("10/25/23 UNITED ARAB EMIRATE code
+  no. 512100 DESIGN & VIDEO PR"): place, code and activity now parsed from
+  it (carryForward, dist `EN9ACTGLUED`). PBA and principal place now filled.
+- Banner "Other Income(Loss)" (bracketed) → otherIncome: "Other operating
+  income (expenses) 2,763.40" was booked as a cost (swing 5,526.80).
+- `numericCell` reads an ISO-currency-prefixed amount ("AED -47,183.90",
+  "AED2,424,658.93"; grouped/decimal only, "USD 5" stays text; dist
+  `EN9curCell`/`EN9CURCELL`).
+- `Entity.statedResults`: the P&L's own bottom line (last isProfitLine row per
+  P&L doc, not pre-tax), captured in a pre-pass before booking because
+  structure drops remove it (dist `EN9STATEDPRE`, saved `EN9SRSAVE`).
+  `pnlTieOut` prefers it over the BS equity line; new `resultsDisagree` →
+  `pnl-bs-result-differ` (Martinez: P&L NET EARNINGS -47,183.90 vs BS Net
+  Income -36,033.71, 11,150.19 apart — the client's reports disagree).
+- Martinez now: Schedule C -47,185.64 = P&L within tolerance (1.74 = the
+  -0.87 Discount Allowed made positive by dist step 4, pre-existing).
+- Tests: `test:feedback10` 9; detect snapshot chunk 1 re-extracted. Full suite 70:
+  69 pass, `test:peg` fails as at HEAD. e2e-agent 45/45, e2e-ocr-browser 89/89.
+  A/B (9 entities, Andrew Ban, 2Hats): lines, contributions, ownership identical.
+
+2026-09-28 (10) Martinez (DFRNT, QuickBooks) + Romy Cuadras feedback — the
+partially fixed gaps (owner: "fix, use logic and agent"; NOT committed). Both
+trees. Martinez source PDFs are NOT in the sandbox: a stand-in rebuilt from
+his WP's Provenance (`$SP/martinez/gen.mjs`) reproduced every gap.
+- Sections: a figure-carrying "Total Bank Accounts" closes the cash group
+  (next rows → assets); "Total Fixed Assets"/"Total … Liabilities" close their
+  narrow group too (`CLOSES_TO`; dist `EN9TOTCLOSE`). Banners: "Other Current
+  Assets", "Accounts Receivable" (dist `EN9ARBANNER`; lexicon now 44).
+  Martinez A/R, inventory, prepaid no longer booked as cash.
+- Equity result: `PROFIT_LINE` adds bénéfice/perte/résultat de l'exercice,
+  Jahresgewinn/-verlust/-überschuss/-fehlbetrag/-ergebnis, utile/perdita
+  dell'esercizio (dist `EN9PROFITFR`); `isProfitLine` exported. Romy's RE
+  missed "Bénéfice de l'exercice" (-9,303.78) when read with the apostrophe.
+- Terms: "petit materiel …" → small material (IS:OD); squeeze folds rn→m
+  (OCR "foumitures"); doubled final e ("comptabilitée") retried (dist
+  `EN9DOUBLEE`).
+- AI veto `statementSideVeto` (dist `EN9sideVeto`, both AI paths): a caption
+  read on an income-statement page can't go to Sch F and vice versa (Romy's
+  "Petit matériel" → inventories).
+- Tax sign by result: negative IS:62 flipped only when the flip makes
+  Schedule C equal the stated result exactly (`tax-sign-by-result`; dist
+  `EN9TAXBYRESULT`, which mirrors dist-only step-4 negative-deduction abs).
+- Checks (validateEntity, both trees): `pnl-net-income-tie` (booked NI vs
+  BS:61 "Net Income"/"Bénéfice…" contributions, names unassigned P&L rows of
+  that amount; `pnlTieOut`), `basic-activity-missing`, `category-5-expected`,
+  `category-4-expected`, `category-3-carried`; CFC warn now at ≤50% filer.
+- Filer → U.S. Shareholders rows 7-14 when no Sch B Part I and the filer is a
+  direct holder (`us-holder-filer`; dist `EN9USFILER`; excluded from the
+  Part I pro-rata note).
+- PBA: face item f/g "512110 MOTION PICTURE…" in one cell, or words under
+  the code caption, now read (dist `EN9ACTIVITY`); code only → NAICS
+  description (`naicsDescription`, dist `EN9NAICS`, labelled "confirm").
+- Results: Romy real inputs — every P&L line booked, tax 84.80, Schedule C =
+  stated -9,303.78, Sch F balances 26,027.29 / 35,378.04. Martinez stand-in —
+  cash 285,588.12, A/R 422,111.77, prepaid 23,346.15 on line 6; US block row 7
+  WILLIAM MARTINEZ 25,000/25,000; with the P&L line missing, the tie check
+  reports exactly the WP's 16,678.73. `__EN9MAP.EN9validate` exposed for tests.
+- Tests: new `test:feedback10` (8); `test_sections` lexicon 44. Full suite 70:
+  69 pass, `test:peg` fails as at HEAD. e2e-agent 45/45, e2e-ocr-browser 89/89.
+  A/B HMC, Rise, Wiener ×2, Santmyer ×2, Romy, Joyce, Andrew Ban, 2Hats: lines,
+  contributions and ownership identical (DELINK gains the us-holder-filer note).
+
+2026-09-28 (9) Work paper year as the single source (owner request; NOT
+committed). Both trees. Builds on "The work paper year controls the run"
+(2026-09-22: `resolveCaseYears` = typed year wins, documents vote otherwise).
+- Year anchors added (`YEAR_ANCHORS`, dist `EN9YEARANCH`): "Balance sheet as
+  of 2024", "Results until end of 2024", and the END year of a numeric range
+  "01/01/2024 - 31/12/2024". 2Hats Consulting 2024 accounts had no year at all
+  (activity card: Identified —, Unclear, Unknown) — now 2024, period
+  01/01/2024–12/31/2024.
+- `detectStatementPeriod` reads numeric ranges (`numericRange`, dist
+  `EN9NUMRANGE`/`EN9numericRange`): day/month order only from a part > 12,
+  otherwise not read; valid dates, start ≤ end. The first page counts when it
+  is `unknown` and later pages are `fs-*` (a statement set's cover).
+- `deriveCaseYears`: no statement year but a calendar prior return → cy =
+  prior + 1 (dist `EN9PRIORONLY`); reason text names statements only when
+  there is dissent.
+- Agent year check: a prior return with NO work paper year shows "Unclear",
+  not "Mismatch" (dist `EN9NOYEARPRIOR`).
+- Year change after a run (store `setField`, dist `EN9YEARCLEAR`): clears
+  lines, contributions, sourceLabels, unmatched, extraWrites, dividends (and
+  auto FX), sets `yearStale`, and re-processes the entity 1.5 s after the
+  last edit (`yearRerun` debounce; dist `window.__EN9YR`). Documents, profile,
+  overrides and sign-offs kept.
+- "Unknown → 0 figures": already a BLOCK review item with the reason when an
+  unidentified document carries figures, and its rows go to Review
+  unassigned (2026-09-23). The 2Hats case was a missing year, not a missing
+  identification; fixed above.
+- Results: 2Hats rebuilt PDF, no year entered → WP 2024, same 16 lines, no
+  `period-end-assumed`. Andrew Ban auto (2024) and WP 2023 identical to (8);
+  process at 2023 then switch to 2024 → cleared at once, re-read, equal to a
+  fresh 2024 run. A/B HMC, Rise, Wiener ×2, Santmyer ×2, Romy, Joyce:
+  lines, contributions, ownership and profile identical. Wendorf and Kelt
+  source files are not in the sandbox — covered only by their existing tests.
+- Tests: `test:multiyear` 16 (+5). Full suite 69: 68 pass, `test:peg` fails
+  as at HEAD. e2e-agent 45/45, e2e-ocr-browser 89/89.
+
+2026-09-28 (8) Multi-year statements + Andrew Ban / Macroroots (owner said
+"fix all gaps"; NOT committed). Both trees; catalogue v12.
+- Glued figures: two COMPLETE amounts (grouped thousands or cents, engine
+  `COMPLETE_AMOUNT`) are never one cell/number — pdfText cell grouping
+  (`TWO_FIGURES`; dist `EN9TWOFIGCELL`), `numericCell` returns null for a
+  cell holding two (dist `EN9TWOFIG`), layer `en9OcrRuns` never joins two
+  (`EN9OCRFIG`). "1 234 567" / "12 345,67" still read.
+- Grids: `extractRows(grid, {banners:true})` emits value-less heading rows
+  ("Revenues:"), store runs `tagSections` on the grid feed (dist `EN9GRIDBANNER`,
+  `EN9GRIDSECT`). `bannerKey` strips a trailing colon everywhere banners are
+  tested (dist `EN9bk`); banners gain "revenues", "shareholder's equity".
+  Line-number heuristic never drops a value under a year heading (dist
+  `EN9YEARCOLNUM`: AP 2022 97, wages 2022 153).
+- A VALUED row matching the "cash" banner tags itself only (dist `EN9CASHOWN`):
+  "Cash and cash equivalents 65,029" had made receivables cash.
+  Spreadsheets use `tagSections(rows, {headingsOnly:true})`: only value-less
+  heading rows open a section (a title row "Income statement, 2024" had put
+  every unknown caption in gross receipts — caught by `test:e2e-agent`).
+- Routes: liabilities "…tax…" → BS:OCL before payable (`EN9TAXOCL`);
+  termLiabilities "short-term"/"current portion" → BS:OCL (`EN9SHORTTERM`).
+  Rules v12: IS:OD "other expenses"; BS:OCL short-term debt/loans/borrowings,
+  taxes payable; BS:OL long-term debt/loans/borrowings.
+- "Taxes"/"Income tax(es)"/"Taxation" directly after an operating-result /
+  before-tax line books IS:62 (store `PROFIT_BEFORE_TAX`, dist `EN9TAXAFTER`).
+- Year: `deriveCaseYears` — a prior-year return with a 12/31 period end and
+  statements ≥ 2 years newer → cy = prior + 1 (`afterPrior`, reason text says
+  so); fiscal years untouched (dist `EN9AFTERPRIOR`). Grid docs get
+  `statementPeriodEnd` from "December 31," over the newest year
+  (`gridPeriodEnd`, dist `EN9GRIDPERIOD`); the agent brief uses its year
+  (`EN9GRIDYEAR`); cf-seed-only counts trial-balance docs (`EN9TBSEED`).
+- Ownership rule from (6) now needs Part II evidence: item C is lowered only
+  when non-U.S. Part II holders own the difference (`EN9NONUS`). (Andrew's
+  5% → see (13): kept at 100 now.)
+- Results: Andrew Ban 19 lines, 0 unmatched (WP 2023 and 2024); WP 2023 IS
+  equals the filed 2023 Sch C (258,728 / 10,859 / 58,515 / 36,467 / 58,326 /
+  2,352); OCL 12,251 + 262,997; RE opens 66,715. Tight 3-year scan and
+  digital: 2023 column booked correctly. A/B HMC, Rise, Wiener ×2, Santmyer ×2,
+  Romy, Joyce: every line, contribution and ownership identical.
+- Tests: new `test:multiyear` (11); integrity +EN9GRIDPERIOD; detect snapshot
+  chunks 1 and 5 re-extracted. Full suite 69: 68 pass, `test:peg` fails as at
+  HEAD. e2e-ocr-browser 89/89, e2e-agent 45/45.
+
+2026-09-28 (6) Joyce Langan / Barnomadics Ltd — UK (Companies Act) accounts
+(owner asked "fix all these gaps"; NOT committed). Both trees; catalogue v11.
+- Year header: `detectRulers` ignores a "Notes" cell (remembered as
+  `ruler.notes`) and a company registration number on a line that names it
+  ("Company No. SC240721"); `extractPositionedRows` drops small whole numbers
+  under the Notes column (note refs). dist `EN9NOTESHDR`, `EN9NOTECOL`.
+- Sections: banners "Capital and reserves" (equity), "Provisions for
+  liabilities" (liabilities). `SELF_SECTION_ROWS`: a figure-bearing
+  "Creditors: … within one year" / "… after more than one year" sets
+  liabilities / termLiabilities for itself and below. "Profit and loss
+  account" WITH figures is the reserve, not the P&L title banner. dist
+  `EN9UKBANNERS`, `EN9SELFSEC`.
+- Summary + detailed P&L: pages titled "Detailed Profit and Loss Account"
+  (first 4 lines) are set aside when ≥ max(3, half) of the face P&L's rows
+  reappear on them with identical CY+PY pairs (`supplementaryDetailPages`,
+  dist `EN9DETAILPNL`). The face is booked (as the manual paper does).
+- "Cost of sales" is SKIP (a total) — except a collapsed banner row that is
+  the FIRST figure of its section (`collapsedLead`); then it takes the
+  section route (IS:12). dist `EN9COLLLEAD`, `EN9COSLEAD`.
+- Rules v11: SKIP UK subtotals (profit for the financial year, total
+  comprehensive income, net current assets, total assets less current
+  liabilities, …); IS:15 "interest receivable"; IS:29 "interest payable";
+  IS:OI "other operating income"; IS:62 "taxation" (BS keeps BS:OCL via the
+  sheet-scoped scan); new IS:OD group distribution/selling/administrative
+  expenses; BS:14 "stocks". `upgradeRules` now treats a keyword as known per
+  LINE (`knownOn`), so "taxation" already on BS:OCL does not block IS:62.
+  dist `EN9KNOWNON`; rules array regenerated from src (EN9FEEOD kept).
+- Brackets as presentation: per document, cost-line figures (IS:10-12,
+  26-50, OD) all printed negative (≥2, none positive) → COGS, deductions and
+  tax (IS:62/63) booked positive; creditors (BS:44-56, OCL, OL) all negative
+  (≥2) → liabilities positive (eoy+boy). Removes the tax-sign warning; one
+  info item `bracket-convention-<doc>`. dist `EN9SIGNTALLY`, `EN9BRACKETS`.
+- Fixed assets: `movementFixedAssetSplit` reads the UK movement note (classes
+  across; Cost / Depreciation / Net book values blocks; Total column last);
+  returns only when cost − dep = NBV in both years; tangible title required.
+  dist `EN9MOVEFA`.
+- Opening balances: when the statements' prior-year column already opened
+  ≥3 BS lines, the prior return's closing balances are NOT added (they only
+  cross-check, cf-boy-*); a multi-row group the statements opened is never
+  topped up. dist `EN9STMTOPEN`.
+- Equity statement: dated balance rows ("At 1 December 2023", ≥2 distinct)
+  mark a movement page (dropped from the BS feed); `columnarEquityFacts`
+  reads the CY block between the last two dated rows (dividend, profit) when
+  the page has no year header. dist `EN9COLEQ`.
+- Ownership/CFC: item C is lowered only when it exceeds what ALL Sch B Part I
+  U.S. shareholders hold together (non-U.S. relatives are not attributed for
+  CFC purposes; a U.S. spouse is): Joyce 90 → 40, HMC stays 51 (25.5+25.5).
+  CFC = category 5 checked ? Yes : Part I ≥10% U.S. holders > 50% ? Yes : No
+  (no Part I data → Yes as before). CFC No → days left blank. Warn `cf-own-pct`.
+  dist `EN9OWNPARTI`, `EN9NOCFCDAYS`.
+- Sch M dividends paid = dividend × filer's share (`filerShare`) ÷ avg rate;
+  also filled at generation when the avg rate was entered after processing.
+  dist `EN9FILERSHARE`, `EN9SCHMLATE`.
+- Language: hint words that are English homographs ("charges", "capital")
+  count only as whole words beside a foreign word/letter; "loyer", "costi"
+  whole words only ("Employer's NIC" read as French). dist `EN9HINTHIT`
+  (EN9detLang, EN9srcLang, U8). Agent: a dropped row whose caption the
+  catalogue calls SKIP, or a movement-page drop, is not "at risk".
+- Result (shipped file, real PDFs): Joyce 19 lines, 0 unmatched; IS and BS
+  equal the manual paper line for line (857,408 / 502,806 / 1,726 / 29,891 /
+  25,772 / 3,034 / 275,327 / 23,813; BS BOY+EOY incl. 1,139,281/−296,027);
+  Basic C33/C34 0.4, CFC No, days blank; Dividends C3 70,000; Sch J F33
+  −70,000; Sch R 70,000; Sch M E32 35,760. Differences kept: debtors on
+  BS:11 (manual: other current assets), stocks on BS:14 (manual: OCA).
+- Impact (A = build before this entry): HMC, Rise, Wiener ×2, Santmyer ×2,
+  Romy — every booked line and contribution identical. Unmatched fell only
+  for totals/movement pages (HMC shareholder current-account page, Wiener
+  SUMA DEL rows). Ownership: Santmyer/Charlie Brawn 60 → 20 and CFC Yes → No
+  (Part I lists only Ricardo 20%; mother 40% and Dante 20% are NRA) — the
+  same rule as Joyce; confirm with the owner.
+- Open: Sch E — manual reports the non-CFC tax in Section 2 "Other" (row 38);
+  the tool keeps row 16 (preparer decision). Sch M compensation 24,158.37 in
+  the manual has no source in the documents.
+- Tests: new `test:ukaccounts` (19); integrity +8 sentinel pairs;
+  `test:sections` banner count 41 → 43; `detect_test_src.cjs` chunks 4-5
+  re-extracted (e8 with the Notes header, q1 with the note column). Full
+  suite 68 scripts: 67 pass, `test:peg` fails exactly as at HEAD (pre-
+  existing). `test:e2e-agent` 45/45, `test:e2e-ocr-browser` 89/89.
+
+2026-09-28 (5) French/Swiss statements mapped offline (owner approved after
+an impact check; NOT committed):
+- `terms.ts CAPTION_TERMS` gains 65 French leaf captions (English chosen so
+  each hits an existing rule; checked in `test:frenchterms`). Deliberately
+  absent: subtotal captions (Trésorerie, Passifs de régularisation, Autres
+  dettes/créances à court terme, Charges et produits financiers) and
+  "Bénéfice/Perte de l'exercice" (equity on a balance sheet; its English is
+  a skipped total). "capital social" keeps the existing Spanish entry.
+- `translateCaption` second look-up: whole caption with spaces/apostrophes
+  removed and i/l/1/|// merged (OCR: "Reporta nouveau", "CIC Associe"); keys
+  ≥5 chars only; never partial. dist `EN9TERMSQ`.
+- The glossary now runs on every statement row (store loop before
+  `termTranslations` is written; dist `EN9STMTTERMS`). A raw rule match still
+  wins and an entity translation (typed/AI) still overrides.
+- `sections.ts sameIndentSubtotals` (dist `EN9SAMEINDSUB`, called after
+  structRows): a row is a subtotal when EVERY year column (≥2 columns) equals
+  the sum of the row(s) directly above it since the last heading/total/page,
+  and it is not all zero. Single-column statements are never tested.
+- Impact check (real documents, before/after, full app in Chromium): HMC 46=46,
+  Rise 26=26, Wiener EL KIJ 13=13 / TEZCATLIPOCA 12=12, Santmyer Charlie
+  15=15 / Cecilia 16=16 — identical booked lines and unmatched items; only
+  side effect: Spanish captions gain entries in the entity translation list
+  (they already map by rule). Romy: 10 → 20 lines, balance sheet ties
+  (26,027.29), P&L revenue/expenses/interest/tax booked; "Petit matériel et
+  fournitures de training" 549.54 and OCR-misspelt "Frais de comptabilitée"
+  1,300 stay in Review. Not testable here: Boating, Collaborate & Eight,
+  Wendorf (no source documents in session).
+- Also fixed: `service.health()` returned a bare object when the service is
+  "off" and the 60 s cache expired, so the OCR job's `.then` threw and the job
+  stayed "running" for ever (Process waited for ever). Now always a Promise,
+  and `EN9ocrStart` starts the engine inside a promise so any throw fails the
+  job visibly. Test in `test:ocrbrowser` (fails on the old build).
+
+2026-09-28 (4) OCR'd statement "could not process — no caption/figure
+pairs" (owner screenshot, Romy Cuadras / Athletic Prime SARL); NOT committed:
+- Root cause: the scan prints each figure ~half a line off its caption
+  (below on the P&L, above on the balance sheet) and OCR boxes add ±3 pt of
+  noise, so the text layer put captions and figures on different lines —
+  "Loyer" had no figure, "Frais de publicité" took the communication line's
+  2,525.23, most captions read with nothing. OCR words themselves were right.
+- `en9OcrAlignRows` (layer, text layer only; sidecar keeps boxes as read):
+  figures grouped into rows (one value per right-aligned column), the page's
+  own caption/figure offset measured on unambiguous rows, then rows aligned to
+  captions left of the figure columns by a monotone DP (nearest, never
+  crossing, one row per caption). Pages already aligned are returned
+  untouched. Result on Romy: every one of the 23 BS and 20 P&L lines carries
+  its printed figures (43 pairs read, was 24).
+- `en9OcrRuns`: the text layer draws each run of words as one string with
+  real spaces; word-by-word drawing made pdf.js read "Totaldes produits".
+- Section banners `capitaux\s*propres`, `capitaux\s*étrangers`,
+  `actif\s*(circulant|immobilisé)` (src + dist): PP-OCRv5 drops the space in
+  letter-spaced headings ("CAPITAUXPROPRES"), which had put equity rows under
+  liabilities. Equity now books Capital 20,000 + retained 4,624.26.
+- Tests: `test:ocrbrowser` +4 (real Romy boxes), `test:swiss` +1.
+- (French leaf captions and Swiss same-indent subtotals: done in (5) above.)
+
+2026-09-28 (3) OCR card said "No OCR service found" after a successful
+PaddleOCR read (owner screenshot); layer only, NOT committed:
+- A missing local service is the normal case, not an error. The engine box is
+  now built from `EN9OCR.service.statusParts()` → {main, details}: main leads
+  with the engine that reads ("PaddleOCR (PP-OCRv5) runs in this browser…
+  Optional: an OCR service…"); details hold "Service looked for at … — none
+  running." and, after a fallback, "PaddleOCR could not be loaded here: …".
+  `statusText()` still joins both (tests, Settings). Fallback main line:
+  "Primary OCR unavailable — fallback OCR (Tesseract.js) is reading instead;
+  review recommended." The job progress line no longer prints probe errors.
+- "N readings to check" counts distinct flagged WORDS (`en9OcrFlaggedWords`),
+  not flags: one word flagged for a glyph and for low confidence was counted
+  twice (Romy: 4 → 2, both in the handwritten "Genève 30 Mai 2025"). Review
+  items are unchanged (one per flag).
+- Failed row: the real engine error is kept (`EN9OCR.lastError`), not "no
+  result"; Details list the primary (PaddleOCR) and fallback (Tesseract.js)
+  reasons; a download failure reads "OCR engine could not be loaded — check
+  the internet connection…" instead of "add a clearer scan".
+- Details no longer repeat "Engine: …" when the message already names it.
+
+2026-09-28 (2) page-2 classification + Wilbur items 5-7 (owner approved; NOT
+committed):
+- `EN9PNLTITLE`: dist band P&L title test lacked "compte de profits et
+  pertes" and "erfolgsrechnung" (src had them). A French P&L page fell to the
+  shape tests, came out fs-balance-sheet 1, every P&L line booked to BS:50.
+  Now fs-pnl 3 on Romy Cuadras' statement. Guard in `test:swiss` (fails on the
+  old dist).
+- Item 5: `PROFILE_FIELDS` gains refId→B5 and principalPlace→B29 (template
+  rows 5 and 29 were empty and unreferenced); `buildWrites` always writes the
+  labels A5 "Reference ID:" and A29 "Principal Place of Business". dist
+  `EN9BASICREF`/`EN9BASICPPB`/`EN9BASICBOX`. The profile form hides the two
+  from the generic list (`EN9PROFDUP`) because EntitiesView already has
+  dedicated inputs for them. `cf-refid` message now says "carried to Basic
+  Information B5".
+- Item 6: B4 (header, read by 19 sheet titles) is written as `=B11` whenever
+  a legal name exists — one name, entered once. dist `a8` refuses formulas by
+  design (injection guard pinned in `test:gen`); `EN9CELLREF` allows exactly
+  the constant "=B11" and nothing else, pinned in `test:gen`.
+- Item 7: Provenance sheet gains "CARRIED FORWARD FROM THE PRIOR-YEAR RETURN"
+  listing every extraWrite with a `prov` snapshot (today: Schedule J F15 from
+  prior Sch J line 14) with document, page, row text (dist `EN9CFPROV`).
+- New `test:basicboxes` (8 cases), wired into `test:all`.
+- Verified on Romy Cuadras' files: B4 formula, B5 CUADRATHLETIC9469, B29
+  SWITZERLAND, Provenance row "Schedule J F15 … p.48 … -3127"; LibreOffice
+  recalculation resolves B4 and the sheet headers to ATHLETIC PRIME SARL.
+- Still open for this client (not asked): French P&L/BS captions have no
+  mapping rules and no AI key, so 14 lines stay unmatched and the balance
+  sheet is out; "Capital-actions"/"Réserve légale" rows lose their figures
+  because the scan prints amounts ~5 pt below the caption.
+- Live check 2026-09-28 on Romy Cuadras' scanned BS/P&L: all four assets 200
+  from GitHub, engine ppocr, 2 pages in 43 s, 4 flags (Tesseract gave 56).
+  Sandbox note: this container's egress proxy refuses browser-marked requests
+  to media.githubusercontent.com and blocks cdn.jsdelivr.net, so the test
+  relays media.* through Playwright `route.fetch` and serves ort/pdf-lib from
+  node_modules (same pinned versions).
+
 2026-09-25 OCR card presentation pass (layer only, NOT committed at owner's
 request; no OCR/engine/fallback/processing/API change):
 - Job rows (`en9OcrJobRow` in `layer-src/enhance.js`): badge · file · time on
@@ -1435,3 +2136,234 @@ AFTER her sibling and books her own 1,973,582,648 / 703,095,833 / 779,000,384
 only Charlie's two pages; Charlie excludes only Cecilia's. Neither carries the
 other's figures. `test:entscope` pins the guard and that the preparer's own
 prompt survives.
+
+### 2026-09-30 (19) — Catherine Mancuso / Blue Water Grill: 18 gaps fixed (both trees, uncommitted)
+
+Owner decision: a staff-cost group goes to line 11 (compensation) as ONE group,
+even under Cost of Sales. No template rows are added (1a/line 2 stay single
+lines; detail lives on Provenance/Attached schedules).
+- Sections: cash group opens only on the assets side (`EN9CASHSIDE`); "long-term
+  assets" is a fixedAssets banner; a narrow group's total returns to the banner
+  that held before it (`opened` stack / `EN9CLOSEBACK`).
+- Catalogue v15 (`EN9RULEVER=15`, `EN9RULEV15A-D`): checking/bank checking/cash
+  on hand → BS:10; staff loan/due from → BS:OCA (due from shareholder/director
+  → BS:19); equipment rental/lease payment → IS:27; donation → IS:OD; business
+  tax → IS:32; furniture and equipment → BS:28. `payroll → IS:OD` unchanged.
+- Group heading inheritance: `tagStatementGroups` also sets `groups` (dist
+  `EN9gchain`), every group a "Total <heading>" line proves, incl. outer,
+  innermost first — NOT "summary of the rows beneath it" groups (OCR indents;
+  Romy regression) and never a total row itself. Booking loop
+  (`EN9GROUPHEAD`, `EN9HEADAFTER`): order = rules → banner veto → banner
+  route → heading (only when still unplaced) — heading before the banner
+  route broke 2Hats (referral fee → 1a, directors → 17) and HMC (contract
+  labour → purchases). A heading → IS:26 overrides a child's IS:OD/10/11/12
+  from a rule or the cogs catch-all (info `group-compensation-*` under cogs).
+- Rent under a Cost of Sales banner stays cost of goods sold (`EN9RENTCOGS`;
+  Martinez "Equipment rental" 177,409.50).
+- Questions/flags (`EN9CAPQ`): `business-tax-question-*` (BLOCK: remap to 21a
+  or acknowledge to keep line 16); `freight-in-cogs-*` (info); `due-from-
+  related-*` (warn, non-zero only). A remap answers/removes them
+  (`EN9REMAPANS`).
+- Shared pool row label counts group members joining it (`EN9POOLCOUNT`).
+- BOY/EOY: an EOY-only BS line equal (±rate×1.01) to a BOY-only line the prior
+  return opened on the same side moves to the prior-return line (`EN9BOYALIGN`,
+  info `boy-eoy-line-*`). Mancuso: Due to Shareholders 18 → 19.
+- Dividends: `equityDividendLine` returns the dividends ACCOUNT movement —
+  opening from the statements' prior-year column, else (unclosed books: RE
+  account + result line, BOY RE from prior return) RE account − filed RE
+  (`EN9DIVMOVE`, message `EN9DIVMOVEMSG`). `distributionSplit` (dist
+  `EN9distSplit`): Schedule R one row per direct holder when ≥2 holders and
+  all are U.S. shareholders (`EN9SCHRSPLIT`, edit `EN9SPLITEDIT`); Schedule M
+  E32 uses the filer's direct share (`dividendShareOfFiler`/`EN9divShare`).
+- Schedule Q H57/J57/X57 = VALUES of Sch C line 10 − 8a / line 18 / 21a,
+  computed in buildWrites at GENERATION (dist `EN9SCHQLATE`), so a remap made
+  after processing reaches them; materialize only raises `schq-figures`
+  (`EN9SCHQFIG`). Not formulas: `test:gen` pins that the cell builder emits
+  <f> only for =B11. Schedule H donations add-back is OFFERED, not written
+  (warn `schh-nondeductible`, suggestedValue; confirming it writes C21/E21,
+  `EN9SCHHNDWRITE`): HMC's reviewer leaves a 114,000 donation in E&P, BWG's
+  adds it back.
+  `hte-candidate` warn when 21a / pre-tax > 18.9% (`EN9HTE`); election never made.
+- A/B 10 clients (Wiener ×2, Andrew Ban, 2Hats, HMC, Joyce, Veillon, Rise,
+  Santmyer ×2, Romy, Martinez) + Kelt: identical except the new Sch Q values
+  and Martinez "IT Equipment 88,184.25" now on 9a (was unassigned).
+- Live dist run on the two PDFs (+ preparer remaps business tax → 21a, freight →
+  office): every Sch C line and Sch Q equal the reviewed WP (1a 4,058,232.50; line 2
+  1,958,153.64; 11 899,920.74; 12a 129,154.12; 17 761,285.23; 21a 71,019.07;
+  22 238,699.70); Schedule F EOY balances at 483,365.40; Sch H E&P
+  240,118.86 before the Sch E row question; Sch Q matches.
+- Left, reviewer choices: tax on Sch E row 16 (tool) vs Part III row 38 +
+  HTE election (reviewer) → Sch H 2g / 8992 differ until elected (flagged);
+  Sch H G27 (reviewer 240,119, Kelt reviewer 0); reviewer's line-17 categories
+  ("Upkeep"…), prepayments/loans lumped into Cash, all CL on line 15; Sch M
+  65,456/25,000 not in the documents; prior return not supplied, so dividend
+  movement (derives 352,943.90 vs reviewed 352,941.18) is unit-tested only.
+- Tests: suite 77 scripts, 76 pass (`test:peg` as at HEAD); new `test:mancusor19` (9) + fixture `bwg_rows.json`; `test:keltr18`
+  version assertion widened; `test:boating` OD 254,161.06 → 253,361.06
+  ("Equipment rental" 800 → line 12a; no Boating reviewed WP exists).
+
+### 2026-09-30 (20) — Tanya / Santmyer (Form 22) / Sean (Collaborate and Eight): verified, then fixed (both trees, uncommitted)
+
+Each item was reproduced on the documents first; only confirmed items changed.
+- COGS section guard: a cost-of-goods target (IS:10-12) on a row printed under
+  the statement's Expenses banner goes to `sectionRoute("costs")`/IS:OD unless
+  the caption itself names cost of sales/stock (`EXPLICIT_COGS`, dist
+  `EN9COGSGUARD`). Boating "Shipping and delivery expense" → line 17 (Unison WP);
+  Martinez shipping 619.96 moves the same way.
+- Numbered-box returns read by CODE: `boxedFormCodes(pdf)` (span code → next
+  code; caption only for display) + `BOXED_FORMS` table (`cl-f22`: book codes,
+  balance codes 122/123/784/647/844|1494/843, distributions 1182/1699, result
+  1672 or 1410+1426−1430, tax-basis note). dist `EN9BOXCODE`, `EN9FORMCODE`.
+  Codes outside the table are listed in `boxed-form-*` info and never booked or
+  sent to AI. BS totals are booked (`form-bs-totals-*` warn, request detail)
+  ONLY when no statement itemises the BS (step 3, `EN9FORMBS`): cash, fixed
+  assets 9a, rest → line 13 (BS:39), 123 → line 19, capital → 20b, RE =
+  balancing figure; 843 mismatch named. MapRow `formTarget` fixes the line
+  (`EN9FORMTGT`). Distributions → `equity.dividendsCY` (Dividends, Sch J 9,
+  Sch M, Sch R) + warn `form-distributions-*` (Cecilia reviewer instead kept
+  them as shareholder current accounts — conflict reported, not coded).
+  `tax-basis-*` warn "Not GAAP book income: confirm or adjust."
+- Result checks (block, validateEntity): `form-result-mismatch` (entity
+  `formResults`, pre-tax = NI + 21a + 21b), `pnl-net-income-tie` now BLOCK,
+  `schf-total-assets-tie` (statedResults feed "bs" from a "Total assets"
+  caption, `TOTAL_ASSETS_CAPTION`/`EN9TACAP`). (The placeholder-note filter
+  added here was removed — see the owner decision below.)
+- Tax-register captions (`isTaxRegisterCaption`: RAI/REX/SAC/STUT/CPT/RLI/PPM,
+  pérdidas tributarias, renta líquida imponible…) refused in the AI and agent
+  passes (`EN9TAXREGAI`, `EN9TAXREGAG`).
+- Carry-forward `matchFormLine`: a figure glued onto the caption cell is taken
+  when ≥4 digits/grouped (`EN9GLUEDTAIL`). Charlie Sch J F15 −118,306,568 and
+  Wiener EL KIJ −3,029,900 now carried.
+- Ownership: item C/Part I absent → filer's Sch B shares ÷ all shares
+  (`EN9OWNSHARES`; Sean 100%). Charlie stays 20%/CFC No: prior Part II marks
+  the other holders NRA (958(b)(1)); Joyce precedent 40/No — reviewer 60/Yes
+  is a DECISION for the owner, not changed.
+- One prior-year rate: opening column already uses C61; fx-prior-rate message
+  corrected; `fx-opening-rate-stale` block when C61 changed after processing.
+- Profile: caption rows (all captions, figures beneath) never read across and
+  never become AI candidates; values under caption i (pair or same position);
+  "Comuna" → city, "Región" → addr3 with CL region-number names
+  (`EN9CAPROW`, `EN9cleanRegion`); AI profile values equal to another caption
+  refused (`EN9AIPCAP`).
+- Classify: OCR-tolerant "profit and [l1i|]oss"; "Notes to the balance sheet /
+  P&L" titles → fs-notes (`EN9NOTESTO`); a run of notes continues onto untitled
+  pages only after such a title and only when face BS+P&L exist
+  (`EN9NOTESCONT`; general "notes to the financial statements" does NOT run on
+  — HMC's pages 16-18 are supplementary); covering letter (salutation, ≤2
+  amount rows) → fs-cover inside the fs band (`EN9LETTERCOVER`); fiscal
+  position/tax computation → fs-notes. Root cause of Sean's lost banners: notes
+  pages in the BS feed repeated "ASSETS"/"LIABILITIES", so the furniture filter
+  stripped the face banners.
+- Rows: "[12]" note refs are never numbers (`EN9NOTEREF`, brace-free regex in
+  dist for test extraction) and are stripped from labels (`EN9NOTEREFLAB`);
+  OCR comma slip "-5.691" on comma-grouped whole-number pages (`commaSlipPage`,
+  `EN9COMMASLIP`). Legal name strips "To the directors of / For the attention
+  of / Reference:" (`EN9SALUTE`). `isProfitLine` accepts "result after taxation".
+- Catalogue v16 (`EN9RULEV16A/S`, RULES_ADDED_SINCE[15], SKIP_ADDED_SINCE[15]):
+  SKIP result before/after taxation, operating result, gross operating result,
+  (total) financial income and expenditure, net result; housing → 12a;
+  interest and similar expenditure/income → 13/5; currency/payment/exchange
+  differences → 8a; selling/office/general costs → 17; debts to participants /
+  shareholder loan → 18 (+ `schm-shareholder-loans` warn, `EN9SCHMLOAN`); debts
+  to credit institutions, accrued liabilities, taxes and premiums social
+  insurance → OCL.
+- Space key (Entities & Documents): NOT REPRODUCED — no change.
+- Retest: Santmyer both CFCs book every Form 22 box by code, result ties
+  (197,796,083 / 203,962,026), BS totals balance, Cecilia 21a 53,367,454 and
+  distributions 100,000,000 → Sch J/R; Sean (OCR path) face-only: 19 lines,
+  Sch F 8,313 both sides, NI −75,460 vs stated −75,458 (2 = OCR-split interest
+  income); Tanya shipping → 17. A/B 10 clients: only intended diffs (Santmyer,
+  Wiener Sch J carry, Martinez shipping). Kelt/Mancuso workbooks identical.
+- Tests: 78 scripts, 77 pass (`test:peg` pre-existing); new `test:round20`
+  (13). Updated: `test:profile` (Comuna → addr2), `test:mancusor19` (version
+  ≥15), `test:detect` snapshots (EN9NOTEREF/LAB, EN9COMMASLIP).
+- Open: reviewer used ledger detail for Santmyer (P&L/BS differ from the Form
+  22 by basis — flagged); Charlie ownership decision; F22 box 123 vs book
+  liabilities (Cecilia) needs the trial balance.
+- Follow-up (Mancuso feedback 2): outbound delivery/shipping printed under
+  cost of sales → line 17 (`OUTBOUND_DELIVERY`/`INBOUND_FREIGHT`, info
+  `delivery-to-deductions-*`, dist `EN9DELIVERY`); freight on purchases,
+  customs, duty stay in COGS. Taxes in place of income tax
+  (`IN_LIEU_INCOME_TAXES`: Belize/BZD "business tax") move line 16 → 21a
+  after the profile is read in step 3 (`inLieuIncomeTax`, dist `EN9INLIEU`),
+  replacing the `business-tax-question-*` block with info `in-lieu-tax-*`;
+  a preparer's remap wins. Currency read from country-prefixed dollar signs
+  ("BZ$", `EN9DOLLARPFX`). Mancuso with no remaps: line 2 1,958,153.64,
+  17 761,285.23, 21a 71,019.07, Sch Q 2,100,078.86 / 1,790,360.09 /
+  71,019.07 = reviewed WP. A/B 10 clients identical; suite 78 scripts, 77
+  pass (`test:peg` pre-existing); `test:round20` 16.
+- Owner decision (2026-09-30, supersedes the round-20 placeholder filter):
+  the unblock reason is NEVER an obstacle. `dismissReviewItem` accepts any
+  text or none (empty → "Acknowledged — no reason given"; dist `EN9ACKANY`);
+  `RECONCILE_BLOCKS`/`PLACEHOLDER_NOTE` removed; the layer popup's reason is
+  optional (layer-src/enhance.js, injected). Thin notes are still marked on
+  the Provenance sheet (`isThinNote`). Verified live: "", "test", "x" all
+  acknowledge.
+
+### 2026-10-01 (21) — Premium Care Plastic Surgery (Colombian PUC) + audit fixes (both trees, uncommitted)
+
+- PUC statements: expense/income headings are banners (`sectionBanners.ts`
+  +5, dist `EN9PUCBANNERS`; lexicon now 54); catalogue v17 (`EN9RULEV17A/S`,
+  RULES_ADDED_SINCE[16], SKIP_ADDED_SINCE[16]): "resultado bruto/operacional/
+  antes de…" SKIP; advances (antic. a trabajadores, anticipo de impuestos) →
+  OCA; payroll liabilities (cesantías/vacaciones/primas consolidadas, ret. y
+  aportes de nómina, retención en la fuente, anticipo de clientes) → OCL;
+  impuesto de renta → 21a. Abbreviated captions ("ANTIC.", "Depr.") are not
+  prose. Sundry creditors ("acreedores varios/diversos") STAY on accounts
+  payable: the Wiener reviewers and their filed prior returns put them there;
+  the Campbell reviewer used line 17 (reviewer conflict, reported).
+- Row reading: a hidden cents column (`strayCentsColumns`, dist `EN9STRAYCOL`)
+  is skipped; a cell holding two figures ("0 21,170,247.42") is never one
+  number (`multiNumericTokens` → numericCell null, dist `EN9MULTITOK`); row
+  readers split it per figure. Prior-return readers in carryForward read such
+  cells figure by figure (`cellNums`/`figureCells`, dist `EN9CFNUMS`) — without
+  this Tezcatlipoca lost its carried Sch J line 14 (−18,582,369).
+- `outsidePrintedTotal` (sections.ts, dist `EN9OUTTOTAL`, after
+  sameIndentSubtotals): under a total-worded row whose group does not add up,
+  the ONE row equal to the whole gap is left out and raised as warn
+  `outside-total-*` ("DEUDORES 82,600,026" outside "TOTAL DEUDORES"; the
+  duplicated "(-) Depr. Acumulada"). Guard: if a positive row explains the gap
+  as a subtraction (sum − 2·row = total) nothing is excluded.
+- Contra lines 2b/9b/10b/12d (BS:12/29/31/37) are booked negative with info
+  `contra-asset-*` (`CONTRA_ASSET_LINES`, dist `EN9CONTRAASSET`/`EN9CONTRAL`).
+- No prior return: when equity prints the year's result on its own row equal
+  to booked net income, the other retained-earnings rows (dividend rows
+  excluded) are the opening balance → Sch J F15 and RE tab F10 (warn
+  `book-opening-ep`, dist `EN9BOOKOPEN`). RE F10 holds a template formula, so
+  the write carries `replaceFormula: true`, honoured at generation
+  (`mayReplaceFormula`, dist `EN9FMLFORCE`). Pre-existing: the prior-return
+  `re-rollforward` F10 write is still refused by the formula guard.
+- REVIEWER CONFLICT (owner decision needed): the same QuickBooks caption
+  "Freight and delivery - COS" is line 17 in the Mancuso reviewed WP and COGS
+  (Other costs 126,800.63) in the Kelt reviewed WP. The round-20 delivery rule
+  (line 17) is kept because Mancuso's was explicit feedback; Kelt now differs
+  by 76,693.12 between COGS and line 17 (net income unchanged). The info item
+  `delivery-to-deductions-*` offers the one-click move back.
+- Audit fixes: `pnl-net-income-tie` names booked rows that alone explain the gap
+  (`tieSuspects`, dist `EN9TIESUSP`); Schedule F balance blocks
+  (`EN9-tie-bs-eoy/boy`) now exist in src validateEntity too (`bsBalance`) and
+  both trees name the line whose amount alone explains an imbalance
+  (`bsSuspectText`, dist `EN9BSSUSP`); src `GROQ_MODELS` = gpt-oss-120b/20b
+  (matches dist; retired Llama/Qwen removed; loadState migrates a saved one).
+- Scorecard: `npm run scorecard -- <reviewer.xlsx> <tool.xlsx> [--sheets]
+  [--cols F] [--json]` recalculates the tool workbook with LibreOffice, pairs
+  rows by caption (LCS), scores lines. Client files stay local.
+- Campbell (inputs: bs.pdf, is.pdf only; COP avg 4,072.15 entered): IS ties
+  (deductions 90,666,928); Schedule F balances (221,841,062 both sides);
+  9a 239,472,448, 9b −81,142,564, receivables group 63,493,000, OCL group
+  182,497,560 (= reviewer's line 17 total), RE −60,656,498; Sch J 1a
+  30,010,429 (reviewer typed 30,310,429 — the BS says 30,010,429).
+  Remaining differences are inputs/policy: no prior 5471 (opening column,
+  Sch M/E/Q/8992 reviewer facts), staff costs on line 11 vs reviewer line 17
+  (HMC/Macroroots reviewers use line 11 too — owner decision), DEUDORES total
+  on 2a (reviewer) vs other current assets (advances), CFC 50% vs "Assumed"
+  100%.
+- Tests: new `test:round21` (14); updated `test:spanish` (payroll liabilities →
+  OCL), `test:sections` (54 banners; skip-branch window), `test:detect`
+  snapshot chunks 1 and 5 re-extracted, `test:r17` (extracts EN9cfCells
+  helpers). Suite 79 scripts, 78 pass (`test:peg` pre-existing).
+- Retest on the final build: Campbell 12/12 key figures (was 4/12); 10-client
+  A/B, Tanya, Sean identical to the previous build; Mancuso identical except
+  RE tab F10 = 824,781.28 (= reviewer) and Sch J F15 824,781.28 (reviewer
+  291,519 from a prior return not in the inputs); Kelt differs only by the
+  freight conflict above.

@@ -817,6 +817,11 @@ function enhanceTopbarHint(){
    store turns into review items and Provenance rows. Processing waits on
    the gate below until the copy is in place. */
 var EN9OCR={busy:false, result:null, io:null, stats:{runs:0,pages:0,words:0,fails:0}, jobs:{}, service:null};
+/* When PaddleOCR is "unsure" of a page it is read again with Tesseract.js and
+   the more confident reading is kept: an error on the page, no text at all,
+   an average word confidence below UNSURE_MEAN, or more than UNSURE_LOW of
+   the words below 80%. */
+EN9OCR.UNSURE_MEAN=0.85; EN9OCR.UNSURE_LOW=0.25;
 /*EN9OCREXP*/try{window.EN9OCR=EN9OCR;window.en9OcrRun=function(){return en9OcrRun.apply(null,arguments)};}catch(EN9e){}
 
 /* The gate the store's processEntity awaits: one promise per file being
@@ -936,21 +941,34 @@ EN9OCR.service={
         if(j.available){ self._base=j.base; j.tried=tried.slice(); self._health=j; self._healthAt=Date.now(); return j; }
         tried.push({base:j.base, error:j.reachable?(j.error||"no engine loaded"):(j.error||"no answer")});
         return next(i+1); }); }
-    return next(0); },
+    /* always a promise: with the service turned off there is nothing to
+       probe and next(0) answers at once — handed back bare, the caller's
+       .then threw, and the OCR job it was starting stayed "running" for ever */
+    return Promise.resolve(next(0)); },
   describe:function(){ var h=this._health; if(!h||!h.available) return null;
     var eng=h.engines||{}, p=eng[h.primary]||{}; var chain=(h.chain||[]).map(function(n){ return n+(eng[n]&&eng[n].backend?" ("+eng[n].backend+")":""); });
     return {primary:h.primary, backend:p.backend||"", chain:h.chain||[], base:h.base||this.base(), text:chain.join(" → ")}; },
   /* One line for the cards: never an error, always what to do next. */
-  statusText:function(){ var h=this._health, d=this.describe();
-    if(!h) return "Checking for the OCR service…";
-    if(d) return "OCR service online at "+(d.base==="/api/ocr"?"this server":d.base)+" — "+d.text+". Figures are cross-checked by the second engine; disagreements are flagged, never auto-corrected.";
-    var inBrowser=EN9OCRASSET.has("rec.onnx")
-      ? "PaddleOCR (PP-OCRv5) runs in this browser, and the engine and its models are built into this file — no download, no internet, nothing to install. The document never leaves this browser."
-      : "PaddleOCR (PP-OCRv5) runs in this browser: ONNX Runtime and the models (about 36 MB) download once from cdn.jsdelivr.net and github.com and are kept in this browser; the document itself never leaves it."
-      +(EN9OCR.browserEngine==="tesseract.js"?" (PaddleOCR could not be loaded here — "+(EN9OCR.browserReason||"")+" — so Tesseract.js is reading instead.)":"");
-    if(this.off()) return "OCR service turned off (address = off). "+inBrowser+" Clear the address and press Check to look for a service again.";
+  /* What the card says, split into the sentence a preparer needs and the
+     diagnostics behind it (where a service was looked for, why the primary
+     engine could not load). Nothing is dropped: statusText() joins both. */
+  statusParts:function(){ var h=this._health, d=this.describe();
+    if(!h) return {main:"Checking for the OCR service\u2026", details:[]};
+    if(d) return {main:"OCR service online at "+(d.base==="/api/ocr"?"this server":d.base)+" \u2014 "+d.text+". Figures are cross-checked by the second engine; disagreements are flagged, never auto-corrected.", details:[]};
+    var details=[], inBrowser;
+    if(EN9OCR.browserEngine==="tesseract.js"){
+      inBrowser="Primary OCR unavailable \u2014 fallback OCR (Tesseract.js) is reading instead; review recommended.";
+      details.push("PaddleOCR could not be loaded here: "+(EN9OCR.browserReason||"reason not reported")); }
+    else inBrowser=EN9OCRASSET.has("rec.onnx")
+      ? "PaddleOCR (PP-OCRv5) runs in this browser, and the engine and its models are built into this file \u2014 no download, no internet, nothing to install. The document never leaves this browser."
+      : "PaddleOCR (PP-OCRv5) runs in this browser: ONNX Runtime and the models (about 36 MB) download once from cdn.jsdelivr.net and github.com and are kept in this browser; the document itself never leaves it.";
+    if(this.off()) return {main:"OCR service turned off (address = off). "+inBrowser+" Clear the address and press Check to look for a service again.", details:details};
     var where=(h.tried||[]).map(function(t){ return t.base==="/api/ocr"?"this server":t.base; }).join(", ")||this.base();
-    return "No OCR service found (looked at "+where+"). "+inBrowser+" A service reads faster and cross-checks every figure: start it with python -m ocr_service (in ocr-service/) on this computer, or enter its address below and press Check."; },
+    /* No service is the normal case, not a fault: lead with the engine that
+       is reading and offer the service as an option. */
+    details.unshift("Service looked for at "+where+" \u2014 none running.");
+    return {main:inBrowser+" Optional: an OCR service on this computer reads faster and cross-checks every figure \u2014 start it with python -m ocr_service (in ocr-service/), or enter its address below and press Check.", details:details}; },
+  statusText:function(){ var p=this.statusParts(); return p.main+(p.details.length?" ("+p.details.join(" ")+")":""); },
   post:function(path,blob,params,st){ var q=Object.keys(params||{}).filter(function(k){return params[k]!==undefined&&params[k]!==null&&params[k]!=="";})
       .map(function(k){return encodeURIComponent(k)+"="+encodeURIComponent(params[k]);}).join("&");
     var self=this;
@@ -976,36 +994,79 @@ EN9OCR.service={
 var EN9PPOCR={
   ORT_VERSION:"1.29.0",
   MODEL_COMMIT:"23b9798c261ea0a23ccf6823f1bf692e4bd4e98c",
-  MODEL_SHA:{det:"4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", rec:"5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5", cls:"f4bb53707100c5f3d59ba834eb05bb400369f20aed35d4b26807b1bfadd2a70e"},
+  MODEL_SHA:{det:"4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae", rec:"5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5", cls:"f4bb53707100c5f3d59ba834eb05bb400369f20aed35d4b26807b1bfadd2a70e", dict:"d1979e9f794c464c0d2e0b70a7fe14dd978e9dc644c0e71f14158cdf8342af1b"},
   params:{detSide:960, detThresh:0.3, boxThresh:0.6, unclip:1.5, minSize:3, recH:48, recW:320, recBatch:6, clsH:48, clsW:192, clsThresh:0.9, dropScore:0.5},
   backend:"PP-OCRv5 via ONNX Runtime Web (in this browser)",
   _ready:null, sessions:null, dict:null, error:null, status:null,
+  /* Every file has a list of places, tried in order. The three weights are
+     Git LFS objects: only media.githubusercontent.com serves their bytes
+     (raw.githubusercontent.com answers with a 132-byte LFS pointer). The
+     dictionary is an ordinary file in the same commit: media.* answers 404
+     for it, so it comes from raw.* first and the jsDelivr GitHub mirror
+     second. A models address set by hand serves all four files. */
   urls:function(){ var ort="https://cdn.jsdelivr.net/npm/onnxruntime-web@"+this.ORT_VERSION+"/dist/";
-    var models=""; try{ models=localStorage.getItem("en9OcrModelsUrl")||""; }catch(e){}
-    models=(models||"https://media.githubusercontent.com/media/jingsongliujing/OnnxOCR/"+this.MODEL_COMMIT+"/onnxocr/models/ppocrv5").replace(/\/+$/,"")+"/";
-    return {ortScript:ort+"ort.wasm.min.js", wasmPaths:ort, det:models+"det/det.onnx", rec:models+"rec/rec.onnx", cls:models+"cls/cls.onnx", dict:models+"ppocrv5_dict.txt"}; },
+    var own=""; try{ own=localStorage.getItem("en9OcrModelsUrl")||""; }catch(e){}
+    var at="/onnxocr/models/ppocrv5/", lfs, plain;
+    if(own){ own=own.replace(/\/+$/,"")+"/"; lfs=[own]; plain=[own]; }
+    else{ lfs=["https://media.githubusercontent.com/media/jingsongliujing/OnnxOCR/"+this.MODEL_COMMIT+at];
+      plain=["https://raw.githubusercontent.com/jingsongliujing/OnnxOCR/"+this.MODEL_COMMIT+at,
+             "https://cdn.jsdelivr.net/gh/jingsongliujing/OnnxOCR@"+this.MODEL_COMMIT+at]; }
+    function each(bases,rel){ return bases.map(function(b){ return b+rel; }); }
+    return {ortScript:ort+"ort.wasm.min.js", wasmPaths:ort, det:each(lfs,"det/det.onnx"), rec:each(lfs,"rec/rec.onnx"), cls:each(lfs,"cls/cls.onnx"), dict:each(plain,"ppocrv5_dict.txt")}; },
   say:function(m){ try{ if(this.status) this.status(m); }catch(e){} },
   /* ---- model store: IndexedDB, keyed by URL; silently absent where IndexedDB is ---- */
   _db:function(){ return new Promise(function(res,rej){ try{ var r=indexedDB.open("en9-ocr-models",1);
       r.onupgradeneeded=function(){ r.result.createObjectStore("files"); }; r.onsuccess=function(){ res(r.result); }; r.onerror=function(){ rej(r.error); }; r.onblocked=function(){ rej(new Error("blocked")); }; }catch(e){ rej(e); } }); },
   _dbGet:function(key){ return this._db().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("files","readonly"), q=tx.objectStore("files").get(key);
       q.onsuccess=function(){ res(q.result||null); }; q.onerror=function(){ rej(q.error); }; }).then(function(v){ db.close(); return v; },function(e){ db.close(); throw e; }); }).catch(function(){ return null; }); },
+  _dbDel:function(key){ return this._db().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("files","readwrite"); tx.objectStore("files").delete(key);
+      tx.oncomplete=function(){ res(true); }; tx.onerror=function(){ rej(tx.error); }; }).then(function(v){ db.close(); return v; },function(e){ db.close(); throw e; }); }).catch(function(){ return false; }); },
+  _sha256:async function(buf){ try{ if(!(window.crypto&&crypto.subtle)) return null;
+      var h=new Uint8Array(await crypto.subtle.digest("SHA-256",buf)), s="";
+      for(var i=0;i<h.length;i++) s+=(h[i]<16?"0":"")+h[i].toString(16); return s; }catch(e){ return null; } },
+  /* A file is used only when it is the file this page pins: not empty, not
+     an LFS pointer or an error page served with 200, and the pinned sha256
+     where the browser can compute one. Returns why not, or null. */
+  check:async function(buf,sha){
+    if(!buf||!buf.byteLength) return "an empty file";
+    var head=""; try{ head=new TextDecoder("utf-8").decode(new Uint8Array(buf,0,Math.min(80,buf.byteLength))); }catch(e){}
+    if(/^version https:\/\/git-lfs/.test(head)) return "a Git LFS pointer, not the file";
+    if(/^\s*<(!doctype|html)/i.test(head)) return "a web page, not the file";
+    if(sha){ var got=await this._sha256(buf); if(got&&got!==sha) return "sha256 "+got.slice(0,12)+"\u2026, not the pinned "+sha.slice(0,12)+"\u2026"; }
+    return null; },
+  _download:async function(url,label){ var self=this;
+    var r; try{ r=await fetch(url,{mode:"cors"}); }
+    catch(x){ throw new Error("Could not reach "+url+" ("+String(x&&x.message||x)+")"); }
+    if(!r||!r.ok){ var e=new Error("Could not download "+url+(r?" ("+r.status+")":"")); e.permanent=!!(r&&r.status>=400&&r.status<500); throw e; }
+    if(r.body&&r.body.getReader){ var total=+(r.headers.get("content-length")||0), reader=r.body.getReader(), chunks=[], got=0, lastSaid=0;
+      for(;;){ var c=await reader.read(); if(c.done) break; chunks.push(c.value); got+=c.value.byteLength;
+        if(got-lastSaid>524288){ lastSaid=got; self.say("Downloading "+label+"\u2026 "+(got/1048576).toFixed(1)+(total?" of "+(total/1048576).toFixed(1):"")+" MB"); } }
+      var buf=new Uint8Array(got), off=0; chunks.forEach(function(ch){ buf.set(ch,off); off+=ch.byteLength; }); return buf.buffer; }
+    return await r.arrayBuffer(); },
   _dbPut:function(key,val){ return this._db().then(function(db){ return new Promise(function(res,rej){ var tx=db.transaction("files","readwrite"); tx.objectStore("files").put(val,key);
       tx.oncomplete=function(){ res(true); }; tx.onerror=function(){ rej(tx.error); }; }).then(function(v){ db.close(); return v; },function(e){ db.close(); throw e; }); }).catch(function(){ return false; }); },
   /* Built into this file → no network, no store. Otherwise: this browser's
      store, otherwise the download (once). */
-  fetchFile:async function(url,label,asset){ var self=this;
-    if(asset&&EN9OCRASSET.has(asset)){ self.say("Unpacking "+label+" (built into this file)…"); return await EN9OCRASSET.bytes(asset); }
-    var hit=await self._dbGet(url); if(hit&&hit.byteLength){ self.say(label+": from this browser's store ("+(hit.byteLength/1048576).toFixed(1)+" MB)."); return hit; }
-    self.say("Downloading "+label+"…");
-    var r=await fetch(url,{mode:"cors"}); if(!r||!r.ok) throw new Error("Could not download "+url+(r?" ("+r.status+")":""));
-    var buf;
-    if(r.body&&r.body.getReader){ var total=+(r.headers.get("content-length")||0), reader=r.body.getReader(), chunks=[], got=0, lastSaid=0;
-      for(;;){ var c=await reader.read(); if(c.done) break; chunks.push(c.value); got+=c.value.byteLength;
-        if(got-lastSaid>524288){ lastSaid=got; self.say("Downloading "+label+"… "+(got/1048576).toFixed(1)+(total?" of "+(total/1048576).toFixed(1):"")+" MB"); } }
-      buf=new Uint8Array(got); var off=0; chunks.forEach(function(ch){ buf.set(ch,off); off+=ch.byteLength; }); buf=buf.buffer; }
-    else buf=await r.arrayBuffer();
-    await self._dbPut(url,buf); return buf; },
+  fetchFile:async function(urls,label,asset,sha){ var self=this, bad, i; urls=[].concat(urls||[]);
+    if(asset&&EN9OCRASSET.has(asset)){ self.say("Unpacking "+label+" (built into this file)\u2026");
+      var own=await EN9OCRASSET.bytes(asset); bad=await self.check(own,sha); if(!bad) return own;
+      self.say(label+" built into this file is not usable ("+bad+") \u2014 downloading it instead\u2026"); }
+    for(i=0;i<urls.length;i++){ var hit=await self._dbGet(urls[i]); if(!hit||!hit.byteLength) continue;
+      bad=await self.check(hit,sha);
+      if(!bad){ self.say(label+": from this browser's store ("+(hit.byteLength/1048576).toFixed(1)+" MB)."); return hit; }
+      /* a stored copy that fails the check is removed, never reused */
+      await self._dbDel(urls[i]); self.say(label+": the stored copy was not usable ("+bad+") \u2014 fetching it again\u2026"); }
+    /* each place twice (a dropped connection is often transient); a 4xx or a
+       wrong file is final for that place, so the next place is tried */
+    var why=[];
+    for(i=0;i<urls.length;i++){ for(var attempt=1;attempt<=2;attempt++){
+      try{ self.say("Downloading "+label+"\u2026"+(attempt>1?" (retry)":""));
+        var buf=await self._download(urls[i],label); bad=await self.check(buf,sha);
+        if(bad){ var e=new Error(urls[i]+" returned "+bad); e.permanent=true; throw e; }
+        await self._dbPut(urls[i],buf); return buf; }
+      catch(err){ why.push(String(err&&err.message||err)); if(err&&err.permanent) break;
+        if(attempt<2) await new Promise(function(r){ setTimeout(r,1500); }); } } }
+    throw new Error(why.length?why.join("; "):"no address for "+label); },
   /* ---- load runtime + models once ---- */
   load:function(st){ var self=this; if(st) self.status=st; if(self._ready) return self._ready;
     self._ready=(async function(){ var u=self.urls();
@@ -1020,18 +1081,29 @@ var EN9PPOCR={
         ort.env.wasm.wasmPaths={mjs:await EN9OCRASSET.dataUrl("ort.mjs","text/javascript")};
       } else ort.env.wasm.wasmPaths=u.wasmPaths;
       ort.env.wasm.numThreads=1; ort.env.wasm.proxy=false; try{ ort.env.logLevel="error"; }catch(e){}
-      var det=await self.fetchFile(u.det,"the PP-OCRv5 detection model","det.onnx");
-      var rec=await self.fetchFile(u.rec,"the PP-OCRv5 recognition model","rec.onnx");
-      var cls=await self.fetchFile(u.cls,"the PP-OCRv5 orientation model","cls.onnx");
-      var dictBuf=await self.fetchFile(u.dict,"the PP-OCRv5 dictionary","dict.txt");
+      var H=self.MODEL_SHA;
+      var det=await self.fetchFile(u.det,"the PP-OCRv5 detection model","det.onnx",H.det);
+      var rec=await self.fetchFile(u.rec,"the PP-OCRv5 recognition model","rec.onnx",H.rec);
+      var cls=await self.fetchFile(u.cls,"the PP-OCRv5 orientation model","cls.onnx",H.cls);
+      var dictBuf=await self.fetchFile(u.dict,"the PP-OCRv5 dictionary","dict.txt",H.dict);
       var lines=new TextDecoder("utf-8").decode(dictBuf).split(/\r?\n/); if(lines.length&&lines[lines.length-1]==="") lines.pop();
       self.dict=["blank"].concat(lines,[" "]);
       self.say("Starting the OCR engine…");
       var opt={executionProviders:["wasm"], graphOptimizationLevel:"all"};
       self.sessions={det:await ort.InferenceSession.create(new Uint8Array(det),opt), rec:await ort.InferenceSession.create(new Uint8Array(rec),opt), cls:await ort.InferenceSession.create(new Uint8Array(cls),opt)};
+      /* the recogniser's classes must be exactly blank + dictionary + space,
+         or every character read would be shifted to the wrong glyph */
+      var classes=await self.recClasses();
+      if(classes!==self.dict.length){ self.sessions=null;
+        throw new Error("the recognition model has "+classes+" classes but the dictionary gives "+self.dict.length+" \u2014 they are not from the same PP-OCRv5 release"); }
       self.error=null; return true; })();
     self._ready.catch(function(e){ self.error=String(e&&e.message||e); self._ready=null; });
     return self._ready; },
+  recClasses:async function(){ var s=this.sessions.rec, md=null, shape=null;
+    try{ md=s.outputMetadata; md=Array.isArray(md)?md[0]:(md&&md[s.outputNames[0]]); shape=md&&md.shape; }catch(e){}
+    var n=shape&&+shape[shape.length-1]; if(n>0) return n;
+    var P=this.params, x=new window.ort.Tensor("float32",new Float32Array(3*P.recH*P.recW),[1,3,P.recH,P.recW]), f={}; f[s.inputNames[0]]=x;
+    var out=(await s.run(f))[s.outputNames[0]]; return out.dims[out.dims.length-1]; },
   /* ---- geometry: the DB post-processing without OpenCV ---- */
   hull:function(pts){ pts=pts.slice().sort(function(a,b){ return a[0]-b[0]||a[1]-b[1]; }); if(pts.length<3) return pts;
     function cross(o,a,b){ return (a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]); }
@@ -1194,6 +1266,105 @@ var EN9PPOCR={
 };
 try{ window.EN9PPOCR=EN9PPOCR; }catch(e){}
 
+/* ---- rows for the text layer of a scanned statement ----
+   Statements are often printed with each figure half a line off its caption,
+   and OCR boxes add a few points of vertical noise of their own. Written as
+   read, the caption and its figures land on different lines of the text
+   layer, so the extractor pairs them wrongly or not at all: "Loyer" got no
+   figure while "Frais de publicité" took the communication line's 2,525.23.
+   This rebuilds the rows for the TEXT LAYER ONLY — the sidecar keeps every
+   word where it was read, for provenance and flags. Figures are grouped into
+   rows (one value per column), then the rows are aligned to the captions in
+   page order: nearest first, never crossing, never two rows on one caption.
+   A page whose figures already sit on their captions' lines is returned
+   untouched. Pure: words in, words out, image coordinates (y down). */
+var EN9OCRAMT=/^[-−(]?\d{1,3}(?:[ '’.,]\d{3})*(?:[.,]\d{1,2})?\)?-?$|^[-−(]?\d+(?:[.,]\d{1,2})?\)?-?$/;
+function en9OcrAlignRows(words){
+  if(!words||words.length<6) return words;
+  var hs=words.map(function(w){ return w.bbox.y1-w.bbox.y0; }).filter(function(v){ return v>0; }).sort(function(a,b){ return a-b; });
+  var h=hs[Math.floor(hs.length/2)]||10;
+  /* segments: the words of one printed item (a caption, or "26 027.29") */
+  var order=words.map(function(w,i){ return {w:w,i:i,yc:(w.bbox.y0+w.bbox.y1)/2}; })
+    .sort(function(a,b){ return (a.yc-b.yc)||(a.w.bbox.x0-b.w.bbox.x0); });
+  var segs=[];
+  order.forEach(function(o){ var hit=null;
+    for(var k=segs.length-1;k>=0&&k>=segs.length-60;k--){ var sg=segs[k];
+      if(Math.abs(sg.yc-o.yc)<0.3*h&&o.w.bbox.x0>=sg.x0&&o.w.bbox.x0-sg.x1<0.9*h&&o.w.bbox.x0-sg.x1>-0.3*h){ hit=sg; break; } }
+    if(hit){ hit.items.push(o); hit.x1=Math.max(hit.x1,o.w.bbox.x1); hit.text+=" "+o.w.text; }
+    else segs.push({items:[o], x0:o.w.bbox.x0, x1:o.w.bbox.x1, yc:o.yc, text:String(o.w.text)}); });
+  var amts=[], caps=[];
+  segs.forEach(function(sg){ var t=sg.text.replace(/\s+/g," ").trim();
+    if(EN9OCRAMT.test(t)&&!/^(19|20)\d\d$/.test(t)) amts.push(sg); else if(/\p{L}{2}/u.test(t)) caps.push(sg); });
+  if(amts.length<3||caps.length<3) return words;
+  /* columns by right edge: figures are right-aligned */
+  var byX=amts.slice().sort(function(a,b){ return a.x1-b.x1; }), col=0, last=null;
+  byX.forEach(function(a){ if(last!==null&&a.x1-last>2*h) col++; a.col=col; last=a.x1; });
+  var left=Math.min.apply(null,amts.map(function(a){ return a.x0; }));
+  var anchors=caps.filter(function(c){ return c.x1<=left+h; }).sort(function(a,b){ return a.yc-b.yc; });
+  if(anchors.length<3) return words;
+  var near=function(a){ return anchors.some(function(c){ return Math.abs(c.yc-a.yc)<0.25*h; }); };
+  if(amts.filter(function(a){ return !near(a); }).length<3) return words;   /* already aligned */
+  var MAXD0=1.3*h;
+  /* figure rows: one value per column, within most of a line */
+  var rows=[];
+  amts.slice().sort(function(a,b){ return a.yc-b.yc; }).forEach(function(a){ var cur=rows[rows.length-1];
+    if(cur&&a.yc-cur.top<=0.8*h&&!cur.cols[a.col]){ cur.cols[a.col]=1; cur.segs.push(a); }
+    else rows.push({top:a.yc, cols:(function(){ var o={}; o[a.col]=1; return o; })(), segs:[a]}); });
+  rows.forEach(function(r){ r.yc=r.segs.reduce(function(t,a){ return t+a.yc; },0)/r.segs.length; });
+  /* the page's own offset: a printer that sets figures a few points below
+     (or above) their captions does so on every line. Measured on rows whose
+     caption is unambiguous — the nearest is at most half as far as the next —
+     and removed before matching, so a figure between two captions goes to
+     the one it belongs to, not merely the closer. */
+  var offs=[];
+  rows.forEach(function(r){ var ds=anchors.map(function(c){ return r.yc-c.yc; }).sort(function(a,b){ return Math.abs(a)-Math.abs(b); });
+    if(ds.length>1&&Math.abs(ds[0])<=MAXD0&&2*Math.abs(ds[0])<=Math.abs(ds[1])) offs.push(ds[0]); });
+  offs.sort(function(a,b){ return a-b; });
+  var bias=offs.length>=3?offs[Math.floor(offs.length/2)]:0;
+  /* monotone alignment of rows to captions (edit distance with gaps) */
+  var R=rows.length, A=anchors.length, MAXD=MAXD0, P=MAXD, f=[], back=[], i, j;
+  for(i=0;i<=R;i++){ f.push(new Array(A+1).fill(Infinity)); back.push(new Array(A+1).fill(0)); }
+  for(j=0;j<=A;j++) f[0][j]=0;
+  for(i=1;i<=R;i++){ f[i][0]=i*P; back[i][0]=2; }
+  for(i=1;i<=R;i++) for(j=1;j<=A;j++){
+    var skip=f[i][j-1], d=Math.abs(rows[i-1].yc-bias-anchors[j-1].yc), take=d<=MAXD?f[i-1][j-1]+d:Infinity, lone=f[i-1][j]+P;
+    if(take<=skip&&take<=lone){ f[i][j]=take; back[i][j]=1; } else if(skip<=lone){ f[i][j]=skip; back[i][j]=0; } else { f[i][j]=lone; back[i][j]=2; } }
+  var move={}; i=R; j=A;
+  while(i>0){ var bk=back[i][j];
+    if(j===0||bk===2){ i--; continue; }
+    if(bk===0){ j--; continue; }
+    var row=rows[i-1], anc=anchors[j-1];
+    row.segs.forEach(function(a){ var dy=anc.yc-a.yc; if(Math.abs(dy)>=0.01) a.items.forEach(function(o){ move[o.i]=dy; }); });
+    i--; j--; }
+  if(!Object.keys(move).length) return words;
+  return words.map(function(w,k){ var dy=move[k]; if(!dy) return w;
+    return Object.assign({},w,{bbox:{x0:w.bbox.x0,x1:w.bbox.x1,y0:w.bbox.y0+dy,y1:w.bbox.y1+dy}}); });
+}
+try{ window.EN9ocrAlignRows=en9OcrAlignRows; }catch(e){}
+/* Words of one printed item drawn as ONE run with real spaces. Drawn word by
+   word, the gap between "Total" and "des" was often too small for the PDF
+   text reader to see a space, so "Total des produits" came back as
+   "Totaldes produits" and was no longer recognised as a total. Runs break
+   where the gap is wider than about a character height (captions and each
+   column's figures stay separate). */
+var EN9OCRFIG=/^[-\u2212(]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+[.,]\d{2})\)?-?$/;
+function en9OcrRuns(words){
+  var hs=(words||[]).map(function(w){ return w.bbox.y1-w.bbox.y0; }).filter(function(v){ return v>0; }).sort(function(a,b){ return a-b; });
+  var h=hs[Math.floor(hs.length/2)]||10, runs=[];
+  (words||[]).filter(function(w){ return w&&w.text&&w.bbox; })
+    .map(function(w){ return {w:w, yc:(w.bbox.y0+w.bbox.y1)/2}; })
+    .sort(function(a,b){ return (a.yc-b.yc)||(a.w.bbox.x0-b.w.bbox.x0); })
+    .forEach(function(o){ var hit=null;
+      for(var k=runs.length-1;k>=0&&k>=runs.length-60;k--){ var r=runs[k];
+        if(Math.abs(r.yc-o.yc)<0.3*h&&o.w.bbox.x0>=r.bbox.x0&&o.w.bbox.x0-r.bbox.x1<0.9*h&&o.w.bbox.x0-r.bbox.x1>-0.3*h){
+          /* two complete figures are two year columns, however close:
+             joined, "6,124,500 5,483,000" became one twenty-digit number */
+          if(!(EN9OCRFIG.test(r.text.split(" ").pop())&&EN9OCRFIG.test(String(o.w.text)))) hit=r; break; } }
+      if(hit){ hit.text+=" "+o.w.text; hit.bbox.x1=Math.max(hit.bbox.x1,o.w.bbox.x1); hit.bbox.y0=Math.min(hit.bbox.y0,o.w.bbox.y0); hit.bbox.y1=Math.max(hit.bbox.y1,o.w.bbox.y1); }
+      else runs.push({text:String(o.w.text), yc:o.yc, bbox:{x0:o.w.bbox.x0,y0:o.w.bbox.y0,x1:o.w.bbox.x1,y1:o.w.bbox.y1}}); });
+  return runs; }
+try{ window.EN9ocrRuns=en9OcrRuns; }catch(e){}
+
 /* ---- in-browser engines: PaddleOCR (above) first, Tesseract.js last ---- */
 EN9OCR.realIO={
   /* pdf.js and pdf-lib always; then PaddleOCR in the browser, and only when
@@ -1210,7 +1381,7 @@ EN9OCR.realIO={
     if(!window.PDFLib){ chain=chain.then(function(){ st(EN9OCRASSET.has("pdflib.js")?"Starting the built-in PDF writer…":"Downloading PDF writer…");
       return en9LoadScript("https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js","pdflib.js"); }); }
     chain=chain.then(function(){ if(EN9OCR.forceTesseract) throw new Error("Tesseract.js requested");
-      return EN9PPOCR.load(st).then(function(){ EN9OCR.browserEngine="ppocr"; }); })
+      return EN9PPOCR.load(st).then(function(){ EN9OCR.browserEngine="ppocr"; EN9OCR.browserReason=""; }); })
       .catch(function(e){ EN9OCR.browserEngine="tesseract.js"; EN9OCR.browserReason=String(e&&e.message||e);
         try{ console.warn("[OCR] PaddleOCR in the browser unavailable: "+EN9OCR.browserReason); }catch(x){}
         if(!window.Tesseract){ st("PaddleOCR could not be loaded in this browser ("+EN9OCR.browserReason+") — downloading Tesseract OCR engine (open source)…");
@@ -1230,6 +1401,15 @@ EN9OCR.realIO={
   recognize:function(worker,pageimg){
     if(worker&&worker.ppocr) return EN9PPOCR.page(pageimg.canvas);
     return worker.recognize(pageimg.canvas).then(function(r){return r.data;}); },
+  /* the second opinion: Tesseract.js on the same rendered page, loaded only
+     when PaddleOCR is unsure, and kept for the rest of the run */
+  fallbackRecognize:function(pageimg,langs,st){
+    var load=window.Tesseract?Promise.resolve():en9LoadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
+    return load.then(function(){
+      if(!EN9OCR._tess) EN9OCR._tess=window.Tesseract.createWorker(langs||"eng",1,{logger:function(m){
+        if(m.status==="recognizing text") st("Checking with Tesseract… "+Math.round((m.progress||0)*100)+"%"); }});
+      return EN9OCR._tess; })
+    .then(function(w){ return w.recognize(pageimg.canvas); }).then(function(r){ return r.data; }); },
   /* pages: [{n, copy:true}] keep the original page (its text layer intact);
      [{n, png, w, h, words}] embed the image with an invisible text layer. */
   buildPdf:function(pages,srcBuf){ var PL=window.PDFLib;
@@ -1242,7 +1422,7 @@ EN9OCR.realIO={
           return doc.embedPng(pg.png).then(function(img){
             var page=doc.addPage([pg.w,pg.h]);
             page.drawImage(img,{x:0,y:0,width:pg.w,height:pg.h});
-            (pg.words||[]).forEach(function(wd){
+            en9OcrRuns(pg.layoutWords||pg.words||[]).forEach(function(wd){
               if(!wd.text||!wd.bbox) return;
               var x=wd.bbox.x0/pg.scale, y1=wd.bbox.y1/pg.scale, hh=(wd.bbox.y1-wd.bbox.y0)/pg.scale, ww=(wd.bbox.x1-wd.bbox.x0)/pg.scale;
               var size=Math.max(4,Math.min(40,hh*0.92));
@@ -1294,17 +1474,21 @@ function EN9ocrLocalFlags(page,text,bb,c,eng){ var flags=[], t=String(text).trim
   if(c<0.9) flags.push({page:page,kind:"low-confidence",level:"warn",text:t,bbox:bb,conf:c,engine:eng,message:"'"+t+"' was read at "+Math.round(c*100)+"% confidence, below the 90% floor for figures — verify against the scan.",alt:null,alt_engine:null,alt_conf:null});
   return flags; }
 function EN9ocrSidecarFromLocal(pages,targets,mode,langs){ var out=[];
-  var pp=EN9OCR.browserEngine==="ppocr", eng=pp?"paddle":"tesseract.js";
+  var pp=EN9OCR.browserEngine==="ppocr", eng0=pp?"paddle":"tesseract.js";
   var backend=pp?EN9PPOCR.backend:"Tesseract.js 5 in this browser (fallback — "+(EN9OCR.browserReason?"PaddleOCR could not load: "+EN9OCR.browserReason:"no OCR service")+")";
+  var viaT=[];
   pages.forEach(function(pg){ if(pg.copy){ out.push({page:pg.n,status:"digital",engine:null,confMean:null,words:[],flags:[]}); return; }
-    var words=[], confs=[], flags=[];
+    var words=[], confs=[], flags=[], eng=pg.fallback&&pg.fallback.engine||eng0;
+    if(pg.fallback){ if(pg.fallback.engine==="tesseract.js") viaT.push(pg.n);
+      flags.push({page:pg.n,kind:"engine-fallback",level:"info",text:"",bbox:[0,0,pg.w,pg.h],conf:null,engine:eng,message:"Page "+pg.n+": "+pg.fallback.why+". "+pg.fallback.outcome+".",alt:null,alt_engine:null,alt_conf:null}); }
     (pg.words||[]).forEach(function(wd){ if(!wd.text||!wd.bbox) return; var c=(wd.confidence||0)/100; confs.push(c);
       var bb=[wd.bbox.x0/pg.scale,wd.bbox.y0/pg.scale,wd.bbox.x1/pg.scale,wd.bbox.y1/pg.scale];
       words.push({text:wd.text,bbox:bb,conf:c,engine:eng});
       flags.push.apply(flags,EN9ocrLocalFlags(pg.n,wd.text,bb,c,eng)); });
     var mean=confs.length?confs.reduce(function(a,b){return a+b;},0)/confs.length:null;
     out.push({page:pg.n,status:words.length?"ocr":"failed",engine:eng,confMean:mean,words:words,flags:words.length?flags:[{page:pg.n,kind:"page-failed",level:"block",text:"",bbox:[0,0,pg.w,pg.h],conf:0,engine:eng,message:"Page "+pg.n+" could not be read by the in-browser engine. Nothing on it should be trusted without checking the scan.",alt:null,alt_engine:null,alt_conf:null}]}); });
-  return {engine:eng, backend:backend, verifyEngine:null, chain:[eng], mode:mode, source:"browser",
+  if(viaT.length) backend+=" · Tesseract.js 5 on page"+(viaT.length>1?"s ":" ")+viaT.join(", ")+" (PaddleOCR failed or was unsure there)";
+  return {engine:eng0, backend:backend, verifyEngine:null, chain:viaT.length?[eng0,"tesseract.js"]:[eng0], mode:mode, source:"browser",
     at:new Date().toISOString(), verdict:targets.length===pages.length?"scanned":"mixed", ocrPages:targets.slice(), pages:out, stats:{langs:langs}}; }
 EN9OCR.localFlags=EN9ocrLocalFlags; EN9OCR.sidecarFromLocal=EN9ocrSidecarFromLocal;
 
@@ -1437,13 +1621,17 @@ function EN9ocrStart(entityId, fileId, opts) {
   var gateP = EN9OCRGATE.mark(entityId, fileId);
   var job = EN9OCR.jobs[fileId] = { entityId: entityId, fileId: fileId, name: att.name, status: "running", mode: opts.mode || "manual", message: "Processing", startedAt: Date.now(), completedAt: null };
   var say = function (m) { EN9ocrSay(m, fileId); };
-  job.p = EN9ocrRunAny(att.blob, entityId, { pages: opts.pages || "auto", langs: opts.langs || EN9ocrLangsFor(ent), force: !!opts.force, mode: opts.mode || "manual", name: att.name }, say)
+  /* started inside a promise, so anything thrown before the engine runs
+     fails this job visibly instead of leaving it "running" */
+  job.p = Promise.resolve().then(function () { return EN9ocrRunAny(att.blob, entityId, { pages: opts.pages || "auto", langs: opts.langs || EN9ocrLangsFor(ent), force: !!opts.force, mode: opts.mode || "manual", name: att.name }, say); })
     .then(function (res) {
-      if (!res || !res.file) throw new Error(job.error || "no result");
+      /* the engine's own failure, not a bare "no result": the row's Details
+         must say what actually went wrong */
+      if (!res || !res.file) throw new Error(job.error || EN9OCR.lastError || "no result");
       return Promise.resolve(window.__WPACT.EN9_replaceFile(entityId, fileId, res.file, res.sidecar)).then(function (newId) {
         if (!newId) throw new Error("the document is no longer attached");
         job.status = "done"; job.completedAt = Date.now(); job.newId = newId; job.engine = res.sidecar.backend || res.sidecar.engine;
-        var flags = res.sidecar.pages.reduce(function (n, p) { return n + (p.flags || []).filter(function (x) { return x.level !== "info"; }).length; }, 0);
+        var flags = en9OcrFlaggedWords(res.sidecar.pages);
         say("“" + att.name + "” read by " + (res.sidecar.backend || res.sidecar.engine) + (res.sidecar.verifyEngine ? " (cross-checked by " + res.sidecar.verifyEngine + ")" : "") +
           " — " + res.sidecar.ocrPages.length + " page(s)" + (flags ? ", " + flags + " reading(s) flagged for review" : "") + ". Every figure from it is OCR-derived and must be checked against the scan.");
         EN9OCRGATE.done(entityId, fileId);
@@ -1480,7 +1668,7 @@ function EN9ocrRunAny(blob, entityId, opts, st) {
         return { file: f, sidecar: sc };
       });
     }
-    st(EN9OCR.service.off() ? "OCR service turned off — reading with PaddleOCR in this browser." : "No OCR service found (" + (h.error || "no engine") + ") — reading with PaddleOCR in this browser instead.");
+    st(EN9OCR.service.off() ? "OCR service turned off — reading with PaddleOCR in this browser." : "No OCR service on this computer — reading with PaddleOCR in this browser instead.");
     return new Promise(function (resolve) {
       en9OcrRun(blob, entityId, opts.langs || "eng", st, function (res) { resolve(res); }, { pages: opts.pages, force: opts.force, mode: opts.mode, name: name });
     });
@@ -1492,8 +1680,8 @@ function EN9ocrRunAny(blob, entityId, opts, st) {
    unchanged. done(result) with {file, sidecar, pages, words} or null. */
 function en9OcrRun(file,entityId,langs,st,done,opts){
   opts=opts||{};
-  if(EN9OCR.busy){ if(st) st("An OCR run is already in progress — wait for it to finish."); done&&done(null); return; }
-  EN9OCR.busy=true; EN9OCR.result=null;
+  if(EN9OCR.busy){ EN9OCR.lastError="another OCR run was in progress"; if(st) st("An OCR run is already in progress — wait for it to finish."); done&&done(null); return; }
+  EN9OCR.busy=true; EN9OCR.result=null; EN9OCR.lastError=null;
   var io=EN9OCR.io||EN9OCR.realIO, worker=null, srcBuf=null, targets=null;
   st("Preparing…");
   io.loadEngines(st)
@@ -1518,8 +1706,11 @@ function en9OcrRun(file,entityId,langs,st,done,opts){
           chain=chain.then(function(){ st("Rendering page "+n2+" of "+total+"…");
             return io.renderPage(pdf,n2).then(function(pg){
               st("Recognizing page "+n2+" of "+total+"…");
-              return io.recognize(worker,pg).then(function(data){
+              return io.recognize(worker,pg).then(function(d){ return {data:d,err:null}; },function(e){ return {data:null,err:e}; })
+              .then(function(r){ return en9OcrSecondOpinion(io,worker,pg,r,langs,st,n2,total); })
+              .then(function(data){
                 pg.n=n2; pg.words=(data&&data.words)||[];
+                try{ pg.layoutWords=en9OcrAlignRows(pg.words); }catch(x){ pg.layoutWords=null; }
                 /* the engine turned or straightened the page: the copy shows
                    that upright image, and the words are in its frame */
                 if(data&&data.page&&data.page.toDataURL){ pg.png=data.page.toDataURL("image/png"); pg.w=data.page.width/pg.scale; pg.h=data.page.height/pg.scale; pg.fix=data.fix||null; }
@@ -1543,9 +1734,45 @@ function en9OcrRun(file,entityId,langs,st,done,opts){
       done&&done(EN9OCR.result);
     });
   })
-  .catch(function(e){ EN9OCR.stats.fails++; st("OCR failed: "+en9OcrFriendly(e)); done&&done(null); })
-  .then(function(){ EN9OCR.busy=false; if(worker&&worker.terminate)try{worker.terminate()}catch(e){} });
+  .catch(function(e){ EN9OCR.stats.fails++; EN9OCR.lastError=String(e&&e.message||e); st("OCR failed: "+en9OcrFriendly(e)); done&&done(null); })
+  .then(function(){ EN9OCR.busy=false; if(worker&&worker.terminate)try{worker.terminate()}catch(e){}
+    if(EN9OCR._tess){ var tw=EN9OCR._tess; EN9OCR._tess=null; Promise.resolve(tw).then(function(w){ if(w&&w.terminate) w.terminate(); }).catch(function(){}); } });
 }
+
+/* How sure an engine was of a page: mean word confidence and the share of
+   words under 80% (confidence arrives 0-100, as Tesseract.js reports it). */
+function en9OcrPageConf(words){ var cs=(words||[]).filter(function(w){ return w&&w.text; }).map(function(w){ return (w.confidence||0)/100; });
+  if(!cs.length) return {n:0,mean:0,low:1};
+  return {n:cs.length, mean:cs.reduce(function(a,b){return a+b;},0)/cs.length, low:cs.filter(function(c){return c<0.8;}).length/cs.length}; }
+/* Why a PaddleOCR reading needs a second opinion, or null when it does not. */
+function en9OcrUnsure(r){ if(r.err) return "PaddleOCR failed on this page ("+String(r.err&&r.err.message||r.err)+")";
+  var q=en9OcrPageConf(r.data&&r.data.words);
+  if(!q.n) return "PaddleOCR found no text on this page";
+  if(q.mean<EN9OCR.UNSURE_MEAN) return "PaddleOCR was unsure of this page (average confidence "+Math.round(q.mean*100)+"%)";
+  if(q.low>EN9OCR.UNSURE_LOW) return "PaddleOCR was unsure of "+Math.round(q.low*100)+"% of the words on this page";
+  return null; }
+window.EN9ocrUnsure=en9OcrUnsure; window.EN9ocrPageConf=en9OcrPageConf;
+/* PaddleOCR first; when it fails or is unsure of a page, Tesseract.js reads
+   the same page and the more confident reading is kept. Nothing changes for a
+   page PaddleOCR read confidently, or when Tesseract.js is the only engine. */
+function en9OcrSecondOpinion(io,worker,pg,r,langs,st,n,total){
+  if(!(worker&&worker.ppocr)){ if(r.err) throw r.err; return r.data; }
+  var why=en9OcrUnsure(r);
+  if(!why) return r.data;
+  if(!io.fallbackRecognize){ if(r.err) throw r.err; pg.fallback={engine:"paddle",why:why,outcome:"no second engine available"}; return r.data; }
+  st(why+" — checking page "+n+" of "+total+" with Tesseract…");
+  return io.fallbackRecognize(pg,langs,st).then(function(t){
+    var tq=en9OcrPageConf(t&&t.words), pq=en9OcrPageConf(r.data&&r.data.words);
+    var useT=tq.n>0&&(r.err||!pq.n||(tq.mean>pq.mean&&tq.n>=0.6*pq.n));
+    pg.fallback={engine:useT?"tesseract.js":"paddle", why:why,
+      outcome:useT?"Tesseract.js read it more confidently ("+Math.round(tq.mean*100)+"% against "+(pq.n?Math.round(pq.mean*100)+"%":"nothing")+") and its reading is used"
+                  :"Tesseract.js was no surer ("+(tq.n?Math.round(tq.mean*100)+"%":"no text")+"), so PaddleOCR's reading is kept"};
+    return useT?{words:t.words}:r.data;
+  }, function(e2){
+    if(r.err) throw new Error(why+"; Tesseract.js could not read it either ("+String(e2&&e2.message||e2)+")");
+    pg.fallback={engine:"paddle",why:why,outcome:"Tesseract.js could not be loaded ("+String(e2&&e2.message||e2)+"), so PaddleOCR's reading is kept"};
+    return r.data; }); }
+window.en9OcrSecondOpinion=en9OcrSecondOpinion;
 
 function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
   var e=(s.entities||[]).find(function(x){return x.id===entityId;});
@@ -1556,6 +1783,13 @@ function en9OcrIntakePdfs(entityId){ var s=st(), out=[]; if(!s) return out;
    which file, the one result that matters, and — only when there is any —
    the technical detail behind a disclosure. Everything shown comes from the
    job and the file's own OCR record; nothing is re-detected or re-read. */
+/* One uncertain word can carry several flags (a letter inside a figure AND
+   a low confidence). The preparer checks words against the scan, so the
+   count shown is of distinct words; the review list keeps every flag. */
+function en9OcrFlaggedWords(pages){ var seen={};
+  (pages||[]).forEach(function(p){ (p.flags||[]).forEach(function(x){ if(!x||x.level==="info") return;
+    seen[(x.page||p.page)+"|"+(x.text||"")+"|"+(x.bbox?x.bbox.map(function(v){return Math.round(v);}).join(","):"")]=1; }); });
+  return Object.keys(seen).length; }
 function en9OcrClock(ms){ var secs=Math.max(0,Math.floor(ms/1000));
   return secs<60?secs+"s":Math.floor(secs/60)+"m "+String(secs%60).padStart(2,"0")+"s"; }
 function en9OcrReadCounts(j){
@@ -1564,23 +1798,23 @@ function en9OcrReadCounts(j){
   try{ var s0=st(), ent=((s0&&s0.entities)||[]).filter(function(e){return e.id===j.entityId;})[0];
     var f=ent&&(ent.files||[]).filter(function(x){return x.id===j.newId;})[0], oc=f&&f.ocr;
     if(oc&&oc.pages){ var read=(oc.ocrPages&&oc.ocrPages.length)||oc.pages.filter(function(p){return p.status!=="text";}).length;
-      var flagged=oc.pages.reduce(function(n,p){ return n+((p.flags||[]).filter(function(x){return x&&x.level!=="info";}).length); },0);
+      var flagged=en9OcrFlaggedWords(oc.pages);
       return {pages:read,flags:flagged}; } }catch(e){}
   var m=String(j.message||""), pm=/(\d+) page\(s\)/.exec(m), fm=/(\d+) reading\(s\) flagged/.exec(m);
   return {pages:pm?+pm[1]:null, flags:fm?+fm[1]:0};
 }
 var en9OcrOpenDet={};
 /* The engine line says which engine reads the pages. Why a faster engine
-   could not load (download addresses, fallbacks) is diagnostics: it stays
-   in the text, folded behind Details. */
-function en9OcrEngineText(box, full){
+   could not load, and where a service was looked for, are diagnostics:
+   listed behind Details, never dropped. */
+function en9OcrEngineText(box, parts){
   while(box.firstChild) box.removeChild(box.firstChild);
-  full=String(full||""); var m=/\s*\(([^()]*(?:https?:\/\/|could not)[^()]*)\)/i.exec(full);
-  if(!m){ box.textContent=full; return; }
-  box.appendChild(document.createTextNode((full.slice(0,m.index)+full.slice(m.index+m[0].length)).replace(/\s{2,}/g," ").trim()));
+  if(typeof parts==="string") parts={main:parts, details:[]};
+  box.appendChild(document.createTextNode(parts.main||""));
+  if(!parts.details||!parts.details.length) return;
   var d=document.createElement("details"); d.className="en9-ocr-jobdet";
   var sm=document.createElement("summary"); sm.textContent="Details"; d.appendChild(sm);
-  d.appendChild(el("p","en9-ocr-jobtech",m[1])); box.appendChild(d);
+  parts.details.forEach(function(t){ d.appendChild(el("p","en9-ocr-jobtech",t)); }); box.appendChild(d);
 }
 function en9OcrJobRow(j){
   var ended=j.completedAt||Date.now(), clock=en9OcrClock(ended-j.startedAt);
@@ -1590,10 +1824,18 @@ function en9OcrJobRow(j){
   else if(j.status==="running"){ tone="run"; label="Reading"; result="Reading the pages with no text layer"; }
   else if(j.status==="not-required"){ tone="off"; label="Not needed"; result="Text layer found — no OCR needed"; }
   else if(j.status==="done"){ var c=en9OcrReadCounts(j);
-    tone=c.flags?"warn":"ok"; label=c.flags?"Needs review":"Completed";
-    result=(c.pages!=null?c.pages+" page"+(c.pages===1?"":"s")+" read":"Read")+(c.flags?" · "+c.flags+" reading"+(c.flags===1?"":"s")+" to check against the scan":""); }
+    /* read, but by the last-resort engine: say so plainly; the reason (and
+       any address that failed) stays in Details, never hidden */
+    var fellBack=/fallback/i.test(j.engine||"");
+    tone=(c.flags||fellBack)?"warn":"ok"; label=(c.flags||fellBack)?"Needs review":"Completed";
+    result=(fellBack?"Primary OCR unavailable \u2014 fallback OCR used; review recommended. ":"")+
+      (c.pages!=null?c.pages+" page"+(c.pages===1?"":"s")+" read":"Read")+(c.flags?" · "+c.flags+" reading"+(c.flags===1?"":"s")+" to check against the scan":""); }
   else { tone="bad"; label="Failed";
-    result=j.error?"Could not be read. The original stays attached — add a clearer scan, a text PDF or the source spreadsheet.":(j.message||"Could not be read"); }
+    /* an engine that could not be fetched is a connection problem, not a
+       bad scan — say which, so the preparer does the right thing */
+    var noEngine=/could not (download|reach)|failed to fetch|onnx runtime did not load/i.test(j.error||"");
+    result=noEngine?"OCR engine could not be loaded \u2014 check the internet connection and try again. The original stays attached."
+      :j.error?"Could not be read. The original stays attached — add a clearer scan, a text PDF or the source spreadsheet.":(j.message||"Could not be read"); }
   var row=el("div","en9-ocr-job "+j.status+" tone-"+tone);
   var badge=el("span","en9-ocr-jobbadge is-"+tone,label);
   /* break long file names at their own separators before breaking a word */
@@ -1609,8 +1851,10 @@ function en9OcrJobRow(j){
      again — the row above already says what to do */
   var failedWithReason=j.status==="failed"&&j.error;
   if(!failedWithReason&&j.message&&j.message!==result&&j.message!=="Processing") tech.push(j.message);
-  if(j.engine) tech.push("Engine: "+j.engine);
-  if(j.error) tech.push("Reason: "+j.error);
+  if(j.engine&&!tech.some(function(t){ return t.indexOf(j.engine)>=0; })) tech.push("Engine: "+j.engine);
+  if(j.status==="failed"&&EN9OCR.browserEngine==="tesseract.js"&&EN9OCR.browserReason&&(j.error||"").indexOf(EN9OCR.browserReason)<0)
+    tech.push("Primary OCR (PaddleOCR) could not load: "+EN9OCR.browserReason);
+  if(j.error) tech.push((j.status==="failed"&&EN9OCR.browserEngine==="tesseract.js"?"Fallback OCR (Tesseract.js): ":"Reason: ")+j.error);
   if(tech.length){ var d=document.createElement("details"); d.className="en9-ocr-jobdet";
     /* rows are rebuilt on every progress message; an opened Details stays open */
     var dk=j.fileId||j.name; if(en9OcrOpenDet[dk]) d.open=true;
@@ -1746,7 +1990,7 @@ function enhanceOcrPanel(){
   function showEngine(force){ if(checking&&!force) return;
     checking=true; eng.className="en9-ocr-engine"; if(force) eng.textContent="Checking for the OCR service…";
     EN9OCR.service.health(force).then(function(h){ checking=false;
-      en9OcrEngineText(eng, EN9OCR.service.statusText()); eng.className="en9-ocr-engine"+(h&&h.available?"":" offline");
+      en9OcrEngineText(eng, EN9OCR.service.statusParts()); eng.className="en9-ocr-engine"+(h&&h.available?"":" offline");
       try{ var hint=document.querySelector(".en9-ocrset"); if(hint&&hint.EN9_refresh) hint.EN9_refresh(); }catch(e){} },
       function(){ checking=false; }); }
   ub.addEventListener("click",function(){ EN9OCR.service.setUserUrl(ui.value); ui.value=EN9OCR.service.userUrl(); showEngine(true); });
@@ -1885,11 +2129,11 @@ function EN9exceptionNoteDialog(button){
   var shade=el("div","en9-signoff-dialog"), box=el("section","en9-signoff-box");
   box.setAttribute("role","dialog"); box.setAttribute("aria-modal","true");
   box.appendChild(el("strong",null,"Document the sign-off"));
-  box.appendChild(el("p",null,"This is a blocking exception. Add the preparer’s reason before it is acknowledged and unblocked."));
-  var note=document.createElement("textarea"); note.placeholder="Reason for acknowledging this exception"; note.setAttribute("data-en9",""); box.appendChild(note);
+  box.appendChild(el("p",null,"This is a blocking exception. A reason is optional — anything you type is recorded in the audit trail; leave it blank to acknowledge without one."));
+  var note=document.createElement("textarea"); note.placeholder="Reason (optional)"; note.setAttribute("data-en9",""); box.appendChild(note);
   var actions=el("div","en9-signoff-dialog-actions"), cancel=el("button","button","Cancel"), confirm=el("button","button primary","Acknowledge & unblock"); cancel.type=confirm.type="button";
   cancel.addEventListener("click",function(){ shade.remove(); });
-  confirm.addEventListener("click",function(){ var text=note.value.trim(); if(!text){ note.focus(); return; }
+  confirm.addEventListener("click",function(){ var text=note.value.trim()||"Acknowledged — no reason given";
     shade.remove(); button.setAttribute("data-en9-note",text); button.setAttribute("data-en9-approved","1"); button.click(); });
   actions.appendChild(cancel); actions.appendChild(confirm); box.appendChild(actions); shade.appendChild(box); document.body.appendChild(shade); note.focus();
 }

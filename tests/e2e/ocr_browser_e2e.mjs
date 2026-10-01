@@ -13,7 +13,8 @@
      cdn.jsdelivr.net/npm/onnxruntime-web@<v>/dist/*  -> node_modules/onnxruntime-web/dist
      cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/*  -> .cache/pdfjs-3.11.174/package/build
      cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/*        -> node_modules/pdf-lib/dist
-     media.githubusercontent.com/.../ppocrv5/*         -> .cache/ppocrv5 (downloaded once if absent)
+     media.githubusercontent.com/.../ppocrv5/*.onnx    -> .cache/ppocrv5 (downloaded once if absent)
+     raw.githubusercontent.com/.../ppocrv5_dict.txt    -> .cache/ppocrv5 (media.* 404s it, as live)
    Everything else about the run is the real thing: upload → auto-detect →
    OCR in the browser → Process entity waits → mapping → generated work paper.
 
@@ -57,7 +58,8 @@ async function ensureModels(commit) {
     const dst = path.join(MODEL_DIR, name);
     if (fs.existsSync(dst) && fs.statSync(dst).size > 1000) continue;
     console.log("downloading", rel);
-    const r = await fetch(base + rel);
+    // the dictionary is a plain git file: media.* (LFS only) answers 404 for it
+    const r = await fetch(rel.endsWith(".onnx") ? base + rel : base.replace("https://media.githubusercontent.com/media/", "https://raw.githubusercontent.com/") + rel);
     if (!r.ok) throw new Error(`could not download ${rel}: ${r.status}`);
     fs.writeFileSync(dst, Buffer.from(await r.arrayBuffer()));
   }
@@ -94,7 +96,10 @@ async function main() {
     await ctx.route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/onnxruntime-web@[\d.]+\/dist\/(.+)$/, (route) => serve(route, path.join(root, "node_modules", "onnxruntime-web", "dist", /dist\/(.+?)(\?|$)/.exec(route.request().url())[1]), "ort"));
     await ctx.route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/pdfjs-dist@3\.11\.174\/build\/(.+)$/, (route) => serve(route, path.join(root, ".cache", "pdfjs-3.11.174", "package", "build", /build\/(.+?)(\?|$)/.exec(route.request().url())[1]), "pdfjs"));
     await ctx.route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/pdf-lib@1\.17\.1\/dist\/(.+)$/, (route) => serve(route, path.join(root, "node_modules", "pdf-lib", "dist", /dist\/(.+?)(\?|$)/.exec(route.request().url())[1]), "pdflib"));
-    await ctx.route(/^https:\/\/media\.githubusercontent\.com\/media\/jingsongliujing\/OnnxOCR\/[0-9a-f]+\/onnxocr\/models\/ppocrv5\/(.+)$/, (route) => serve(route, path.join(MODEL_DIR, path.basename(/ppocrv5\/(.+?)(\?|$)/.exec(route.request().url())[1])), "models"));
+    // as the real hosts behave: media.* serves only the LFS weights (404 for
+    // the plain dictionary), raw.* serves the dictionary
+    await ctx.route(/^https:\/\/media\.githubusercontent\.com\/media\/jingsongliujing\/OnnxOCR\/[0-9a-f]+\/onnxocr\/models\/ppocrv5\/(.+)$/, (route) => /\.onnx(\?|$)/.test(route.request().url()) ? serve(route, path.join(MODEL_DIR, path.basename(/ppocrv5\/(.+?)(\?|$)/.exec(route.request().url())[1])), "models") : route.fulfill({ status: 404, body: "not an LFS object" }));
+    await ctx.route(/^https:\/\/raw\.githubusercontent\.com\/jingsongliujing\/OnnxOCR\/[0-9a-f]+\/onnxocr\/models\/ppocrv5\/ppocrv5_dict\.txt$/, (route) => serve(route, path.join(MODEL_DIR, "ppocrv5_dict.txt"), "models"));
     await ctx.route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/tesseract\.js/, (route) => route.fulfill({ status: 404, body: "Tesseract.js must not be needed" }));
   }
 
@@ -105,7 +110,8 @@ async function main() {
   await page.waitForFunction(() => window.__WPACT && window.__WPGET && window.EN9OCRGATE && window.EN9PPOCR, null, { timeout: 30000 });
   ok(true, "app booted from file:// with the bridge, the gate and the in-browser PaddleOCR engine");
   await page.evaluate(() => { const b = [...document.querySelectorAll(".nav-item")].find((n) => /entit/i.test(n.textContent)); b && b.click(); });
-  await page.waitForSelector(".en9-ocr-engine", { timeout: 15000 });
+  // the engine line sits inside the closed "Advanced" disclosure: present, not visible
+  await page.waitForSelector(".en9-ocr-engine", { state: "attached", timeout: 15000 });
   await page.waitForFunction(() => !/Checking/.test(document.querySelector(".en9-ocr-engine").textContent), null, { timeout: 30000 });
   const card = await page.evaluate(() => document.querySelector(".en9-ocr-engine").textContent);
   ok(/turned off/.test(card) && /PaddleOCR \(PP-OCRv5\) runs in this browser/.test(card), "the card says the service is off and PaddleOCR reads in this browser");
@@ -230,7 +236,7 @@ async function main() {
     const second = await ctx.newPage();
     await second.goto("file://" + DIST, { waitUntil: "load" });
     await second.waitForFunction(() => window.EN9PPOCR, null, { timeout: 30000 });
-    const cached = await second.evaluate(async () => { const u = window.EN9PPOCR.urls(); const b = await window.EN9PPOCR._dbGet(u.rec); return b ? b.byteLength : 0; });
+    const cached = await second.evaluate(async () => { const u = window.EN9PPOCR.urls(); const b = await window.EN9PPOCR._dbGet(u.rec[0]); return b ? b.byteLength : 0; });
     ok(cached === 16631306, `a fresh page finds the recognition model in IndexedDB (${cached} bytes)`);
   }
   ok(errors.length === 0, `no uncaught page errors (${errors.slice(0, 3).join(" | ")})`);

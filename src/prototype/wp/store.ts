@@ -3,14 +3,15 @@
 import {
   BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES, REPLACEABLE_FORMULA_REFS,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
-  detectRulers, resolveWordRulers, inheritRulers, detectPeriodRulers, explainUnreadable, isProcessorFee, splitSidePanels, extractPositionedRows, extractRows, fixedAssetSplit, matchRule, matchRuleScoped, noteLookthrough, numeric, readDocument, signForLabel, stackedCaptionRows, statementNotes,
+  detectRulers, resolveWordRulers, inheritRulers, detectPeriodRulers, explainUnreadable, isProcessorFee, splitSidePanels, extractPositionedRows, extractRows, fixedAssetSplit, movementFixedAssetSplit, matchRule, matchRuleScoped, noteLookthrough, numeric, numericCell, readDocument, signForLabel, stackedCaptionRows, statementNotes, boxedFormCodes, boxedFormSpec, isTaxRegisterCaption,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
 import { pdfToDoc } from "./pdfText";
 import { parseQuestionnaire, type Questionnaire } from "./questionnaire";
 import { irsCountryCode } from "./countryCodes";
-import { collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, dropFurniture, dropMovementSchedules, equityOverride, expenseGainFlip, gridStructRows, refeedBySection, sectionOk, sectionRoute, structRows, tagSections, type MapRow, type Section } from "./sections";
+import { entityInsights, summarizeReview, fileSignature, type ChoiceMemory } from "./insights";
+import { DETAIL_PNL_TITLE, bsSide, isProfitLine, isResultSubtotal, supplementaryDetailPages, collapsedRoute, collapsedSections, contraRevenueFlip, deductionMagnitudeFlip, dropFurniture, dropMovementSchedules, equityOverride, expenseGainFlip, gridStructRows, outsidePrintedTotal, refeedBySection, sameIndentSubtotals, sectionOk, sectionRoute, structRows, tagSections, tagStatementGroups, type MapRow, type Section } from "./sections";
 import { asOfLabel, fxTag, providerTag, requireIso, toIsoLoose, yearBefore } from "./fxDates";
 import {
   AI_BATCH, TPM_BUDGET, aiMode, askResume, classifyFailure, estTokens, maxTokensFor,
@@ -29,7 +30,7 @@ import {
   classifyParsedDoc, deriveCaseYears, entitySimilarity, markDuplicates, pagesForFeed, periodMinusOneYear,
   type DocClass, type DocKind,
 } from "./classify";
-import { addressLines, directoryDirectors, directoryShareholders, extractCarryForwards, samePerson, type CarryForward, type DirectoryHolder } from "./carryForward";
+import { addressLines, directoryDirectors, directoryShareholders, extractCarryForwards, naicsDescription, samePerson, type CarryForward, type DirectoryHolder } from "./carryForward";
 
 /** One 5471 block's carry-forward, tagged with its origin for selection,
     cross-document dedupe and sibling fan-out. */
@@ -93,8 +94,8 @@ import { addWorksheet, applyWrites, resolveTemplateRows, templateBytes, type Cel
 import { safeDownload } from "./safeBrowser";
 import { applyPeg, lookupRates, peggedRate, yearFromPeriod, FX_META } from "./fxRates";
 import { seedRateDb, type RateDb } from "./rateDb";
-import { PROVIDERS, fetchLiveRate, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
-import { collectCaptionLabels, detectLanguage, displayLabel, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
+import { PROVIDERS, fetchLiveRate, fxCurrencyApiAverage, fxFrankfurterAverage, fxOfxAverage, isMostlyNonLatin, translateFree, type LiveRate } from "./providers";
+import { collectCaptionLabels, detectLanguage, bilingualLabel, displayLabel, isServiceErrorText, poisonedTranslationKeys, translateSourceCode } from "./captions";
 import { translateCaption } from "./terms";
 import { cleanFor, detectProfile, looksLikeDate, sniffCurrency, type DetectedField, type ProfileCandidate } from "./detectProfile";
 
@@ -181,6 +182,11 @@ export type CellWrite = {
   /** Re-resolve the ROW by matching this text in the label column at
       generation time — template-revision-proof (Schedule M). */
   labelKey?: { col: string; contains: string; excludes?: string };
+  /** This value replaces the formula the template ships in the cell. Only
+      for a cell whose formula reads a figure that does not exist for this
+      entity (the Retained Earnings tab's opening, linked to Schedule F's
+      opening column, when there is no opening column). */
+  replaceFormula?: true;
   /** Decimal places kept when the value reaches the cell. Amounts round to
       2; an exchange rate written at 2 dp is a different rate (0.833 → 0.83). */
   dp?: number;
@@ -234,6 +240,9 @@ export type FxMeta = {
   enteredOn?: string;
   /** True when `asOf` is the period end this rate is FOR, not a guess. */
   measured?: boolean;
+  /** Average-rate note only: an estimate offered (never written) when no
+      published average could be reached. */
+  estimate?: number;
 };
 
 export type DocKindOverride = {
@@ -286,6 +295,10 @@ export type Entity = {
      asking again. */
   nameMismatch?: { statementName: string; priorName: string; source: string } | null;
   nameDecision?: { priorName: string; sameEntity: boolean } | null;
+  /** Other names the SAME company prints its papers under — the books or
+      trading name on the statements when the filed return carries the legal
+      name. Recorded when the preparer confirms the two are one company. */
+  nameAliases?: string[];
   /** The rate the opening balance sheet was translated at, and why that one.
       Written once, read by the provenance sheet and by every cell that
       depends on the opening figures. */
@@ -320,6 +333,12 @@ export type Entity = {
   /* `section` travels with the row so the AI pass (and the reviewer) can see
      which banner it was printed under — a proposal that contradicts it is a
      documentary contradiction, not a judgement call. */
+  /** The year's result as each statement prints it — the P&L's bottom line
+      (skipped as a total) and the equity line — for the tie-out check. */
+  statedResults?: { label: string; value: number; docName: string; page?: number; feed: "is" | "bs" }[];
+  /** The year's result as a numbered-box return states it, BEFORE income
+      tax, so Schedule C can be checked against the filing. */
+  formResults?: { label: string; value: number; docName: string }[];
   unmatched: (ExtractedRow & {
     docId?: string; docName?: string; section?: Section | null;
     /** What the model proposed for this caption and why it was refused (or
@@ -424,12 +443,14 @@ export type WpState = {
   toast: { id: number; text: string; kind: "ok" | "bad" | "" } | null;
 };
 
+/* The models offered for the AI passes, default first. Groq retired the
+   Llama 3.x and Qwen models this list used to start with; a saved project that
+   still names one is moved to the default on load (loadState) and again at
+   call time (groqChat), so no request is sent to a model that no longer
+   exists. Mirrors dist's model list. */
 export const GROQ_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-8b-instant",
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
-  "qwen/qwen3-32b",
 ];
 
 export const QUOTA = { aiTokens: 500000, documents: 500, storageMB: 2048, apiRequests: 5000 };
@@ -556,6 +577,8 @@ export type CaseYears = {
   /** Who decided: the preparer, the documents, or nobody yet. */
   source: "selected" | "documents" | "none";
   detected: number[];
+  /** Set when the year is the one after the prior-year return. */
+  afterPrior?: number;
 };
 
 /**
@@ -586,6 +609,8 @@ export function resolveCaseYears(ent: Entity): CaseYears {
 export const caseYearReason = (y: CaseYears): string =>
   y.source === "selected"
     ? `${y.cy} — you set the year end in Basic Information${y.detected.length ? `; the documents report on ${y.detected.join(", ")}` : ""}`
+    : y.source === "documents" && y.afterPrior
+      ? `${y.cy} — the year after the prior-year return (${y.afterPrior})${y.dissent.length ? `; the statements also report ${y.dissent.join(", ")}, which is reference only` : ""} — set the year end in Basic Information to prepare a different year`
     : y.source === "documents"
       ? `${y.cy} — taken from the documents (${y.detected.join(", ")}); set the year end in Basic Information to prepare a different year`
       : "not established — no document states a year and no year end has been entered";
@@ -600,7 +625,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 10;
+export const RULE_CATALOGUE_VERSION = 17;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -615,6 +640,17 @@ const SKIP_ADDED_SINCE: Record<number, string[]> = {
   8: ["utilidad (o p\u00e9rdida)", "utilidad (o perdida)", "utilidad o p\u00e9rdida", "utilidad o perdida",
       "utilidad o p\u00e9rdida del ejercicio", "utilidad o perdida del ejercicio",
       "resultado integral de financiamiento", "resultado integral", "resultado neto"],
+  // v11 (2026-09-28): UK (Companies Act) subtotals.
+  10: ["profit for the financial year", "loss for the financial year",
+       "profit on ordinary activities after taxation", "loss on ordinary activities after taxation",
+       "profit on ordinary activities before taxation", "loss on ordinary activities before taxation",
+       "profit after taxation", "loss after taxation", "total comprehensive income",
+       "net current assets", "net current liabilities", "net current assets/(liabilities)",
+       "total assets less current liabilities"],
+  // v16 (2026-09-30): Dutch-style result subtotals printed in English.
+  15: ["result before taxation", "result after taxation", "result before tax", "result after tax", "operating result", "gross operating result", "financial income and expenditure", "total financial income and expenditure", "result on ordinary activities", "net result"],
+  // v17 (2026-10-01): Colombian (PUC) result subtotals.
+  16: ["resultado bruto", "resultado operacional", "resultado antes de", "result. antes de", "resultado antes de impto", "resultado antes de corr"],
 };
 
 /** target → first keyword, for each group added at version 2. Identified by
@@ -651,6 +687,23 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
      and became a group of their own, so a saved catalogue that never had them
      needs the new group as well as the move. */
   9: ["paypal fee"],
+  /* v11 (2026-09-28): UK statutory P&L and balance-sheet captions — interest
+     receivable/payable, other operating income, the bare "Taxation" charge,
+     the distribution/administrative expense headings and "Stocks". */
+  10: ["interest receivable", "interest payable", "other operating income", "taxation",
+       "distribution costs", "stocks"],
+  // v12 (2026-09-28): Macroroots spreadsheets — other expenses, debt by term, taxes payable.
+  11: ["other expenses", "short-term debt", "long-term debt", "taxes payable"],
+  // v13 (2026-09-29): sundry debtors are other current assets, not trade receivables.
+  12: ["deudores diversos"],
+  /* v15 (2026-09-30): Blue Water Grill — bank accounts named after the bank,
+     staff loans and "due from" balances, equipment rental, donations,
+     "business tax" and furniture held with equipment. */
+  14: ["checking", "staff loan", "due from shareholder", "equipment rental", "donation", "business tax", "furniture and equipment"],
+  // v16 (2026-09-30): annual accounts in Dutch style (Collaborate and Eight).
+  15: ["housing costs", "interest and similar expenditure", "interest and similar income", "currency differences", "selling costs", "debts to participants", "debts to credit institutions"],
+  // v17 (2026-10-01): Colombian (PUC) statements (Premium Care).
+  16: ["antic. a trabajadores", "anticipo de clientes", "impto de renta"],
 };
 
 /** Keywords that MOVED to a different line at a given version. Adding a group
@@ -670,6 +723,16 @@ const RULES_MOVED_SINCE: Record<number, Array<{ kw: string[]; from: string; to: 
          "transaction fee", "processing fee"],
     from: "IS:12", to: "IS:OD",
   }],
+  /* v13 (2026-09-29): short-term debt joins the other borrowings on
+     Schedule F line 19 (v12 had put it on the other-current-liabilities
+     pool). Only a v12 catalogue carries it there, so only that one moves. */
+  12: [{
+    kw: ["short-term debt", "short term debt", "short-term loans", "short-term loan", "short-term borrowings"],
+    from: "BS:OCL", to: "BS:OL",
+  }],
+  /* v14 (2026-09-30): a plain exchange gain or loss is line 8a, as the
+     section route already had it; only a caption saying "realised" is 8b. */
+  13: [{ kw: ["exchange gain", "exchange loss"], from: "IS:20", to: "IS:19" }],
 };
 
 /** Groups the saved catalogue is missing purely because it predates them.
@@ -681,7 +744,11 @@ export function upgradeRules(saved: MappingRule[], savedVersion: number | undefi
   const known = new Set(saved.flatMap((r) => r.kw.map((k) => k.toLowerCase())));
   const wanted = new Set<string>();
   for (let v = from; v < RULE_CATALOGUE_VERSION; v++) for (const k of RULES_ADDED_SINCE[v] || []) wanted.add(k);
-  const add = DEFAULT_RULES.filter((r) => r.kw.some((k) => wanted.has(k.toLowerCase()) && !known.has(k.toLowerCase())));
+  /* Known per LINE, not just as a word: "taxation" already sat on the
+     balance-sheet creditor group, and that must not stop the P&L tax group
+     that now also carries it from being added. */
+  const knownOn = new Set(saved.flatMap((r) => r.kw.map((k) => `${r.t}|${k.toLowerCase()}`)));
+  const add = DEFAULT_RULES.filter((r) => r.kw.some((k) => wanted.has(k.toLowerCase()) && !knownOn.has(`${r.t}|${k.toLowerCase()}`)));
   const skipWords: string[] = [];
   for (let v = from; v < RULE_CATALOGUE_VERSION; v++) for (const k of SKIP_ADDED_SINCE[v] || []) if (!known.has(k)) skipWords.push(k);
   const moves: Array<{ kw: string[]; from: string; to: string }> = [];
@@ -766,6 +833,8 @@ function logEvent(action: string, detail: string, entity: string | null = null, 
 /** Record a provider call. Counters reset when the calendar day changes,
     mirroring how these free allowances are published. */
 /** Pending autoFillRates timers, one per entity. */
+/* A year-end change re-reads the entity once the typing has stopped. */
+const yearRerun: Record<string, ReturnType<typeof setTimeout>> = {};
 const fxDebounce: Record<string, ReturnType<typeof setTimeout>> = {};
 
 /** The period end a manually entered rate measures — never today's date, and
@@ -852,7 +921,9 @@ export function loadState(next: WpState) {
   const added = rules.length - (next.rules?.length || 0);
   // A project saved before the agent existed has no `agent` key; without the
   // default every read of state.agent would throw on restore.
-  state = { ...next, rules, rulesVersion: RULE_CATALOGUE_VERSION, agent: next.agent || {} };
+  const groq = { ...state.groq, ...(next.groq || {}) };
+  if (!GROQ_MODELS.includes(groq.model)) groq.model = GROQ_MODELS[0];
+  state = { ...next, groq, rules, rulesVersion: RULE_CATALOGUE_VERSION, agent: next.agent || {} };
   listeners.forEach((fn) => fn());
   // After the assignment, not before: logEvent writes through set(), and the
   // entry would be discarded by the state replacement above.
@@ -880,6 +951,42 @@ function set(patch: Partial<WpState>) {
 
 function updateEntity(id: string, patch: Partial<Entity>) {
   set({ entities: state.entities.map((e) => (e.id === id ? { ...e, ...patch } : e)) });
+  if (patch.translations) rememberTerms(patch.translations);
+}
+
+/* ---------- shared translation memory ----------
+   One English wording per foreign caption, across every work paper on this
+   machine: a caption translated (or corrected) once reads the same the next
+   time it appears, on any entity. Filled from every translation an entity
+   stores; read back before mapping. Browser storage, like the choice memory. */
+const TERM_KEY = "en9TermMemory";
+function readTerms(): Record<string, string> {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(TERM_KEY) : null;
+    const m = raw ? JSON.parse(raw) : {};
+    return m && typeof m === "object" ? m : {};
+  } catch { return {}; }
+}
+function rememberTerms(translations: Record<string, string>): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const m = readTerms();
+    let changed = false;
+    for (const [k, v] of Object.entries(translations || {})) {
+      if (!k || k.length < 3 || !v || v === k || isServiceErrorText(v) || m[k] === v) continue;
+      m[k] = v; changed = true;
+    }
+    if (!changed) return;
+    const keys = Object.keys(m);
+    for (const k of keys.slice(0, Math.max(0, keys.length - 3000))) delete m[k];
+    localStorage.setItem(TERM_KEY, JSON.stringify(m));
+  } catch { /* storage unavailable */ }
+}
+export function termsFromMemory(existing: Record<string, string> | undefined, labels: string[]): Record<string, string> {
+  const m = readTerms();
+  const out: Record<string, string> = {};
+  for (const l of labels) if (l && !(existing && existing[l]) && m[l] && !out[l]) out[l] = m[l];
+  return out;
 }
 
 let toastId = 0;
@@ -1070,6 +1177,30 @@ declare global {
   }
 }
 
+/* ---------- choice memory ----------
+   What the preparer chose before, on this machine: document types set by
+   hand and average rates typed by hand. It is read back ONLY as suggestions
+   (insights.ts memorySuggestions) — nothing is applied from it. Kept in the
+   browser's own storage, so it is the preparer's habit, not project data. */
+const CHOICE_KEY = "en9ChoiceMemory";
+export function readChoiceMemory(): ChoiceMemory {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(CHOICE_KEY) : null;
+    const m = raw ? JSON.parse(raw) : {};
+    return m && typeof m === "object" ? m : {};
+  } catch { return {}; }
+}
+export function rememberChoice(kind: "docKind" | "fx", key: string, value: Record<string, string>): void {
+  try {
+    if (typeof localStorage === "undefined" || !key) return;
+    const m = readChoiceMemory() as Record<string, Record<string, { count: number } & Record<string, unknown>>>;
+    const bucket = (m[kind] ||= {});
+    const prev = bucket[key];
+    bucket[key] = { ...value, count: (prev && JSON.stringify({ ...prev, count: 0 }) === JSON.stringify({ ...value, count: 0 }) ? prev.count : 0) + 1 };
+    localStorage.setItem(CHOICE_KEY, JSON.stringify(m));
+  } catch { /* storage unavailable: nothing is remembered */ }
+}
+
 export const actions = {
   /** Publish the action surface to the layer. Called on a deferred tick, not
       at module scope: `actions` is still being defined here, and exposing a
@@ -1256,6 +1387,7 @@ export const actions = {
     }
     updateEntity(entityId, { docKindOverrides: overrides });
     logEvent("Document type set", `${f?.name ?? fileId} → ${kind || "automatic"}${pageHint ? ` (${pageHint})` : ""}`, ent.name);
+    if (kind && f) rememberChoice("docKind", fileSignature(f.name), { kind, example: f.name });
     toast(kind ? "Document type saved — re-process to apply" : "Document type back to automatic", "ok");
   },
 
@@ -1309,6 +1441,10 @@ export const actions = {
     const ent = state.entities.find((e) => e.id === entityId);
     if (!ent) return;
     updateEntity(entityId, { [bucket]: { ...ent[bucket], [key]: value } } as Partial<Entity>);
+    if (bucket === "fx" && key === "avgRate" && value && ent.profile.currency) {
+      const yr = (/(\d{2})\s*$/.exec(ent.profile.cyEnd || "") || [])[1];
+      if (yr) rememberChoice("fx", `${ent.profile.currency.toUpperCase()}|20${yr}`, { rate: value, entity: ent.profile.legalName || ent.name });
+    }
     if (ent.detected[key] && ent.detected[key].value !== value) {
       const detected = { ...ent.detected };
       delete detected[key];                       // now a manual value
@@ -1346,16 +1482,30 @@ export const actions = {
         }
       }
       if (ent.processedAt && before !== after) {
+        /* The year decides which column every figure came from, so nothing
+           mapped for the old year may survive the change: the mapped lines,
+           their provenance and the schedule writes are cleared at once, and
+           the entity is read again for the new year as soon as the typing
+           stops. Documents, profile, overrides and sign-offs are kept. */
         updateEntity(entityId, {
           yearStale: true,
+          lines: {}, contributions: {}, sourceLabels: {}, unmatched: [], extraWrites: [], dividends: [],
           ...(ent.fxAuto ? { fx: {}, fxMeta: {} } : {}),
         });
+        clearTimeout(yearRerun[entityId]);
+        if (after && ent.files.length) {
+          yearRerun[entityId] = setTimeout(() => {
+            const cur = state.entities.find((e) => e.id === entityId);
+            if (!cur || cur.status === "processing" || yearOfShortPeriod(cur.profile.cyEnd) !== after) return;
+            void actions.processEntity(entityId);
+          }, 1500);
+        }
         logEvent(
           "Work paper year changed",
-          `${before ?? "not set"} → ${after ?? "not set"} — the lines, rates and checks on this entity were produced for ${before ?? "the previous year"}; re-process before generating`,
+          `${before ?? "not set"} → ${after ?? "not set"} — the lines mapped for ${before ?? "the previous year"} were cleared; the documents are read again for ${after ?? "the new year"}`,
           ent.name, "user",
         );
-        toast(`Year changed to ${after ?? "—"} — re-process the entity`, "");
+        toast(after ? `Year changed to ${after} — the documents are read again for ${after}` : "Year end cleared — the old year's lines were removed", "");
       }
     }
     // Typing the currency by hand IS the confirmation (C-01).
@@ -1414,7 +1564,12 @@ export const actions = {
         if (w.sheet === SHEET.schR && w.ref === "E10") return { ...w, value: d.date };
         if (w.sheet === SHEET.schR && (w.ref === "G10" || w.ref === "I10")) return { ...w, value: d.amountFunctional };
         if (w.sheet === SHEET.schJ && w.ref === "F33") return { ...w, value: -d.amountFunctional };
-        if (w.sheet === SHEET.schM && w.ref === "E32" && avgRate) return { ...w, value: Math.round(d.amountFunctional / avgRate) };
+        if (w.sheet === SHEET.schM && w.ref === "E32" && avgRate) return { ...w, value: Math.round((d.amountFunctional * dividendShareOfFiler(ent)) / avgRate) };
+        if (w.sheet === SHEET.schR && w.reviewId === "sch-r-split" && /^[GI]\d+$/.test(w.ref)) {
+          const parts = distributionSplit(ent, d.amountFunctional);
+          const p = parts ? parts[Number(w.ref.slice(1)) - 10] : undefined;
+          if (p) return { ...w, value: p.amount };
+        }
       }
       return w;
     });
@@ -1534,10 +1689,48 @@ export const actions = {
     if (!ent || !ent.nameMismatch) return;
     const chosen = String(name || "").trim() || ent.nameMismatch.statementName;
     const priorName = ent.nameMismatch.priorName;
+    /* "Same company" means the statements' name is this company's too, so
+       its pages keep feeding this work paper whichever name is kept as the
+       legal one. */
+    const aliases = sameEntity
+      ? [...new Set([...(ent.nameAliases || []), ent.nameMismatch.statementName, priorName]
+          .map((n) => String(n || "").trim())
+          .filter((n) => n && n.toLowerCase() !== chosen.toLowerCase()))]
+      : (ent.nameAliases || []);
+    /* "Different company": whatever the prior return supplied while the
+       question was open (a books name is used provisionally — see
+       booksNameAlias) belongs to that other corporation and comes back out:
+       its reference ID, address, currency, categories and holders. A value
+       the preparer changed since is theirs and stays. */
+    const profile: Record<string, string> = { ...ent.profile, legalName: chosen };
+    const ownership: Record<string, string> = { ...ent.ownership };
+    const categories = { ...ent.categories };
+    const detected = { ...ent.detected };
+    let shareholders = ent.shareholders || [];
+    let usShareholders = ent.usShareholders || [];
+    if (!sameEntity) {
+      const src = ent.nameMismatch.source;
+      const fromPrior = (label?: string) => !!src && String(label || "").startsWith(src);
+      for (const [k, d] of Object.entries(ent.detected || {})) {
+        if (!d || !fromPrior(d.sourceLabel)) continue;
+        delete detected[k];
+        if (k.startsWith("cat:")) { categories[k.slice(4)] = false; continue; }
+        if (profile[k] !== undefined && profile[k] === d.value && k !== "legalName") profile[k] = "";
+        else if (ownership[k] !== undefined && ownership[k] === d.value) ownership[k] = "";
+      }
+      if (profile.entityShort && entitySimilarity(profile.entityShort, priorName) >= 0.8) profile.entityShort = chosen;
+      shareholders = shareholders.filter((h) => !fromPrior(h.source));
+      usShareholders = usShareholders.filter((h) => !fromPrior(h.source));
+    }
     updateEntity(entityId, {
-      profile: { ...ent.profile, legalName: chosen },
+      profile: profile as Entity["profile"],
+      ...(sameEntity ? {} : {
+        ownership: ownership as Entity["ownership"], categories, detected, shareholders, usShareholders,
+        ...(entitySimilarity(ent.name, priorName) >= 0.8 ? { name: chosen } : {}),
+      }),
       nameMismatch: null,
       nameDecision: { priorName, sameEntity },
+      nameAliases: aliases,
     });
     logEvent(
       "Legal name confirmed",
@@ -1687,56 +1880,77 @@ export const actions = {
       const startIso = endIso ? yearBefore(endIso) : null;   // leap-day safe
       if (endIso && startIso) {
         void (async () => {
-          if (!state.fxOrder.includes("ofx")) {
-            // Not a failure — a setting. Say which, or the preparer hunts for
-            // a network problem that is not there.
-            const cur = state.entities.find((e) => e.id === entityId);
-            if (cur && !cur.fx.avgRate) {
-              updateEntity(entityId, { fxMeta: { ...cur.fxMeta, avgRateNote: { source: `no IRS ${code} average; OFX provider is unchecked in Settings`, asOf: "" } } });
-            }
-            return;
+          /* OFX first, then the ECB's daily reference rates. OFX carries about
+             fifty currencies and not, for one, the Romanian leu; the ECB
+             publishes the leu every working day. A provider switched off in
+             Settings is skipped and said so. */
+          type Avg = { ok: true; value: { rate: number; points: number; from: string; to: string } } | { ok: false; error: string };
+          let r: Avg = { ok: false, error: "OFX provider is unchecked in Settings" };
+          let via: "OFX" | "ECB" | "Market" = "OFX";
+          if (state.fxOrder.includes("ofx")) {
+            const t0 = Date.now();
+            r = await fxOfxAverage(code, startIso, endIso).catch((err): Avg => ({ ok: false, error: (err as Error).message }));
+            recordProvider("ofx", 1, !!r.ok, r.ok ? "" : r.error || "", Date.now() - t0);
           }
-          const t0 = Date.now();
-          const r = await fxOfxAverage(code, startIso, endIso).catch(
-            (err): { ok: false; error: string } => ({ ok: false, error: (err as Error).message }),
-          );
-          recordProvider("ofx", 1, !!r.ok, r.ok ? "" : r.error || "", Date.now() - t0);
+          if (!r.ok && state.fxOrder.includes("frankfurter")) {
+            const t1 = Date.now();
+            const e = await fxFrankfurterAverage(code, startIso, endIso).catch((err): Avg => ({ ok: false, error: (err as Error).message }));
+            recordProvider("frankfurter", 1, !!e.ok, e.ok ? "" : e.error || "", Date.now() - t1);
+            if (e.ok) { r = e; via = "ECB"; } else r = { ok: false, error: `OFX: ${r.error}; ECB: ${e.error}` };
+          }
+          /* Third: public market mid-rates (currency-api), sampled twice a
+             month — for a network where neither OFX nor the ECB answers. */
+          if (!r.ok) {
+            const t2 = Date.now();
+            const m = await fxCurrencyApiAverage(code, startIso, endIso).catch((err): Avg => ({ ok: false, error: (err as Error).message }));
+            recordProvider("currency-api", 1, !!m.ok, m.ok ? "" : m.error || "", Date.now() - t2);
+            if (m.ok) { r = m; via = "Market"; } else r = { ok: false, error: `${r.error}; currency-api: ${m.error}` };
+          }
           const fresh = state.entities.find((e) => e.id === entityId);
           if (!fresh || fresh.fx.avgRate) return;   // filled meanwhile — keep it
           if (r.ok) {
             const v = r.value;
+            const what = via === "OFX" ? "OFX daily mid-market rates" : via === "ECB" ? "ECB daily reference rates" : "public market mid-rates (currency-api, sampled on the 1st and 15th of each month)";
             const { avgRateNote: _cleared, ...restMeta } = fresh.fxMeta || {};
             updateEntity(entityId, {
               fx: { ...fresh.fx, avgRate: String(v.rate) },
               fxMeta: { ...restMeta, avgRate: {
                 source: fiscal
-                  ? "OFX daily average over the fiscal period (IRS calendar tables not applicable)"
-                  : `OFX daily average (fallback — ${db.source} has no ${code} average)`,
-                asOf: `${v.from}..${v.to} (${v.points} daily points)`,
-                tag: "OFX",
+                  ? `${via === "Market" ? "Market mid-rate" : `${via} daily`} average over the fiscal period (IRS calendar tables not applicable)`
+                  : `${via === "Market" ? "Market mid-rate" : `${via} daily`} average (fallback — ${db.source} has no ${code} average)`,
+                asOf: `${v.from}..${v.to} (${v.points} ${via === "Market" ? "sample dates" : "daily points"})`,
+                tag: via,
               } },
             });
-            logEvent("OFX average-rate fallback applied", `${code} average ${v.rate} over ${v.from}..${v.to} (${v.points} points) — IRS table has no figure`, ent.name, "system");
+            logEvent(`${via} average-rate fallback applied`, `${code} average ${v.rate} over ${v.from}..${v.to} (${v.points} points) — IRS table has no figure`, ent.name, "system");
             const again = state.entities.find((e) => e.id === entityId);
             if (again && !again.reviewItems.some((x) => x.id === "avg-ofx-fallback")) {
               updateEntity(entityId, {
                 reviewItems: [...again.reviewItems, {
                   id: "avg-ofx-fallback", level: "warn", category: "fx", applied: true,
                   message: fiscal
-                    ? `C59 average rate ${v.rate} was computed from OFX daily mid-market rates over the fiscal period ${v.from}..${v.to} (${v.points} points) — the IRS calendar-year table does not apply to this year end. Confirm or replace it before filing.`
-                    : `C59 average rate ${v.rate} was computed from OFX daily mid-market rates over ${v.from}..${v.to} (${v.points} points) because the IRS table has no ${code} average. OFX is an indicative source — confirm or replace it before filing.`,
-                  target: `${SHEET.basic}!C59`, source: "OFX", suggestedValue: v.rate,
+                    ? `C59 average rate ${v.rate} was computed from ${what} over the fiscal period ${v.from}..${v.to} (${v.points} points) — the IRS calendar-year table does not apply to this year end. Confirm or replace it before filing.`
+                    : `C59 average rate ${v.rate} was computed from ${what} over ${v.from}..${v.to} (${v.points} points) because the IRS table has no ${code} average. ${via === "OFX" ? "OFX is an indicative source" : via === "ECB" ? "The ECB rate is a central-bank reference rate, not an IRS figure" : "currency-api is an indicative market source"} — confirm or replace it before filing.`,
+                  target: `${SHEET.basic}!C59`, source: via, suggestedValue: v.rate,
                 } as ReviewItem],
               });
             }
           } else {
-            updateEntity(entityId, { fxMeta: { ...fresh.fxMeta, avgRateNote: {
-              source: fiscal
-                ? `fiscal period ${startIso}..${endIso}: OFX daily-average fallback failed: ${r.error}`
-                : `no IRS ${code} average; OFX fallback failed: ${r.error}`,
-              asOf: "",
-            } } });
-            logEvent("Average-rate fallback unavailable", `${code}: no IRS figure; OFX: ${r.error} — manual entry required`, ent.name, "system");
+            /* Nothing reachable. The two Treasury year-end rates bracket the
+               year; their mean is offered as an ESTIMATE the preparer can
+               accept in one click — never written on its own. */
+            const cy = numeric(String(fresh.fx.cyRate ?? "")), py = numeric(String(fresh.fx.pyRate ?? ""));
+            const est = cy && py && !fiscal ? Math.round(((cy + py) / 2) * 1e4) / 1e4 : null;
+            updateEntity(entityId, {
+              fxMeta: { ...fresh.fxMeta, avgRateNote: {
+                source: fiscal
+                  ? `fiscal period ${startIso}..${endIso}: daily-average fallbacks failed — ${r.error}`
+                  : `no IRS ${code} average; online fallbacks failed — ${r.error}`,
+                asOf: "",
+                ...(est ? { estimate: est } : {}),
+              } },
+            });
+            logEvent("Average-rate fallback unavailable", `${code}: no IRS figure; ${r.error} — manual entry required${est ? `; estimate ${est} offered` : ""}`, ent.name, "system");
           }
         })();
       }
@@ -1904,12 +2118,16 @@ export const actions = {
     }
 
     const mapOverrides = { ...ent.mapOverrides, [norm(label)]: { to } };
+    /* A remap is the preparer's answer to the questions raised about this
+       caption; they are not asked again. */
+    const answered = new Set([`business-tax-question-${norm(label)}`, `freight-in-cogs-${norm(label)}`, `due-from-related-${norm(label)}`]);
+    const reviewItems = ent.reviewItems.filter((r) => !answered.has(r.id));
     logEvent(
       "Caption remapped",
-      `"${label}": ${fromTarget} → ${to ?? "unassigned"}${droppedBoy ? ` · ${droppedBoy} prior-year value(s) not carried` : ""}`,
+      `"${bilingualLabel(ent.translations, label)}": ${fromTarget} → ${to ?? "unassigned"}${droppedBoy ? ` · ${droppedBoy} prior-year value(s) not carried` : ""}`,
       ent.name,
     );
-    updateEntity(entityId, { lines, contributions, sourceLabels, relabels, unmatched, mapOverrides });
+    updateEntity(entityId, { lines, contributions, sourceLabels, relabels, unmatched, mapOverrides, reviewItems });
     toast(
       to === null
         ? `"${label}" unassigned — back in the review queue`
@@ -1950,15 +2168,11 @@ export const actions = {
        four columns, and a thin note is marked as such on the Provenance sheet,
        so a reviewer can see both the figure and the fact that nobody explained
        it. */
-    if (item.level === "block" && !String(note || "").trim()) {
-      logEvent(
-        "Acknowledgement refused",
-        `"${item.message.slice(0, 120)}" — a blocking exception needs a note, even a short one`,
-        ent.name,
-      );
-      toast("Type a reason first — anything, but the workbook records it", "bad");
-      return;
-    }
+    /* Owner decision (2026-09-30): the reason is never an obstacle. Whatever
+       the preparer types is recorded -- a word, a placeholder, or nothing --
+       and an empty reason is recorded as such. A thin note is still marked on
+       the Provenance sheet (isThinNote), so a reviewer can tell. */
+    if (item.level === "block" && !String(note || "").trim()) note = "Acknowledged — no reason given";
     const rest = ent.reviewItems.filter((r) => r.id !== id);
     updateEntity(entityId, { reviewItems: [...rest, { ...item, dismissed: true, dismissedNote: note || "" }] });
     logEvent(
@@ -1997,6 +2211,19 @@ export const actions = {
       extraWrites = [...ent.extraWrites, {
         sheet: SHEET.re, ref: "F24", value, reviewId: id,
         source: `translation adjustment booked by the preparer — residual of the retained-earnings roll-forward${note ? ` · "${note}"` : ""}`,
+      }];
+      landed = true;
+    }
+    if (!landed && id === "schh-nondeductible" && typeof value === "number") {
+      extraWrites = [...ent.extraWrites,
+        { sheet: SHEET.schH, ref: "C21", value: "Non-deductible expenses (donations)", reviewId: id, source: `donations add-back confirmed by the preparer${note ? ` · "${note}"` : ""}` },
+        { sheet: SHEET.schH, ref: "E21", value, reviewId: id, source: `donations add-back confirmed by the preparer${note ? ` · "${note}"` : ""}` }];
+      landed = true;
+    }
+    if (!landed && id === "re-equity-movement" && typeof value === "number") {
+      extraWrites = [...ent.extraWrites, {
+        sheet: SHEET.re, ref: "F25", value, reviewId: id,
+        source: `equity adjustment booked by the preparer — residual of the retained-earnings roll-forward (one exchange rate, so not translation)${note ? ` · "${note}"` : ""}`,
       }];
       landed = true;
     }
@@ -2116,6 +2343,11 @@ export const actions = {
        They are never booked; they join the unmatched list in step 3 so the
        preparer can see every figure the tool read. */
     const looseRows: Entity["unmatched"] = [];
+    /* A numbered-box return that states the balance sheet only as totals.
+       Those rows are booked only when no statement itemises the balance
+       sheet (decided in step 3, once every document has been read). */
+    const formBsRows: { rows: MapRow[]; note: string; docId: string; docName: string }[] = [];
+    const formResults: NonNullable<Entity["formResults"]> = [];
     /* English read off the terminology table for captions that carried none.
        Written before mapping, so the rules, the review items, the provenance
        sheet and the preparer all see the same English. */
@@ -2330,17 +2562,42 @@ export const actions = {
            One company named throughout is never held back, whatever the
            entity is called: an entity named "Client 1" is a naming question,
            not a contamination risk. */
+        /* One company whose statements print another name (see
+           booksNameAlias): both names are this entity's, so neither is a
+           company without an entity. Names the preparer confirmed as the same
+           company count the same way. */
+        const meScope = state.entities.find((e) => e.id === entityId);
+        const booksAlias = meScope ? booksNameAlias(
+          bundles.map((b) => b.cls),
+          state.entities.filter((e) => e.id !== entityId).map((e) => e.profile.legalName || e.name),
+          meScope.nameDecision,
+        ) : null;
+        if (booksAlias && !meScope?.nameDecision) {
+          log.push(`"${booksAlias.alias}" read as the books name of ${booksAlias.cfcName} — the prior return's only Form 5471 — so its statements feed this work paper; confirm the legal name when asked`);
+          rv({
+            id: "entity-books-name", level: "warn", category: "entity-scope",
+            message: `The statements are printed under "${booksAlias.alias}", and the prior-year return's only Form 5471 is for "${booksAlias.cfcName}". One Form 5471 and one other name on the books is one company keeping its accounts under a trading, LLC or bookkeeping name — not a second foreign corporation — so the statements were used for this work paper. Confirm the legal name (the question in Review) before generating; answer "different company" if they are not the same.`,
+            source: booksAlias.alias,
+          });
+        }
+        const namesOf = (e: Entity) => [e.profile.legalName || e.name, ...(e.nameAliases || []),
+          ...(e.id === entityId && booksAlias ? [booksAlias.alias, booksAlias.cfcName] : [])]
+          .map((n) => String(n || "").trim())
+          .filter((n, i, a) => n && !/^entity \d+$/i.test(n) && a.indexOf(n) === i);
         const entityScope = state.entities
-          .map((e) => ({ key: e.id, nm: e.profile.legalName || e.name, vars: entityNameVariants(e.profile.legalName || e.name), entity: true }))
-          .filter((e) => e.vars.length && !/^entity \d+$/i.test(e.nm.trim()));
-        const docCompanies: { key: string; nm: string; vars: string[]; entity: boolean }[] = [];
+          .map((e) => {
+            const names = namesOf(e);
+            return { key: e.id, nm: names[0] || "", names, vars: [...new Set(names.flatMap((n) => entityNameVariants(n)))], entity: true };
+          })
+          .filter((e) => e.vars.length);
+        const docCompanies: { key: string; nm: string; names: string[]; vars: string[]; entity: boolean }[] = [];
         for (const b of bundles) {
           const nm = b.cls.entityName;
           if (!nm || b.cls.duplicateOf) continue;
-          if (entityScope.some((e) => entitySimilarity(e.nm, nm) >= 0.5)) continue;
+          if (entityScope.some((e) => e.names.some((n) => entitySimilarity(n, nm) >= 0.5))) continue;
           if (docCompanies.some((d) => entitySimilarity(d.nm, nm) >= 0.5)) continue;
           const vars = entityNameVariants(nm);
-          if (vars.length) docCompanies.push({ key: `doc:${vars[0]}`, nm, vars, entity: false });
+          if (vars.length) docCompanies.push({ key: `doc:${vars[0]}`, nm, names: [nm], vars, entity: false });
         }
         /* A heading with no legal form is a CANDIDATE, not a name. It may
            take part in attribution only once the case is already known to
@@ -2353,10 +2610,10 @@ export const actions = {
           for (const b of bundles) {
             const nm = b.cls.entityNameGuess;
             if (!nm || b.cls.duplicateOf || b.cls.entityName) continue;
-            if (entityScope.some((e) => entitySimilarity(e.nm, nm) >= 0.5)) continue;
+            if (entityScope.some((e) => e.names.some((n) => entitySimilarity(n, nm) >= 0.5))) continue;
             if (docCompanies.some((d) => entitySimilarity(d.nm, nm) >= 0.5)) continue;
             const vars = entityNameVariants(nm);
-            if (vars.length) docCompanies.push({ key: `doc:${vars[0]}`, nm, vars, entity: false });
+            if (vars.length) docCompanies.push({ key: `doc:${vars[0]}`, nm, names: [nm], vars, entity: false });
           }
         }
         const namedCompanies = entityScope.length + docCompanies.length;
@@ -2365,7 +2622,11 @@ export const actions = {
            the preparer is told, and decides. */
         if (namedCompanies === 1 && docCompanies.length === 1) {
           const me = state.entities.find((e) => e.id === entityId);
-          rv({
+          /* An entity still carrying the default "Entity 1" takes its legal
+             name from the prior return later in the run (the header follows
+             it), so with a prior return present there is nothing to say. */
+          if (!(me && /^entity\s+\d+$/i.test(me.name.trim()) && !String(me.profile.legalName || "").trim()
+            && bundles.some((b) => b.cls.kind === "prior-year-us-return" && !b.cls.duplicateOf))) rv({
             id: `entity-name-differs-${entityId}`,
             level: "warn", category: "entity-scope",
             message: `Every document in this entity names "${docCompanies[0].nm}", but the entity is called "${me ? (me.profile.legalName || me.name) : "this entity"}". The documents were used, because only one company is named in the papers. Set the legal name in Basic Information if they are the same company, or move the documents if they are not.`,
@@ -2405,7 +2666,7 @@ export const actions = {
                unowned and both companies were read into both work papers.
                Names are compared the way they are compared everywhere else. */
             const docOwner = cls.entityName
-              ? companyScope.find((c) => entitySimilarity(c.nm, cls.entityName as string) >= 0.5) || null
+              ? companyScope.find((c) => c.names.some((n) => entitySimilarity(n, cls.entityName as string) >= 0.5)) || null
               : null;
             const pageOwner = companyScope.length > 1
               ? (docOwner
@@ -2470,7 +2731,8 @@ export const actions = {
                 log.push(`${file.name}: ${renamed} balance-sheet caption(s) resolved through their own note (for example "Other Non Current Assets" is the note's "Intangible Assets")`);
               }
             }
-            const fixedAssets = notes.length ? fixedAssetSplit(notes) : null;
+            const fixedAssets = (notes.length ? fixedAssetSplit(notes) : null)
+              || (notePages.size ? movementFixedAssetSplit(pdf, notePages) : null);
             if (fixedAssets) {
               /* The face carries the fixed asset NET; Schedule F wants cost on
                  9a and accumulated depreciation on 9b. Rather than plumb the
@@ -2532,10 +2794,32 @@ export const actions = {
             }
             pdfIs = structRows(pdfIs);
             pdfBs = structRows(pdfBs);
+            pdfIs = sameIndentSubtotals(pdfIs);
+            pdfBs = sameIndentSubtotals(pdfBs);
+            // A row the statement's own printed total leaves out (see sections.ts).
+            pdfIs = outsidePrintedTotal(pdfIs);
+            pdfBs = outsidePrintedTotal(pdfBs);
             // A section heading carrying the section's whole figure with
             // nothing itemised beneath it (QuickBooks' summary layout).
             pdfIs = collapsedSections(pdfIs);
             pdfBs = collapsedSections(pdfBs);
+            {
+              // Pages titled "Detailed Profit and Loss Account" (title in the
+              // first few lines of the page) restate the face P&L in detail.
+              const detailPages = new Set<number>();
+              const firstRows = new Map<number, number>();
+              for (const r of pdf.rows) {
+                const n = firstRows.get(r.page) || 0;
+                if (n >= 4) continue;
+                firstRows.set(r.page, n + 1);
+                if (isPages.has(r.page) && DETAIL_PNL_TITLE.test(r.cells.map((c) => c.text).join(" "))) detailPages.add(r.page);
+              }
+              const sup = supplementaryDetailPages(pdfIs, detailPages);
+              if (sup.dropped) {
+                pdfIs = sup.rows;
+                log.push(`${file.name}: the detailed profit and loss account (page${detailPages.size > 1 ? "s" : ""} ${[...detailPages].join(", ")}) restates the profit and loss account line by line — ${sup.dropped} row(s) set aside so nothing is booked twice; the face statement is booked`);
+              }
+            }
             let skipped = 0;
             for (const m of [...pdfIs, ...pdfBs]) {
               if (m.skipReason) skipped++;
@@ -2589,7 +2873,103 @@ export const actions = {
                totals that a statement itemises, and those are offered in
                Review rather than booked. */
             const boxedPages = ownPages(pagesForFeed(cls, "boxed-form"));
-            if (boxedPages.size) {
+            const boxedText = boxedPages.size
+              ? parsed.pdf.rows.filter((r) => boxedPages.has(r.page)).map((r) => r.cells.map((c) => c.text).join(" ")).join("\n") : "";
+            const formSpec = boxedPages.size ? boxedFormSpec(boxedText) : null;
+            if (formSpec) {
+              /* A return the tool knows by its box codes: every figure is
+                 placed by its CODE, never by its caption and never by the AI.
+                 Boxes outside the table (tax registers, credits, identification)
+                 are listed for the preparer and booked nowhere. */
+              const boxes = boxedFormCodes(parsed.pdf).filter((b) => boxedPages.has(b.page));
+              const byCode = new Map(boxes.map((b) => [b.code, b]));
+              const amt = (code: string): number | null => {
+                const b = byCode.get(code);
+                return b ? numericCell(b.value, { dotThousands: true }) : null;
+              };
+              const firstOf = (codes: string[]) => {
+                for (const c of codes) { const v = amt(c); if (v !== null) return { code: c, value: v }; }
+                return null;
+              };
+              const boxLabel = (code: string) => byCode.get(code)?.caption || `${formSpec.name} box ${code}`;
+              const used = new Set<string>();
+              let bookedBoxes = 0;
+              for (const b of boxes) {
+                const t = formSpec.book[b.code];
+                if (!t) continue;
+                used.add(b.code);
+                const v = amt(b.code);
+                if (v === null || v === 0) continue;
+                mapRows.push({
+                  row: { label: boxLabel(b.code), values: [v], page: b.page }, docId: file.id, docName: file.name,
+                  feed: "is", kind: "grid", formTarget: t, formCode: b.code,
+                });
+                const en = translateCaption(boxLabel(b.code));
+                if (en) termTranslations[boxLabel(b.code)] = en;
+                bookedBoxes++; read++;
+              }
+              /* Balance-sheet totals. Assets split into the parts the return
+                 names (bank balance, fixed assets) and the rest; liabilities as
+                 one total; capital as stated; retained earnings is what is left.
+                 Booked only when no statement itemises the balance sheet. */
+              const bal = formSpec.balance;
+              const totA = firstOf(bal.totalAssets);
+              if (totA) {
+                const cash = firstOf(bal.cash), fixed = firstOf(bal.fixedAssets);
+                const liab = firstOf(bal.totalLiabilities), cap = firstOf(bal.capital), eq = firstOf(bal.equity);
+                for (const x of [totA, cash, fixed, liab, cap, eq]) if (x) used.add(x.code);
+                const rows: MapRow[] = [];
+                const bsRow = (label: string, v: number, target: string, code: string) => rows.push({
+                  row: { label, values: [r2(v)], page: byCode.get(code)?.page }, docId: file.id, docName: file.name,
+                  feed: "bs", kind: "grid", formTarget: target, formCode: code,
+                });
+                if (cash && cash.value) bsRow(boxLabel(cash.code), cash.value, "BS:10", cash.code);
+                if (fixed && fixed.value) bsRow(boxLabel(fixed.code), fixed.value, "BS:28", fixed.code);
+                const rest = r2(totA.value - (cash?.value || 0) - (fixed?.value || 0));
+                if (Math.abs(rest) >= 1) bsRow(`${boxLabel(totA.code)} — not itemised on the return`, rest, "BS:39", totA.code);
+                if (liab && liab.value) bsRow(boxLabel(liab.code), liab.value, "BS:OL", liab.code);
+                if (cap && cap.value) bsRow(boxLabel(cap.code), cap.value, "BS:59", cap.code);
+                const reBal = r2(totA.value - (liab?.value || 0) - (cap?.value || 0));
+                if (Math.abs(reBal) >= 1) bsRow(`Retained earnings — balancing figure (${formSpec.name} total assets less liabilities and capital)`, reBal, "BS:61", totA.code);
+                const eqBook = r2(totA.value - (liab?.value || 0));
+                formBsRows.push({ rows, docId: file.id, docName: file.name, note: `${file.name} (${formSpec.name}) states the balance sheet only as totals: total assets ${totA.value.toLocaleString()} (box ${totA.code})${liab ? `, total liabilities ${liab.value.toLocaleString()} (box ${liab.code})` : ""}${cap ? `, capital ${cap.value.toLocaleString()} (box ${cap.code})` : ""}. With no itemised balance sheet among the documents, Schedule F was booked at total level: ${cash ? `bank balance to line 1, ` : ""}${fixed ? `fixed assets to line 9a, ` : ""}the rest of the assets to line 13, liabilities to line 19${cap ? `, capital to line 20b` : ""} and retained earnings as the balancing figure.${eq && Math.abs(eq.value - eqBook) >= 1 ? ` The return's own equity figure (box ${eq.code}) is ${eq.value.toLocaleString()}, not the ${eqBook.toLocaleString()} its totals imply — confirm which is right.` : ""} Request the detailed balance sheet (trial balance) from the client and re-process to itemise it.` });
+              }
+              /* The year's distributions. */
+              const dist = firstOf(formSpec.distributions);
+              if (dist) used.add(dist.code);
+              if (dist && dist.value > 0 && !equity?.dividendsCY) {
+                equity = { ...(equity || { openingCY: null, profitCY: null, closingCY: null }), dividendsCY: dist.value };
+                log.push(`${file.name}: distributions of ${dist.value.toLocaleString()} read from box ${dist.code}`);
+                rv({
+                  id: `form-distributions-${file.id}`, level: "warn", category: "mapping", applied: true,
+                  sourceLabel: boxLabel(dist.code),
+                  message: `${file.name} (${formSpec.name}) reports distributions — withdrawals, remittances or dividends — of ${dist.value.toLocaleString()} in box ${dist.code}. They were booked as the year's dividends: the Dividends tab, Schedule J line 9, Schedule M and Schedule R. If they were withdrawals charged to the shareholders' current accounts rather than distributions, change them on the Dividends tab.`,
+                  source: file.name,
+                });
+              }
+              /* The year's result as the return states it, before income tax. */
+              for (const alt of formSpec.result) {
+                const codes = [...alt.add, ...alt.sub];
+                if (!codes.every((c) => amt(c) !== null)) continue;
+                const value = r2(alt.add.reduce((n, c) => n + (amt(c) as number), 0) - alt.sub.reduce((n, c) => n + (amt(c) as number), 0));
+                formResults.push({ label: `${formSpec.name} result (${alt.add.map((c) => `box ${c}`).join(" + ")}${alt.sub.map((c) => ` − box ${c}`).join("")})`, value, docName: file.name });
+                codes.forEach((c) => used.add(c));
+                break;
+              }
+              const unbooked = boxes.filter((b) => !used.has(b.code) && numericCell(b.value, { dotThousands: true }));
+              log.push(`${file.name}: ${formSpec.name} read by box code — ${bookedBoxes} income/expense box(es) booked, ${unbooked.length} register or memo box(es) not booked`);
+              rv({
+                id: `boxed-form-${file.id}`,
+                level: "info", category: "process",
+                message: `${file.name} is a ${formSpec.name}. Its figures were placed by box code, not by caption and not by the AI: ${Object.keys(formSpec.book).filter((c) => byCode.has(c)).map((c) => `${c} → ${formLineRef(formSpec.book[c])}`).join("; ") || "no income or expense box was filled"}. ${unbooked.length ? `${unbooked.length} other box(es) are tax registers, credits, carry-forwards or identification boxes (for example RAI, REX, SAC, STUT, CPT, prior-year tax losses, RLI, PPM). They are not income, expenses or book balances of the year and were not booked: ${unbooked.slice(0, 40).map((b) => `${b.code}${b.caption ? ` "${b.caption.slice(0, 60)}"` : ""} ${b.value}`).join("; ")}${unbooked.length > 40 ? "; …" : ""}.` : ""}`,
+                source: file.name,
+              });
+              rv({
+                id: `tax-basis-${file.id}`, level: "warn", category: "consistency",
+                message: `Not GAAP book income: confirm or adjust. ${formSpec.taxBasis} Schedule C was built from ${file.name}. If the client keeps books on another basis, attach the financial statements (or book-to-tax adjustments) and re-process; otherwise record that the tax-basis figures are accepted.`,
+                source: file.name,
+              });
+            } else if (boxedPages.size) {
               const pairs = stackedCaptionRows(parsed.pdf);
               const boxRows = gridStructRows<MapRow>(extractRows(pairs).map((row) => (
                 { row, docId: file.id, docName: file.name, feed: "is" as const, kind: "grid" as const }
@@ -2684,13 +3064,16 @@ export const actions = {
             /* The grid twin of the structure pass above. Without it a
                spreadsheet export's group subtotals were booked as accounts
                and everything under them counted twice. */
-            const grid = gridStructRows<MapRow>(extractRows(parsed.grid).map((row) => (
+            /* Headings are read too ("Revenues:", "Cost of sales:"), so a
+               caption that means nothing on its own ("Services", twice) is
+               placed by the section it is printed under, as on a PDF. */
+            const grid = tagSections(gridStructRows<MapRow>(extractRows(parsed.grid, { banners: true }).map((row) => (
               { row, docId: file.id, docName: file.name, feed: "both" as const, kind: "grid" as const }
-            )));
+            ))), { headingsOnly: true });
             let gridSkipped = 0;
             for (const m of grid) {
               if (m.skipReason) gridSkipped++;
-              else read++;
+              else if (!m.row.isBanner) read++;
               mapRows.push(m);
             }
             if (gridSkipped) log.push(`${file.name}: ${gridSkipped} structural subtotal/total row(s) dropped before mapping`);
@@ -2763,6 +3146,7 @@ export const actions = {
             (state.entities.find((e) => e.id === entityId)?.profile.legalName || "") ||
             bundles.find((x) => x.cls.kind === "cfc-financial-statements" && x.cls.entityName)?.cls.entityName || "";
           let selected: CfCandidate | null = null;
+          let pendingBlock: CfCandidate | null = null;
           if (knownName) {
             let bestSim = 0;
             for (const cand of deduped) {
@@ -2782,6 +3166,9 @@ export const actions = {
                  generation blocks (see validateEntity), and their answer is
                  remembered on the entity. */
               const decided = state.entities.find((e) => e.id === entityId)?.nameDecision || null;
+              /* Set below when the name question is left open: that block is
+                 this entity's own return waiting for an answer, not an
+                 additional Form 5471 to fan out. */
               const named = deduped.filter((c) => !!c.cfcName);
               let best: CfCandidate | null = null;
               let bestSim = -1;
@@ -2793,9 +3180,21 @@ export const actions = {
                 selected = best;
                 nameMismatch = null;
                 log.push(`${best.source}: "${best.cfcName}" accepted as the same entity as "${knownName}" by the preparer — carry-forward figures were used.`);
+              } else if (best && !decided && booksAlias && entitySimilarity(best.cfcName, booksAlias.cfcName) >= 0.8) {
+                /* The books-name case (see booksNameAlias): the return's only
+                   Form 5471 is this company's, so its opening balances,
+                   currency, shareholders and categories are used now — the
+                   statements alone cannot say the books are in US dollars
+                   when an account is called "Paypal PHP". The legal-name
+                   question still blocks generation until it is answered, and
+                   "different company" takes all of it back out. */
+                selected = best;
+                nameMismatch = { statementName: knownName, priorName: best.cfcName, source: best.source };
+                log.push(`${best.source}: "${best.cfcName}" used provisionally as the company whose books are printed under "${knownName}" — confirm the legal name before generating.`);
               } else {
                 if (best && !decided) {
                   nameMismatch = { statementName: knownName, priorName: best.cfcName, source: best.source };
+                  pendingBlock = best;
                 }
                 for (const cand of deduped) {
                   rv({
@@ -2841,7 +3240,7 @@ export const actions = {
           }
           // Remaining NAMED blocks become sibling work papers after this run;
           // a nameless leftover block is surfaced instead — never guess.
-          siblingPlans = deduped.filter((c) => c !== selected && !!c.cfcName);
+          siblingPlans = deduped.filter((c) => c !== selected && c !== pendingBlock && !!c.cfcName);
           for (const c of deduped) {
             if (c !== selected && !c.cfcName) {
               rv({
@@ -2858,11 +3257,27 @@ export const actions = {
            review items quote it, and the provenance sheet can show the
            original and the English side by side. A caption the preparer has
            already translated is never overwritten. */
+        /* The same built-in terminology for every statement row, not only
+           the boxed forms: a caption the rules already match never looks at
+           its translation, so this can only place captions that would
+           otherwise go unmatched. A translation already on the entity
+           (typed, or from the AI) still wins below. */
+        for (const m of mapRows) {
+          const lb = m.row && m.row.label;
+          if (!lb || termTranslations[lb]) continue;
+          const en = translateCaption(lb);
+          if (en) termTranslations[lb] = en;
+        }
         if (Object.keys(termTranslations).length) {
           const cur = state.entities.find((e) => e.id === entityId);
           const merged = { ...termTranslations, ...(cur?.translations || {}) };
           updateEntity(entityId, { translations: merged });
           log.push(`${Object.keys(termTranslations).length} caption(s) read through the built-in terminology before mapping`);
+        }
+        /* Until the preparer answers, the books-name case keeps asking,
+           even on a run where the legal name already matches the return. */
+        if (booksAlias && !nameMismatch && !state.entities.find((e) => e.id === entityId)?.nameDecision) {
+          nameMismatch = { statementName: booksAlias.alias, priorName: booksAlias.cfcName, source: cfSource || booksAlias.cfcName };
         }
         updateEntity(entityId, { nameMismatch, log: [...log] });
 
@@ -2875,6 +3290,8 @@ export const actions = {
           const brief = await agentUnderstand(entityId, mapRows, log, {
             self: cf?.cfcName || null,
             planned: siblingPlans.map((c) => c.cfcName).filter(Boolean) as string[],
+            aliases: [...(state.entities.find((e) => e.id === entityId)?.nameAliases || []),
+              ...(booksAlias ? [booksAlias.alias, booksAlias.cfcName] : [])],
           });
           /* The agent has no authority to create or move anything. What it can
              do is refuse to let the run pass over a situation it has
@@ -2901,6 +3318,24 @@ export const actions = {
 
       /* Step 3 — map with year routing, pools and provenance; detect profile. */
       if (step === 3) {
+        /* A return's balance-sheet totals, only when nothing itemises the
+           balance sheet: an itemised statement always wins over totals. */
+        if (formBsRows.length && !mapRows.some((m) => (m.feed === "bs" || m.feed === "both") && !m.skipReason && !m.row.isBanner && !m.formTarget)) {
+          for (const f of formBsRows) {
+            mapRows.push(...f.rows);
+            rv({ id: `form-bs-totals-${f.docId}`, level: "warn", category: "source-gap", applied: true, message: f.note, source: f.docName });
+          }
+        }
+        /* Translations accepted on earlier work papers are reused before the
+           mapping reads them, so one caption carries one English wording. */
+        try {
+          const cur = state.entities.find((e) => e.id === entityId);
+          const reuse = cur ? termsFromMemory(cur.translations, mapRows.map((m) => String(m.row.label || ""))) : {};
+          if (cur && Object.keys(reuse).length) {
+            updateEntity(entityId, { translations: { ...cur.translations, ...reuse } });
+            log.push(`${Object.keys(reuse).length} caption translation(s) reused from earlier work papers (shared translation memory)`);
+          }
+        } catch { /* the memory is an aid, never a reason to stop */ }
         const ent = state.entities.find((e) => e.id === entityId);
         if (!ent) return;   // removed mid-run
         const lines: Record<string, LineValue> = {};
@@ -2908,6 +3343,7 @@ export const actions = {
         const sourceLabels: Record<string, SourceLabel> = {};
         const contributions: Record<string, Contribution[]> = {};
         const unmatched: Entity["unmatched"] = [...looseRows];
+        const statedResults: NonNullable<Entity["statedResults"]> = [];
         const pools = makePoolState();
         // Standing user remaps survive re-processing. Pre-reserve their pool
         // rows so auto-allocation cannot collide onto a user-chosen slot.
@@ -2945,12 +3381,75 @@ export const actions = {
           return { target: t, translated: true };
         };
 
+        /* How each document prints its costs and its creditors, tallied from
+           the figures as printed, before any flip. UK accounts put every cost
+           in brackets on the P&L and every creditor in brackets on a
+           net-assets balance sheet; read literally, cost of sales, the tax
+           charge and every liability came out negative. */
+        const printedSigns = new Map<string, { costNeg: number; costPos: number; liabNeg: number; liabPos: number }>();
+        const COST_T = /^IS:(1[0-2]|2[6-9]|3\d|4\d|50|OD)$/;
+        const LIAB_T = /^BS:(4[4-9]|5[0-6]|OCL|OL)$/;
+        const signTally = (m: MapRow, target: string, routed: Array<{ field: string; value: number }>) => {
+          const t = printedSigns.get(m.docId) || { costNeg: 0, costPos: 0, liabNeg: 0, liabPos: 0 };
+          for (const r of routed) {
+            if (!r.value) continue;
+            if (m.feed === "is" && r.field === "amount" && COST_T.test(target)) { if (r.value < 0) t.costNeg++; else t.costPos++; }
+            if (m.feed === "bs" && r.field === "eoy" && LIAB_T.test(target)) { if (r.value < 0) t.liabNeg++; else t.liabPos++; }
+          }
+          printedSigns.set(m.docId, t);
+        };
+
+        /* "Taxes" printed directly under the operating result is the tax
+           charge on that result (Macroroots: Operating income 94,561 / Taxes
+           2,352 / Net income 92,209), not the "taxes and licences" deduction
+           the costs banner above it would make of it. */
+        const PROFIT_BEFORE_TAX = /\b(operating (income|profit|result)|(income|profit|earnings|result) before (income )?tax(es|ation)?|pre-?tax (income|profit))\b/i;
+        const TAX_ONLY = /^(income\s+)?tax(es|ation)?(\s+expense)?$/i;
+        const afterProfitLine = new Map<string, boolean>();
+
+        /* The P&L's own bottom line — "NET EARNINGS AED -47,183.90". It is a
+           total, so it is set aside as structure or skipped and never booked;
+           it is kept here (the last one per document, never a pre-tax line)
+           so Schedule C can be checked against it. */
         for (const m of mapRows) {
+          if (m.feed !== "is" || m.row.isBanner || !isProfitLine(m.row.label) || /\b(before|avant|vor|antes|prima)\b/i.test(m.row.label)) continue;
+          const vals = m.row.values || [];
+          const yi = caseYears.cy && m.row.years ? m.row.years.indexOf(caseYears.cy) : -1;
+          const v = yi >= 0 ? vals[yi] : vals.length === 1 || !(m.row.years || []).some((y) => typeof y === "number") ? vals[0] : undefined;
+          if (typeof v !== "number") continue;
+          const at = statedResults.findIndex((x) => x.feed === "is" && x.docName === m.docName);
+          const rec = { label: m.row.label, value: v, docName: m.docName, page: m.row.page, feed: "is" as const };
+          if (at >= 0) statedResults[at] = rec; else statedResults.push(rec);
+        }
+
+        /* The balance sheet's own "Total assets", kept (never booked) so
+           Schedule F can be checked against the statement it came from. */
+        for (const m of mapRows) {
+          if (m.feed === "is" || m.row.isBanner || m.formTarget || !TOTAL_ASSETS_CAPTION.test(String(m.row.label || "").replace(/^[\d.\s]+/, "").replace(/[:.]+$/, "").trim())) continue;
+          const vals = m.row.values || [];
+          const yi = caseYears.cy && m.row.years ? m.row.years.indexOf(caseYears.cy) : -1;
+          const v = yi >= 0 ? vals[yi] : vals.length === 1 || !(m.row.years || []).some((y) => typeof y === "number") ? vals[m.kind === "grid" ? vals.length - 1 : 0] : undefined;
+          if (typeof v !== "number" || !v || statedResults.some((x) => x.feed === "bs" && x.docName === m.docName)) continue;
+          statedResults.push({ label: m.row.label, value: v, docName: m.docName, page: m.row.page, feed: "bs" });
+        }
+
+        tagStatementGroups(mapRows);
+        for (const m of mapRows) {
+          const afterProfit = afterProfitLine.get(m.docId) === true;
+          if (!m.row.isBanner && (m.row.values || []).length) afterProfitLine.set(m.docId, PROFIT_BEFORE_TAX.test(String(m.row.label || "")));
           // Structure, not data: a banner announces what follows, and a
           // structural subtotal is already the sum of rows being booked.
           // Both stay in mapRows so the log and the evidence view can show
           // them; neither is ever booked.
           if (m.skipReason || m.row.isBanner) {
+            if (m.outsideTotal && !m.row.isBanner) {
+              const amt = (m.row.values || [])[(m.row.values || []).length - 1];
+              rv({
+                id: `outside-total-${norm(m.row.label)}`, level: "warn", category: "mapping",
+                sourceLabel: m.row.label, source: m.docName,
+                message: `"${m.row.label}" (${Number(amt).toLocaleString()}) was not booked: the statement's printed total "${m.outsideTotal}" is the sum of the other rows in its group, without this one. It is usually an account repeated from another group or a figure the statement shows for information. If it is a real balance, assign it on Mapping & adjustments.`,
+              });
+            }
             /* The agent read this row before mapping and judged it a line
                item rather than a total. It is still NOT booked — the
                arithmetic that dropped it may be right, and booking it would
@@ -2967,11 +3466,28 @@ export const actions = {
           }
           const matched = matchWithTranslation(m.row.label);
           let target = matched.target;
+          /* The P&L's own result line ("Pérdida del Periodo (621)") closes the
+             statement; it is never a line item. A Spanish one matched no
+             SKIP keyword, and under the "Gastos" banner it would have been
+             booked as one more expense. */
+          if (!target && m.feed === "is" && overrides[norm(m.row.label)] === undefined
+            && ((isProfitLine(m.row.label) && !/\b(before|avant|vor|antes|prima)\b/i.test(m.row.label)) || isResultSubtotal(m.row.label))) target = "SKIP";
+          if (afterProfit && m.feed !== "bs" && TAX_ONLY.test(String(m.row.label || "").trim()) && target !== "IS:63") target = "IS:62";
+          /* "Other revenues 54,085" printed inside the revenue block, and added
+             into "Total net sales" there, is turnover: gross receipts, not the
+             other-income line the words alone would pick. */
+          if (m.feed !== "bs" && m.section === "income" && (target === "IS:22" || target === "IS:OI")
+            && /^other\s+(revenues?|sales|operating\s+revenues?)$/i.test(String(m.row.label || "").trim())) target = "IS:7";
           /* A caption's accounting meaning depends on the statement it is
              printed in.  A P&L charge called "Patentes" is an expense, not
              an intangible asset merely because its English translation shares
              the word "patent" with Schedule F line 12c. */
           if (m.feed === "is" && /\bpatentes?\b/i.test(m.row.label)) target = "IS:OD";
+          /* A payable owed to the company's own shareholders or related
+             parties is Schedule F line 18 (loans from shareholders and other
+             related persons), not a trade payable: "Cuentas por Pagar
+             Accionistas" matched the generic "cuentas por pagar" keyword. */
+          if (target === "BS:46" && /\b(accionistas?|socios?|shareholders?|stockholders?|partes\s+relacionadas|compa[n\u00f1][i\u00ed]as\s+relacionadas|related\s+(?:part(?:y|ies)|compan(?:y|ies)))\b/i.test(m.row.label)) target = "BS:52";
           /* The mirror of it, one line up. A payment processor's fee is the
              cost of COLLECTING the money, so it is an ordinary deduction like
              any bank charge — unless the statement itself files it under cost
@@ -2979,13 +3495,49 @@ export const actions = {
              Fees" and "4502 Paypal Fees". The books' own banner decides, and
              the hand-prepared paper for that client agrees with the banner. */
           if (m.feed === "is" && m.section === "cogs" && target === "IS:OD" && isProcessorFee(m.row.label)) target = "IS:12";
+          /* Rent printed under Cost of Sales (equipment hired for production)
+             is a cost of the goods: the statement says so. */
+          if (m.feed === "is" && m.section === "cogs" && target === "IS:27") target = "IS:12";
+          /* The mirror of it: a cost-of-goods keyword ("Shipping and delivery
+             expense", "Purchases", "Direct hotel") printed under the
+             statement's EXPENSES heading is an operating expense — line 17 —
+             because the statement says so. Only a caption that names cost of
+             goods itself (or the stock movement) keeps line 2 there. */
+          if (m.feed === "is" && m.section === "costs" && target && /^IS:1[0-2]$/.test(target)
+            && overrides[norm(m.row.label)] === undefined && !EXPLICIT_COGS.test(String(m.row.label || ""))) {
+            target = sectionRoute("costs", m.row.label) || "IS:OD";
+          }
+          /* Delivering goods to customers is a cost of selling them, not of
+             buying or making them: outbound delivery and shipping go to the
+             other deductions even when the books file them under cost of
+             sales. Freight IN (on purchases, customs, duty) stays in cost of
+             goods sold. Both reviewed papers with such a line agree. */
+          if (m.feed === "is" && m.section === "cogs" && target && /^IS:1[0-2]$/.test(target)
+            && overrides[norm(m.row.label)] === undefined && OUTBOUND_DELIVERY.test(String(m.row.label || ""))
+            && !INBOUND_FREIGHT.test(String(m.row.label || ""))) {
+            target = "IS:OD";
+            rv({
+              id: `delivery-to-deductions-${norm(m.row.label)}`, level: "info", category: "mapping", applied: true,
+              sourceLabel: m.row.label,
+              message: `"${m.row.label}" is printed under cost of sales, but delivery to customers is a selling cost, so it was booked to Schedule C line 17 (other deductions). Net income does not change. If it is freight on purchases, move it to cost of goods sold on Mapping & adjustments.`,
+              target: `${SHEET.is}!F33`, source: m.docName,
+            });
+          }
+          // A numbered-box return's code decided the line; its caption did not.
+          if (m.formTarget) target = m.formTarget;
           if (target === "SKIP") {
             // "Net income" in an equity section is closing equity, not a
             // P&L subtotal — the one SKIP that depends on which statement
             // the caption is printed in.
             const equity = equityOverride(m.row.label, m.feed, m.section);
-            if (!equity) continue;
-            target = equity;
+            /* "Cost of sales" is skipped because it is normally the total of
+               the purchases and direct costs listed above it. On a summary
+               P&L it is the FIRST and only figure of its section, with
+               nothing itemised beneath it — there is nothing else to book,
+               so it goes to the section's line instead of vanishing. */
+            if (!equity && m.feed === "is" && m.collapsed && m.collapsedLead) target = null;
+            else if (!equity) continue;
+            else target = equity;
           }
           /* How the line was chosen — the Provenance sheet must say so honestly. */
           let via: Contribution["via"] = "rule";
@@ -3029,6 +3581,26 @@ export const actions = {
               }
             }
           }
+          /* The statement's own group heading says what an account is when
+             the account's name does not: "1303 · Beer" under "Inventory and
+             Supplies" is stock, and "Holiday Pay" under "Staff costs" is
+             compensation. Only a heading whose group a printed total proved
+             is trusted, innermost first. A staff-cost group is booked as ONE
+             group on line 11 even where its accounts carry cost words of their
+             own ("Payroll", "Casual Labour") or sit under Cost of Sales: the
+             reviewed papers keep the whole group on compensation. */
+          let head: { caption: string; target: string } | null = null;
+          if (ov === undefined && m.groups && m.groups.length && (m.feed === "is" || m.feed === "bs") && target !== "SKIP" && !/^(sub-?)?totals?\b/i.test(String(m.row.label || "").trim())) {
+            const sheet = m.feed === "is" ? "IS" : "BS";
+            for (const g of m.groups) {
+              const t = matchRuleScoped(g, state.rules, sheet);
+              if (t && t !== "SKIP") { head = { caption: g, target: t }; break; }
+            }
+          }
+          let inheritedFrom: string | null = null;
+          if (head && head.target === "IS:26" && target && target !== "IS:26" && /^IS:(OD|10|11|12)$/.test(target)) {
+            target = "IS:26"; inheritedFrom = head.caption; via = "section";
+          }
           /* The banner is the statement's own words about what this caption
              is, and it outranks a keyword match: a caption printed under
              "Current assets" cannot be an income line however the keyword
@@ -3041,6 +3613,21 @@ export const actions = {
             target = sectionRoute(m.section, m.row.label) || null;
             if (target) via = "section";
           }
+          /* The group heading comes after the banner: the banner's routing
+             knows captions ("Referral fee" is other income, "Directors and
+             managers" is compensation) that a heading like "Turnover" would
+             overrule. It places what nothing else could — and a staff-cost
+             heading still takes a banner's cost-of-sales catch-all. */
+          if (head && head.target === "IS:26" && target && target !== "IS:26" && /^IS:(OD|10|11|12)$/.test(target)) {
+            target = "IS:26"; inheritedFrom = head.caption; via = "section";
+          }
+          if (!target && head && sectionOk(m.section, head.target)) { target = head.target; inheritedFrom = head.caption; via = "section"; }
+          if (inheritedFrom && head && head.target === "IS:26" && m.section === "cogs") rv({
+            id: `group-compensation-${norm(head.caption)}`, level: "info", category: "mapping", applied: true,
+            sourceLabel: head.caption,
+            message: `"${head.caption}" is printed under the statement's cost of sales, and its accounts were booked together to Schedule C line 11 (compensation), as the reviewed work papers do. If this labour is direct cost of the goods sold, move the accounts to "Cost of labor" on Mapping & adjustments.`,
+            target: `${SHEET.is}!F26`, source: m.docName,
+          });
           // A section heading that IS the section's only line (QuickBooks
           // summary layout) goes to that section's "other" line, and says so.
           if (!target && m.collapsed) {
@@ -3056,6 +3643,41 @@ export const actions = {
             }
           }
 
+          /* Questions the caption cannot answer by itself. Each is raised once
+             per caption and only while the preparer has not decided it on
+             Mapping & adjustments (a remap is the answer). */
+          if (target && via !== "manual") {
+            const cap = String(m.row.label || "");
+            /* "Business tax" may be the corporate income tax (Belize charges
+               it in place of one) or a tax on the business that is not on
+               income. The answer moves the figure between Schedule C line 16
+               and line 21a — and with it Schedule E, the high-tax test and
+               Form 8992 — so it is asked, never guessed. */
+            if (target === "IS:32" && /\bbusiness\s+tax\b/i.test(cap)) rv({
+              id: `business-tax-question-${norm(cap)}`, level: "block", category: "mapping", applied: true,
+              sourceLabel: cap,
+              message: `QUESTION: is "${cap}" the company's income tax? It was booked to Schedule C line 16 (taxes other than income tax). If it is the tax charged on the company's income or profits — in some countries (Belize, for example) a business tax is charged in place of the corporate income tax — move it to line 21a (income tax expense) on Mapping & adjustments; Schedule E, the high-tax test and Form 8992 follow from that answer. If it is not an income tax, acknowledge this with a short note to keep it on line 16.`,
+              target: `${SHEET.is}!F32`, source: m.docName,
+            });
+            /* A freight or delivery cost the statement files under Cost of
+               Sales stays there: the statement says so. Some reviewers show
+               it as an ordinary deduction instead, so it is named. */
+            if (m.feed === "is" && m.section === "cogs" && /^IS:1[0-2]$/.test(target) && /\b(freight|delivery|shipping|carriage)\b/i.test(cap)) rv({
+              id: `freight-in-cogs-${norm(cap)}`, level: "info", category: "mapping", applied: true,
+              sourceLabel: cap,
+              message: `"${cap}" is printed under the statement's cost of sales, so it was kept in cost of goods sold (Schedule C line 2). If your practice shows it as an other deduction (line 17), move it on Mapping & adjustments; net income does not change.`,
+              target: `${SHEET.is}!F12`, source: m.docName,
+            });
+            /* A balance "due from" a company the statement names may be a
+               loan to a related person (Schedule F line 6), which also needs
+               Schedule M. Only the preparer knows who the counterparty is. */
+            if (target === "BS:OCA" && /\bdue\s+from\b/i.test(cap) && (m.row.values || []).some((v) => typeof v === "number" && v !== 0)) rv({
+              id: `due-from-related-${norm(cap)}`, level: "warn", category: "related-party", applied: true,
+              sourceLabel: cap,
+              message: `"${cap}" was booked to other current assets (Schedule F line 5). If the counterparty is a shareholder or a company related to the corporation, move it to line 6 (loans to shareholders and other related persons) on Mapping & adjustments and report the balance on Schedule M.`,
+              target: `${SHEET.bs}!F16`, source: m.docName,
+            });
+          }
           if (!target) {
             unmatched.push({
               ...m.row, docId: m.docId, docName: m.docName, section: m.section,
@@ -3069,6 +3691,7 @@ export const actions = {
           }
 
           let routed = routeRow(m.row, target.startsWith("BS"), caseYears, m.kind);
+          if (Array.isArray(routed)) signTally(m, target, routed);
           // The rule and its reasoning live in sections.ts.
           if (Array.isArray(routed) && contraRevenueFlip(target, m.inTotal, routed[0]?.value)) {
             const asPrinted = routed[0]?.value ?? 0;
@@ -3090,7 +3713,11 @@ export const actions = {
               target: `${SHEET.is}!F${target === "IS:19" ? 19 : 20}`, source: m.docName,
             });
           }
-          if (Array.isArray(routed) && deductionMagnitudeFlip(target, m.section, m.inTotal, routed[0]?.value)) {
+          /* A negative inside an expense group is a sign CONVENTION only when
+             the group's own total is negative too. Under a positive total
+             ("Other personnel costs 2,390.63" = 2,400.00 − 9.37) it is a
+             genuine credit and keeps its sign. */
+          if (Array.isArray(routed) && deductionMagnitudeFlip(target, m.section, m.inTotal, routed[0]?.value) && parentTotalSign(mapRows, m) !== 1) {
             const asPrinted = routed[0]?.value ?? 0;
             routed = routed.map((r) => ({ ...r, value: -r.value }));
             rv({
@@ -3098,6 +3725,22 @@ export const actions = {
               level: "info", category: "mapping", sourceLabel: m.row.label,
               message: `"${m.row.label}" is a negative amount inside the statement's proved expense total, so it was booked to Schedule C deduction line ${target} as the positive magnitude ${r2(-asPrinted).toLocaleString()}.`,
               target: `${SHEET.is}!F${target.split(":")[1]}`, source: m.docName,
+            });
+          }
+          /* Schedule F's contra lines (2b bad debts, 9b depreciation, 10b
+             depletion, 12d amortisation) are added into total assets, so they
+             can only hold a negative. A statement that prints "Less:
+             accumulated depreciation 81,142,564" as a positive figure under a
+             "less" caption means the subtraction; booked as printed, total
+             assets came out 162 million too high on one Colombian file. */
+          if (Array.isArray(routed) && CONTRA_ASSET_LINES.has(target) && routed.some((r) => r.value > 0)) {
+            const asPrinted = routed[0]?.value ?? 0;
+            routed = routed.map((r) => ({ ...r, value: r.value > 0 ? -r.value : r.value }));
+            rv({
+              id: `contra-asset-${target}-${norm(m.row.label)}`,
+              level: "info", category: "mapping", sourceLabel: m.row.label,
+              message: `"${m.row.label}" (${asPrinted.toLocaleString()} as printed) was booked to Schedule F line ${CONTRA_ASSET_LINES.get(target)} as ${r2(-Math.abs(asPrinted)).toLocaleString()}. That line is a deduction from the assets above it and the template adds it into total assets, so it must be negative.`,
+              target: `${SHEET.bs}!D${target.split(":")[1]}`, source: m.docName,
             });
           }
           if (routed === "ambiguous") {
@@ -3110,7 +3753,11 @@ export const actions = {
           if (!routed.length) continue;   // prior-year-only income row etc — correctly ignored
 
           const isOverride = ov !== undefined && ov.to !== null;
-          const resolved = isOverride ? { target, relabel: undefined, overflowNote: undefined } : resolvePool(pools, target, m.row.label);
+          /* A zero-balance account adds nothing, and on a shared template
+             line it took a row a real balance needed ("2010 Brex Credit Card
+             0.00" sat first among the credit cards). */
+          if (!isOverride && POOLS[target] && routed.every((r) => !r.value)) continue;
+          const resolved = isOverride ? { target, relabel: undefined, overflowNote: undefined } : resolvePool(pools, target, m.row.label, m.group);
           if (isOverride && specFor(target)?.relabel && !relabels[target]) relabels[target] = m.row.label;
           if (resolved.relabel) relabels[resolved.target] = resolved.relabel;
 
@@ -3130,6 +3777,25 @@ export const actions = {
                 level: "info", category: "mapping",
                 sourceLabel: m.row.label,
                   message: `"${m.row.label}" (${r.value.toLocaleString()}) appears on two pages of ${m.docName} — counted once.`,
+                source: m.docName,
+              });
+              continue;
+            }
+            /* The same statement uploaded twice in another form — the PDF and
+               its Excel export, or a summary and a detailed copy: the identical
+               caption and figure is already booked to this line from ANOTHER
+               document. It is the same money, so it is counted once. Current-
+               year figures only; opening balances have their own precedence
+               between the statements and the prior return. */
+            const crossDoc = r.field !== "boy" && r.value !== 0 && (contributions[resolved.target] || []).find((c) =>
+              c.docId !== m.docId && c.field === r.field && c.value === r.value && norm(c.label) === norm(m.row.label),
+            );
+            if (crossDoc) {
+              rv({
+                id: `dup-doc-${resolved.target}-${norm(m.row.label)}`,
+                level: "warn", category: "mapping", applied: true,
+                sourceLabel: m.row.label,
+                message: `"${m.row.label}" ${r.value.toLocaleString()} is already booked to ${targetLabel(resolved.target)} from ${crossDoc.docName}, and ${m.docName} prints the same caption with the same amount. It is counted once. If the two documents really hold two separate balances of the same size, assign the second one on Mapping & adjustments.`,
                 source: m.docName,
               });
               continue;
@@ -3198,6 +3864,74 @@ export const actions = {
            that prints costs in brackets and a reader that took the sign
            literally — but sometimes it is a genuine credit. The tool cannot
            tell, so it books what it read and says so. */
+        /* A document whose costs (or creditors) are ALL printed negative —
+           two or more of them, and not one printed positive — uses brackets
+           as its presentation, not as a sign. Cost of sales, the tax charge
+           and the liabilities are booked as the positive amounts the form
+           expects, deductions included — the same brackets need not then be
+           reported one line at a time as possible sign errors. */
+        for (const [docId, t] of printedSigns) {
+          const costs = t.costNeg >= 2 && t.costPos === 0;
+          const creditors = t.liabNeg >= 2 && t.liabPos === 0;
+          if (!costs && !creditors) continue;
+          const keys = Object.keys(contributions).filter((k) =>
+            (costs && /^IS:(1[0-2]|2[6-9]|3\d|4\d|50|6[23])$/.test(k)) || (creditors && /^BS:(4[4-9]|5[0-6])$/.test(k)));
+          const moved: string[] = [];
+          let docName = "";
+          for (const k of keys) {
+            for (const c of contributions[k]) {
+              if (c.docId !== docId || c.value >= 0) continue;
+              if (k === "IS:12" && /^closing\s/i.test(c.label || "")) continue;
+              const f = c.field as "amount" | "eoy" | "boy";
+              const cur = lines[k] || {};
+              const was = cur[f];
+              lines[k] = { ...cur, [f]: (typeof was === "number" ? was : 0) - 2 * c.value };
+              c.value = -c.value;
+              moved.push(`"${c.label}" ${c.value.toLocaleString()}`);
+              docName = c.docName;
+            }
+          }
+          if (!moved.length) continue;
+          if (costs) {
+            for (let i = review.length - 1; i >= 0; i--) {
+              const id = review[i].id || "";
+              if (/^tax-sign-IS:6[23]$/.test(id) && (contributions[id.slice(9)] || []).every((c) => c.value >= 0)) review.splice(i, 1);
+            }
+          }
+          const what = costs && creditors ? "its costs and its creditors" : costs ? "its costs" : "its creditors";
+          rv({
+            id: `bracket-convention-${docId}`, level: "info", category: "mapping", applied: true,
+            message: `${docName} prints ${what} in brackets — every one of them is negative on the page — so the brackets are presentation, not a sign. ${moved.length} figure(s) were booked as the positive amounts the form expects: ${moved.slice(0, 6).join(" · ")}${moved.length > 6 ? " …" : ""}.`,
+            source: docName,
+          });
+          log.push(`${docName}: ${what} printed in brackets — ${moved.length} figure(s) booked as positive amounts`);
+        }
+
+        /* A tax printed as its effect on profit: "Bénéfice avant impôts
+           -9,218.98 / Impôts -84.80 / Bénéfice de l'exercice -9,303.78". The
+           costs above it are printed positive, so the bracket rule does not
+           apply, and booked as printed the charge ADDED 84.80 to profit. The
+           statements' own result settles it: when reversing the sign makes
+           Schedule C reach exactly the result the balance sheet states, the
+           printed minus was presentation, and the charge is booked positive.
+           Anything else stays as printed, with the warning. */
+        {
+          const tax = (contributions["IS:62"] || []).filter((c) => c.field === "amount" && c.value < 0);
+          const sum = r2(tax.reduce((n, c) => n + c.value, 0));
+          const probe = tax.length ? pnlTieOut({ ...ent, lines, contributions, unmatched, statedResults }) : null;
+          if (probe && Math.abs(probe.diff - 2 * sum) <= Math.max(1, Math.abs(probe.stated) * 0.001)) {
+            for (const c of tax) c.value = -c.value;
+            lines["IS:62"] = { ...lines["IS:62"], amount: r2((lines["IS:62"]?.amount ?? 0) - 2 * sum) };
+            for (let i = review.length - 1; i >= 0; i--) if (review[i].id === "tax-sign-IS:62") review.splice(i, 1);
+            rv({
+              id: "tax-sign-by-result", level: "info", category: "mapping", applied: true,
+              message: `The tax charge is printed as ${sum.toLocaleString()} — its effect on profit — and was booked as a charge of ${(-sum).toLocaleString()}: with that sign Schedule C reaches exactly the result the balance sheet states ("${probe.label}" ${probe.stated.toLocaleString()}); as printed it would have been out by ${probe.diff.toLocaleString()}.`,
+              target: `${SHEET.is}!F62`,
+            });
+            log.push(`Tax charge ${sum.toLocaleString()} booked as a charge of ${(-sum).toLocaleString()} — proved by the stated result for the year`);
+          }
+        }
+
         const negSeen = new Set<string>();
         for (const [target, list] of Object.entries(contributions)) {
           if (!/^IS:(2[6-9]|3\d|4\d|50)$/.test(target)) continue;
@@ -3275,7 +4009,7 @@ export const actions = {
             log.push(`${Object.keys(lines).length} schedule lines populated \u00b7 ${unmatched.length} unmatched`);
           }
         }
-        updateEntity(entityId, { lines, relabels, sourceLabels, contributions, unmatched, log: [...log] });
+        updateEntity(entityId, { lines, relabels, sourceLabels, contributions, unmatched, statedResults, formResults, log: [...log] });
 
         // Entity particulars — from profile-allowed pages and the prior-year
         // 5471 — proposals only, and only into fields left blank.
@@ -3313,7 +4047,9 @@ export const actions = {
             for (const c of Object.values(fresh.docClasses || {}) as DocClass[]) {
               const end = c.statementPeriodEnd;
               if (!end || c.duplicateOf) continue;
-              if (c.kind !== "cfc-financial-statements" && c.kind !== "cfc-tax-return") continue;
+              /* A statement spreadsheet (read as a trial balance) states its
+                 period in the column header — "December 31," over "2024". */
+              if (c.kind !== "cfc-financial-statements" && c.kind !== "cfc-tax-return" && c.kind !== "trial-balance") continue;
               if (caseYears.cy && Number(end.slice(-4)) !== caseYears.cy) continue;
               if (!best) best = { end, doc: c.fileName };
             }
@@ -3421,8 +4157,12 @@ export const actions = {
             propose(profile, "addr2", cfAddr[1] || "", `${cfSource} · 5471 face`);
             propose(profile, "addr3", cfAddr[2] || "", `${cfSource} · 5471 face`);
             propose(profile, "formed", cf.formed || "", `${cfSource} · 5471 face`);
-            propose(profile, "countryInc", cf.countryInc || "", `${cfSource} · 5471 face`);
-            propose(profile, "activity", cf.activity || "", `${cfSource} · 5471 face`);
+            propose(profile, "countryInc", cf.countryInc || "", `${cfSource} · 5471 item 1c (country under whose laws incorporated)`);
+            {
+              const byCode = !cf.activity ? naicsDescription(cf.activityCode) : null;
+              propose(profile, "activity", cf.activity || byCode || "",
+                byCode ? `${cfSource} · 5471 face item f, activity code ${cf.activityCode} — description from the code, confirm` : `${cfSource} · 5471 face`);
+            }
             propose(profile, "booksPerson", cf.booksPerson || "", `${cfSource} · 5471 item 2d`);
             propose(profile, "booksAddr1", cf.booksAddress[0] || "", `${cfSource} · 5471 item 2d`);
             propose(profile, "booksAddr2", cf.booksAddress[1] || "", `${cfSource} · 5471 item 2d`);
@@ -3439,11 +4179,92 @@ export const actions = {
               detected.clientName = { key: "clientName", value: cf.holderName, sourceLabel: `${cfSource} · person filing`, confidence: "high" };
               filled++;
             }
-            if (cf.pctVoting !== undefined) {
-              propose(ownership, "ownStart", String(cf.pctVoting), `${cfSource} · 5471 face`);
-              propose(ownership, "ownEnd", String(cf.pctVoting), `${cfSource} · 5471 face`);
+            /* Item C on the face can include stock attributed to the filer
+               from family members. Stock a NON-U.S. relative owns is not
+               attributed to a U.S. person for CFC purposes (section
+               958(b)(1)), so a mother holding 40% whose UK son holds 50% can
+               print 90% on item C while Schedule B Part I — the U.S.
+               shareholders — lists her at 40%. Attribution between U.S.
+               persons is real (a U.S. spouse's 25.5% makes 51%), so item C is
+               only lowered to what the U.S. shareholders hold between them,
+               never below it; the difference is raised, not hidden. */
+            const filerName = cf.holderName || "";
+            const filerPartI = (cf.usHolders || []).find((h) => typeof h.pct === "number" && !!filerName
+              && (samePerson(h.name, filerName) || entitySimilarity(h.name, filerName) >= 0.5));
+            const usHeld = (cf.usHolders || []).reduce((n, h) => n + (typeof h.pct === "number" ? h.pct : 0), 0);
+            /* The difference has to be held by someone who is not a U.S.
+               shareholder: Schedule B Part II names them. A return whose Part
+               I percentage simply disagrees with item C (5 shares of 5 printed
+               as "5.00%") has no such holder, and item C stands. */
+            const usList = cf.usHolders || [];
+            const partII = (cf.holders || []).filter((h) => !h.fromPartI);
+            const totalShares = partII.reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+            const nonUsPct = totalShares > 0
+              ? partII.filter((h) => !usList.some((u) => samePerson(u.name, h.name) || entitySimilarity(u.name, h.name) >= 0.5))
+                .reduce((n, h) => n + (Number(h.eoy) || 0), 0) / totalShares * 100
+              : 0;
+            let ownPct = cf.pctVoting;
+            if (filerPartI && typeof filerPartI.pct === "number") {
+              if (ownPct === undefined) ownPct = filerPartI.pct;
+              else if (ownPct > usHeld + 0.01 && nonUsPct > 0.01 && ownPct - usHeld <= nonUsPct + 0.5) {
+                if (filerPartI.pct >= 10) {
+                  /* The filer is a U.S. shareholder on its own Part I stake:
+                     item C comes down to what the U.S. shareholders hold. */
+                  rv({
+                    id: "cf-own-pct", level: "warn", category: "carry-forward", applied: true,
+                    message: `The prior-year Form 5471 prints ${ownPct}% on item C, but the U.S. shareholders its Schedule B Part I lists hold ${usHeld}% between them (${filerPartI.name} ${filerPartI.pct}%). The difference can only be stock attributed from non-U.S. persons, which is not attributed for CFC purposes, so the ownership percentage was set to ${usHeld}% — confirm it.`,
+                    source: cfSource,
+                  });
+                  ownPct = usHeld;
+                } else {
+                  /* Below 10% directly, the filer is only a filer through the
+                     attributed stock: lowering item C would contradict the
+                     reason the prior return was filed at all. The filed
+                     position stands and the attribution question is raised. */
+                  rv({
+                    id: "cf-own-pct", level: "warn", category: "carry-forward", applied: true,
+                    message: `The prior-year Form 5471 prints ${ownPct}% on item C, while its Schedule B Part I lists ${filerPartI.name} directly at ${filerPartI.pct}% — the rest is stock attributed from a non-U.S. holder. ${filerPartI.pct}% alone is under the 10% U.S.-shareholder threshold, so the return was filed on the attributed stock: Basic Information keeps the ${ownPct}% as filed. For CFC status, section 958(b)(1) does not attribute a nonresident alien's stock to a U.S. person; confirm the ownership and the CFC answer before filing.`,
+                    source: cfSource,
+                  });
+                }
+              }
             }
-            propose(ownership, "cfc", "Yes", `${cfSource} · prior-year filing`);
+            /* Neither item C nor a Part I percentage was read, but Schedule B
+               lists the shares: the filer's own shares over all shares held
+               is the percentage ("SEAN DE CUIRTEIS 100 of 100"). */
+            let fromShares = false;
+            if (ownPct === undefined && filerName) {
+              const list = (cf.holders && cf.holders.length ? cf.holders : cf.usHolders) || [];
+              const total = list.reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+              const mine = list.filter((h) => samePerson(h.name, filerName) || entitySimilarity(h.name, filerName) >= 0.5)
+                .reduce((n, h) => n + (Number(h.eoy) || 0), 0);
+              if (total > 0 && mine > 0) { ownPct = Math.round((mine / total) * 10000) / 100; fromShares = true; }
+            }
+            if (ownPct !== undefined) {
+              const src = fromShares ? `${cfSource} · Sch B shares held by the filer`
+                : ownPct === cf.pctVoting ? `${cfSource} · 5471 face` : `${cfSource} · Sch B Part I`;
+              propose(ownership, "ownStart", String(ownPct), src);
+              propose(ownership, "ownEnd", String(ownPct), src);
+            }
+            /* CFC status from the prior return's own evidence: category 5
+               (U.S. shareholder of a CFC) checked means it was one; otherwise
+               the U.S. shareholders of 10% or more that Part I lists must hold
+               more than 50% between them. Neither known — the prior filing
+               alone is the only evidence, as before. */
+            const partIPcts = (cf.usHolders || []).map((h) => h.pct).filter((v): v is number => typeof v === "number");
+            const usTenPct = partIPcts.filter((v) => v >= 10).reduce((n, v) => n + v, 0);
+            /* The filer's own item C above 50% (as filed, attribution
+               included) answers it the same way the reviewed work paper does. */
+            const itemCControl = typeof ownPct === "number" && ownPct > 50;
+            const cfcAnswer = cf.categories.some((c) => /^5/.test(c)) ? "Yes"
+              : itemCControl ? "Yes"
+              : partIPcts.length ? (usTenPct > 50 ? "Yes" : "No")
+              : "Yes";
+            propose(ownership, "cfc", cfcAnswer,
+              cf.categories.some((c) => /^5/.test(c)) ? `${cfSource} · category 5 filer`
+              : itemCControl ? `${cfSource} · item C ${ownPct}% as filed`
+              : partIPcts.length ? `${cfSource} · Sch B Part I U.S. shareholders hold ${usTenPct}%`
+              : `${cfSource} · prior-year filing`);
             /* "Does the entity have a 10% CORPORATE shareholder?" is a question
                about the holders' legal form, not the filer's own percentage —
                the old rule answered Yes for any 10% holder, individuals
@@ -3481,7 +4302,7 @@ export const actions = {
             }
             // The transition tax (section 965) was a 2017/2018 event.
             if (caseYears.cy && caseYears.cy >= 2019) propose(ownership, "transition", "No", `tax year ${caseYears.cy} is after the 2017–18 transition years`);
-            if (cf.pctVoting !== undefined && cf.pctVoting < 50) {
+            if (cfcAnswer === "Yes" && cf.pctVoting !== undefined && cf.pctVoting <= 50) {
               rv({
                 id: "cf-cfc-status", level: "warn", category: "carry-forward",
                 message: `CFC = Yes was carried from the prior filing, but this filer's voting share is ${cf.pctVoting}% — CFC status depends on COMBINED US-shareholder ownership (more than 50%). Confirm it still holds for the current year.`,
@@ -3489,7 +4310,9 @@ export const actions = {
               });
             }
             const fiscalDays = fiscalSeed ? daysBetweenPeriods(profile.pyEnd, profile.cyEnd) : null;
-            if (fiscalDays) {
+            // Not a CFC: there are no CFC days to count.
+            if (ownership.cfc === "No") { /* left blank */ }
+            else if (fiscalDays) {
               propose(ownership, "daysCfc", String(fiscalDays), "full fiscal-year CFC");
               propose(ownership, "daysOwned", String(fiscalDays), "full fiscal-year ownership");
             } else if (caseYears.cy) {
@@ -3505,7 +4328,7 @@ export const actions = {
               });
             }
             const hasCurrentDocs = bundles.some((b) =>
-              !b.cls.duplicateOf && (b.cls.kind === "cfc-financial-statements" || b.cls.kind === "cfc-tax-return"));
+              !b.cls.duplicateOf && (b.cls.kind === "cfc-financial-statements" || b.cls.kind === "cfc-tax-return" || b.cls.kind === "trial-balance"));
             if (!hasCurrentDocs) {
               rv({
                 id: "cf-seed-only", level: "warn", category: "source-gap",
@@ -3648,6 +4471,7 @@ export const actions = {
             updateEntity(entityId, { log: [...log] });
           }
           if (profile.currency) actions.autoFillRates(entityId, false);
+          inLieuIncomeTax(entityId, profile, review, rv, log);
         }
       }
 
@@ -3753,10 +4577,55 @@ export const actions = {
               depreciable: "depreciable assets", land: "land",
               otherAssets: "other assets",
             };
+            /* The statements' own prior-year column is the opening balance
+               sheet in the entity's own captions and currency, and the
+               preparer's paper takes it from there. When it has already
+               opened the balance sheet, the prior return's closing figures
+               are not layered on top — they are only used to cross-check it
+               (the cf-boy reconciliation below). Carrying them onto whatever
+               lines the statements left free put the same debtors on two
+               lines. */
+            const statementsOpened = Object.keys(lines).filter((k) => k.startsWith("BS:") && typeof lines[k]?.boy === "number").length;
+            if (statementsOpened >= 3) {
+              log.push(`Beginning-of-year balances taken from the statements' prior-year column (${statementsOpened} line(s)); the prior-year Form 5471 is used to cross-check them, not added on top`);
+            }
             for (const [key, rows, negate, aggregateLabel] of boyMap) {
+              if (statementsOpened >= 3) break;
               const filed = cf.priorClosingUSD[key]?.value;
               if (typeof filed !== "number") continue;
               // Never overwrite a value the documents or the preparer supplied.
+              /* A group the statements already opened (their prior-year
+                 column booked deferred tax to 48) is not topped up with the
+                 prior return's whole group total on 49: that total contains
+                 the same balance, and the opening column would count it
+                 twice. */
+              if (rows.length > 1 && rows.some((r) => typeof lines[`BS:${r}`]?.boy === "number")) continue;
+              /* The attached statement lists the accounts behind the filed
+                 total ("CREDIT CARD 11,410 / DEFERRED REVENUE 51,481" = line 16
+                 62,891). Each opens on the row this year's statements booked
+                 the same account to, so the two columns line up; an account
+                 with no such row takes a free one under its filed caption. */
+              const split = cf.statementCaptions?.[key as keyof NonNullable<CarryForward["statementCaptions"]>]?.lines;
+              if (rows.length > 1 && split && split.length > 1) {
+                const stmtName = cf.statementCaptions?.[key as keyof NonNullable<CarryForward["statementCaptions"]>]?.statement || "attached statement";
+                const words = (s: string) => new Set(String(s || "").toLowerCase().replace(/[^a-z ]+/g, " ").split(/\s+/)
+                  .filter((w) => w.length >= 4).map((w) => w.replace(/s$/, "")));
+                const shares = (a: string, b: string) => { const x = words(a); return [...words(b)].some((w) => x.has(w)); };
+                const taken = new Set<number>();
+                for (const ln of split) {
+                  const localLn = Math.round(ln.value * rate * 100) / 100;
+                  let r = rows.find((x) => !taken.has(x) && typeof lines[`BS:${x}`]?.boy !== "number" && shares(relabels[`BS:${x}`] || "", ln.label));
+                  if (r === undefined) r = rows.find((x) => !taken.has(x) && lines[`BS:${x}`] === undefined && !relabels[`BS:${x}`]);
+                  if (r === undefined) r = rows[rows.length - 1];
+                  taken.add(r);
+                  const kk = `BS:${r}`;
+                  const prevBoy = typeof lines[kk]?.boy === "number" ? lines[kk]!.boy as number : 0;
+                  lines[kk] = { ...(lines[kk] || {}), boy: Math.round((prevBoy + (negate ? -Math.abs(localLn) : localLn)) * 100) / 100 };
+                  if (!relabels[kk]) relabels[kk] = `${titleCaseCaption(ln.label)} (per prior-year Form 5471, ${stmtName})`;
+                  seeded.push(`${kk}=${localLn.toLocaleString()}`);
+                }
+                continue;
+              }
               const row = rows.find((r) => typeof lines[`BS:${r}`]?.boy !== "number");
               if (row === undefined) continue;      // every detail row already taken
               const k = `BS:${row}`;
@@ -3780,13 +4649,75 @@ export const actions = {
                 target: `${SHEET.bs}!D${a.row}`, source: cfSource,
               });
             }
+            /* One balance, two lines. The prior return filed an opening
+               balance on one line, and this year's statements booked a closing
+               balance of the SAME amount (within the return's whole-dollar
+               rounding) on another line of the same side, with no opening of
+               its own — "Due to Shareholders 57,226.88" on line 18 against the
+               filed 57,228 on line 19. It is one account, and a column that
+               moves it between lines makes both lines look like movements. The
+               closing balance follows the line the return was filed on, and
+               the preparer is told, so either line can still be chosen. */
+            const contributions = { ...cur0.contributions };
+            const sourceLabels = { ...cur0.sourceLabels };
+            const aligned: string[] = [];
+            const tol = Math.max(1, rate) * 1.01;
+            for (const kb of Object.keys(lines)) {
+              const lb = lines[kb];
+              if (!kb.startsWith("BS:") || typeof lb?.boy !== "number" || typeof lb?.eoy === "number" || !lb.boy) continue;
+              const ob = cur0.lines[kb];
+              if (ob && ob.boy === lb.boy) continue;      // not opened by this carry-forward
+              const side = bsSide(kb) || (/^BS:(1[6-8])$/.test(kb) ? "assets" : /^BS:(4[89]|5[0-6])$/.test(kb) ? "liabilities" : null);
+              const cands = Object.keys(lines).filter((ke) => {
+                const le = lines[ke];
+                if (ke === kb || !ke.startsWith("BS:") || typeof le?.eoy !== "number" || typeof le?.boy === "number") return false;
+                const s2 = bsSide(ke) || (/^BS:(1[6-8])$/.test(ke) ? "assets" : /^BS:(4[89]|5[0-6])$/.test(ke) ? "liabilities" : null);
+                return !!side && s2 === side && Math.abs(Math.abs(le.eoy as number) - Math.abs(lb.boy as number)) <= tol;
+              });
+              if (cands.length !== 1) continue;
+              const ke = cands[0];
+              const caption = (contributions[ke] || [])[0]?.label || relabels[ke] || ke;
+              lines[kb] = { ...lb, eoy: lines[ke]!.eoy };
+              delete lines[ke];
+              if (contributions[ke]) { contributions[kb] = [...(contributions[kb] || []), ...contributions[ke]]; delete contributions[ke]; }
+              if (sourceLabels[ke]) { sourceLabels[kb] = sourceLabels[ke]; delete sourceLabels[ke]; }
+              relabels[kb] = relabels[ke] && !/^BS:/.test(relabels[ke]) ? relabels[ke] : caption;
+              delete relabels[ke];
+              aligned.push(`${ke}→${kb}`);
+              rv({
+                id: `boy-eoy-line-${kb}`, level: "info", category: "carry-forward", applied: true,
+                sourceLabel: caption,
+                message: `"${caption}" closes at ${(lines[kb]!.eoy as number).toLocaleString()} and the prior-year Form 5471 filed the same balance (${(lb.boy as number).toLocaleString()} opening) on Schedule F line ${kb.split(":")[1]}. This year's statements would have put it on line ${ke.split(":")[1]}; it was kept on the line the return was filed on so both columns show one account. Move it on Mapping & adjustments if the other line is right — and move the opening balance with it.`,
+                target: `${SHEET.bs}!F${kb.split(":")[1]}`, source: cfSource,
+              });
+            }
+            if (aligned.length) log.push(`Closing balance(s) kept on the line the prior return filed them on: ${aligned.join(", ")}`);
             if (seeded.length) {
-              updateEntity(entityId, { lines, relabels, openingRate: { rate, why: rateSource.why, source: cfSource } });
+              updateEntity(entityId, { lines, relabels, openingRate: { rate, why: rateSource.why, source: cfSource },
+                ...(aligned.length ? { contributions, sourceLabels } : {}) });
               log.push(`${seeded.length} beginning-of-year balance(s) carried from the prior-year Form 5471`);
               logEvent("Beginning-of-year balances carried forward",
                 `${seeded.length} line(s) from ${cfSource} Sch F col (b), converted at ${rateSource.why}`,
                 cur0.name, "system");
             }
+          }
+        }
+
+        /* Capital stock keeps the class the prior return filed it under. */
+        if (cf?.priorClosingUSD) {
+          const curC = state.entities.find((e) => e.id === entityId);
+          const moved = curC ? capitalClassFromPrior(curC, {
+            preferredStock: cf.priorClosingUSD.preferredStock?.value,
+            commonStock: cf.priorClosingUSD.commonStock?.value,
+          }) : null;
+          if (curC && moved) {
+            updateEntity(entityId, moved);
+            log.push("Capital stock booked on Schedule F line 20a (preferred), the class the prior-year Form 5471 filed it under");
+            rv({
+              id: "capital-class-prior", level: "info", category: "carry-forward", applied: true,
+              message: `The statements print the capital without its class ("${(curC.contributions?.["BS:59"] || []).map((c) => c.label).filter((v, i, a) => a.indexOf(v) === i).join('", "')}"). The prior-year Form 5471 filed it on Schedule F line 20a (preferred stock) and left line 20b (common stock) blank, so it was kept on line 20a. If the shares are common stock, reassign the caption on Mapping & adjustments.`,
+              target: `${SHEET.bs}!F58`, source: cfSource,
+            });
           }
         }
 
@@ -3894,8 +4825,42 @@ export const actions = {
             });
           }
         }
+        /* The filer is a U.S. person — that is why the return is filed. When
+           no Schedule B Part I names the U.S. shareholders (a category 2/3
+           return does not carry one), the filer's own holding among the
+           direct shareholders still belongs in the U.S. block: left empty,
+           rows 7-14 said the corporation had no U.S. shareholder at all while
+           Basic Information called it a CFC. Only the filer is added; nobody
+           else's citizenship is assumed. */
+        {
+          const cur = state.entities.find((e) => e.id === entityId);
+          const filer = String(cf?.holderName || cur?.profile.clientName || "").trim();
+          if (cur && filer && !(cur.usShareholders || []).length) {
+            const own = (cur.shareholders || []).find((h) => h.name && samePerson(h.name, filer));
+            if (own && ((Number(own.eoy) || 0) > 0 || (Number(own.boy) || 0) > 0)) {
+              const usShareholders = [{
+                id: uid(), name: own.name, classOfShares: own.classOfShares, boy: own.boy, eoy: own.eoy,
+                source: `the filer (${filer}) — a U.S. person by filing this return; no Schedule B Part I lists the U.S. shareholders — confirm`,
+              }];
+              updateEntity(entityId, { usShareholders });
+              log.push(`U.S. Shareholders block: the filer ${own.name} (${own.eoy} shares) added from the direct shareholders — no Schedule B Part I was available`);
+              rv({
+                id: "us-holder-filer", level: "info", category: "carry-forward", applied: true,
+                message: `No Schedule B Part I lists the U.S. shareholders, so the U.S. Shareholders block (rows 7-14) carries the filer, ${own.name}, with the ${own.boy}/${own.eoy} shares shown among the direct shareholders. Add any other U.S. shareholder by hand — citizenship is not assumed for anyone else.`,
+                target: `${SHEET.shareholding}!B7`,
+              });
+            }
+          }
+        }
         const ent = state.entities.find((e) => e.id === entityId);
         if (!ent) return;   // removed mid-run
+        /* The year may only have become known during the run (the prior
+           return's own period end is read from its face). The schedules are
+           built for the work paper year, so it is asked for again here. */
+        if (!caseYears.cy) {
+          const again = resolveCaseYears(ent);
+          if (again.cy) caseYears = { cy: again.cy, py: again.py };
+        }
         const writes = await materializeCaseWrites(ent, { caseYears, equity, ato, cf, cfSource, cfStale, ledger, questionnaire, salary, rv });
         log.push(`${writes.list.length} schedule cell(s) prepared beyond the core statements`);
         // Sign-offs AND value edits survive re-processing, keyed by stable id.
@@ -4380,6 +5345,15 @@ if (typeof window !== "undefined") setTimeout(() => { try { actions.EN9_expose()
 /** Caption key for user overrides — case/whitespace insensitive. */
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
 
+/** A caption that names cost of goods itself, or the stock movement that
+    makes it up — line 2 wherever the statement prints it. */
+/* Delivery to customers (outbound) versus freight on purchases (inbound). */
+/** Schedule F contra lines and the form reference each one carries. */
+const CONTRA_ASSET_LINES = new Map<string, string>([["BS:12", "2b"], ["BS:29", "9b"], ["BS:31", "10b"], ["BS:37", "12d"]]);
+const OUTBOUND_DELIVERY = /\b(delivery|deliveries|shipping|carriage\s+out(wards?)?|freight\s+out(wards?)?)\b/i;
+const INBOUND_FREIGHT = /\b(inward|inwards|inbound|freight[-\s]+in|on\s+purchases|import|customs|duty)\b/i;
+const EXPLICIT_COGS = /\b(cost of (goods|sales|revenue)|cogs|direct (costs?|labou?r|materials?)|opening|closing|stocks?|inventor(y|ies)|costos? de (la )?ventas?|costo directo|existencias)\b/i;
+
 /** What a preparer needs to know about one document, in five words.
  *
  * The order of the tests is the point. "text read" is checked BEFORE
@@ -4456,6 +5430,21 @@ export function rateEffectLines(
   return { lines, net: { atTable: netT, atPrior: netP, diff: netT - netP } };
 }
 
+/** The statement a caption was printed on decides which schedule it can
+    reach. A caption read on an income-statement page is income or expense; a
+    model that books it to a Schedule F balance ("Petit matériel et
+    fournitures" to inventories) moves the figure out of the P&L and unbalances
+    the balance sheet by the same amount. Keyed on the unmatched row's own
+    reason, which names the page it was read on. */
+export function statementSideVeto(reason: string | undefined, target: string): string | null {
+  const r = String(reason || "");
+  if (/on an income-statement page/.test(r) && /^BS:/.test(target))
+    return "the caption was printed on the income statement — a Schedule F balance cannot come from a profit-and-loss line; refused.";
+  if (/on a balance-sheet page/.test(r) && /^IS:/.test(target))
+    return "the caption was printed on the balance sheet — a Schedule C line cannot come from a balance; refused.";
+  return null;
+}
+
 /** Net income as the Income Statement tab will compute it from the booked
     lines: gross profit (1a − 1b − COGS) + lines 4–9, less lines 11–17, plus
     the signed items on lines 20–21b. null when nothing is booked. */
@@ -4471,6 +5460,147 @@ export function bookNetIncome(lines: Record<string, LineValue>): number | null {
      expense (it used to be booked negative so a plain SUM came out right). */
   const below = amt(61) - amt(62) - amt(63);
   return r2(income - deductions + below);
+}
+
+/** Booked net income against the result the balance sheet states in its
+    equity block, current year only; null when they agree or nothing states
+    one. Candidates are unassigned P&L rows whose figure is the difference. */
+export function pnlTieOut(ent: Entity): { booked: number; stated: number; diff: number; label: string; where: string; candidates: string[]; unassigned: number; suspects: string[] } | null {
+  const booked = bookNetIncome(ent.lines);
+  if (booked === null) return null;
+  /* The P&L's own bottom line first — it is the statement Schedule C is
+     built from. The equity line on the balance sheet only when the P&L
+     printed none. */
+  const pnl = (ent.statedResults || []).filter((x) => x.feed === "is");
+  const rows = pnl.length ? [] : (ent.contributions["BS:61"] || []).filter((c) => c.field === "eoy" && isProfitLine(c.label));
+  if (!pnl.length && !rows.length) return null;
+  const stated = r2(pnl.length ? pnl.reduce((n, x) => n + x.value, 0) : rows.reduce((n, c) => n + c.value, 0));
+  const label = pnl.length ? pnl[0].label : rows[0].label;
+  const diff = r2(stated - booked);
+  if (Math.abs(diff) <= Math.max(1, Math.abs(stated) * 0.001)) return null;
+  const pnlRows = (ent.unmatched || []).filter((u) => /income-statement page/.test(u.reason || ""));
+  const cy = entityCaseCy(ent);
+  const current = (u: Entity["unmatched"][number]): number | null => {
+    const vals = u.values || [];
+    if (!vals.length) return null;
+    const i = cy && u.years ? u.years.indexOf(cy) : -1;
+    return i >= 0 ? vals[i] : vals[0];
+  };
+  const candidates = pnlRows.filter((u) => { const v = current(u); return v !== null && Math.abs(Math.abs(v) - Math.abs(diff)) <= 1; })
+    .map((u) => u.label).slice(0, 3);
+  return { booked, stated, diff, label, where: pnl.length ? "profit and loss" : "balance sheet", candidates, unassigned: pnlRows.length, suspects: tieSuspects(ent, diff) };
+}
+
+/** Schedule F's two sides at one end of the year, as the template adds them. */
+export function bsBalance(lines: Record<string, LineValue>, field: "eoy" | "boy"): { assets: number; liabEquity: number; diff: number } {
+  let assets = 0, liabEquity = 0;
+  for (const ln of BS_LINES) {
+    const v = lines[`BS:${ln.row}`]?.[field];
+    if (typeof v !== "number" || !isFinite(v)) continue;
+    if (/assets/i.test(ln.group)) assets += v; else liabEquity += v;
+  }
+  return { assets: r2(assets), liabEquity: r2(liabEquity), diff: r2(assets - liabEquity) };
+}
+
+/** Schedule F lines whose amount alone explains an imbalance: counted twice
+    (or its partner missing) when it equals the gap, on the wrong side or
+    with the wrong sign when it is half of it. "" when none does. */
+export function bsSuspectText(lines: Record<string, LineValue>, field: "eoy" | "boy", diff: number): string {
+  const gap = Math.abs(diff);
+  if (gap < 1) return "";
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, b * 1e-5);
+  const out: string[] = [];
+  for (const ln of BS_LINES) {
+    const v = lines[`BS:${ln.row}`]?.[field];
+    if (typeof v !== "number" || !v) continue;
+    const name = `line ${ln.ref} ${ln.label} (${v.toLocaleString()})`;
+    if (near(Math.abs(v), gap)) out.push(`${name} — counted twice, or its matching line is missing`);
+    else if (near(2 * Math.abs(v), gap)) out.push(`${name} — on the wrong side or with the wrong sign`);
+  }
+  if (!out.length) return "";
+  return ` ${field === "boy" ? "The opening column comes from the prior-year return or the statements' prior-year column; " : ""}line(s) whose amount alone explains the gap: ${out.slice(0, 3).join("; ")}.`;
+}
+
+/** Booked P&L rows that alone explain a net-income gap. A row booked twice,
+    or booked when the statement does not count it, moves net income by its
+    own amount; a row with the wrong sign, or on the wrong side (income booked
+    as a deduction), moves it by twice its amount. Naming the row turns "go and
+    compare the whole P&L" into one thing to check. */
+export function tieSuspects(ent: Entity, diff: number): string[] {
+  const gap = Math.abs(diff);
+  if (gap < 1) return [];
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, b * 1e-5);
+  const out: string[] = [];
+  for (const [line, cs] of Object.entries(ent.contributions || {})) {
+    if (!line.startsWith("IS:")) continue;
+    for (const c of cs) {
+      if (c.field !== "amount" || !c.value) continue;
+      const v = Math.abs(c.value);
+      if (near(v, gap)) out.push(`"${c.label}" (${c.value.toLocaleString()} on ${line}) — booked twice, or not part of the statement's result`);
+      else if (near(2 * v, gap)) out.push(`"${c.label}" (${c.value.toLocaleString()} on ${line}) — wrong sign, or income booked as a deduction (or the reverse)`);
+    }
+  }
+  return out.slice(0, 3);
+}
+
+/** The P&L's bottom line against the result the balance sheet carries in
+    equity. Two reports of one year that disagree were run at different
+    times or with different settings; null when they agree or one is missing. */
+export function resultsDisagree(ent: Entity): { pnl: number; bs: number; pnlLabel: string; bsLabel: string; diff: number } | null {
+  const pnl = (ent.statedResults || []).filter((x) => x.feed === "is");
+  const bs = (ent.contributions["BS:61"] || []).filter((c) => c.field === "eoy" && isProfitLine(c.label));
+  if (!pnl.length || !bs.length) return null;
+  const p = r2(pnl.reduce((n, x) => n + x.value, 0)), b = r2(bs.reduce((n, c) => n + c.value, 0));
+  const diff = r2(b - p);
+  if (Math.abs(diff) <= Math.max(1, Math.abs(p) * 0.001)) return null;
+  return { pnl: p, bs: b, pnlLabel: pnl[0].label, bsLabel: bs[0].label, diff };
+}
+
+/** A dividend printed as a line of the balance sheet's equity, current year. */
+export function equityDividendLine(ent: Entity): { amount: number; label: string; addsToEquity: boolean; closing?: number; opening?: number; openingBasis?: string } | null {
+  const isDiv = (c: Contribution) => /\b(dividends?|distributions?)\b/i.test(c.label) && !/\b(payable|reserve|receivable)\b/i.test(c.label);
+  const bs61 = ent.contributions["BS:61"] || [];
+  const rows = bs61.filter((c) => c.field === "eoy" && isDiv(c));
+  const closing = r2(rows.reduce((n, c) => n + Math.abs(c.value), 0));
+  /* A distribution paid reduces equity and is printed negative ("Dividend
+     disbursed (100,000)"). A dividend line printed POSITIVE adds to total
+     equity: the statements record it, but it is no proof of a payment. */
+  const addsToEquity = rows.reduce((n, c) => n + c.value, 0) > 0;
+  if (!(closing > 0)) return null;
+  /* A dividends ACCOUNT is a running balance until the books close it into
+     retained earnings. QuickBooks never does: "Dividends (728,941.18)" was
+     every dividend since the last close, and booking all of it as this year's
+     distribution overstated Schedule R, J and M by the 376,000 paid in earlier
+     years. The year's distribution is the account's movement. Its opening
+     balance comes from the statements' own prior-year column when they print
+     one; otherwise, when the books are visibly unclosed (equity prints the
+     year's result and a retained-earnings account beside it), it is what the
+     retained-earnings account holds beyond the retained earnings the prior
+     return filed — the distributions not yet closed into it. */
+  let opening: number | null = null;
+  let openingBasis = "";
+  const boyRows = bs61.filter((c) => c.field === "boy" && isDiv(c));
+  if (boyRows.length) {
+    opening = r2(boyRows.reduce((n, c) => n + Math.abs(c.value), 0));
+    openingBasis = "the statements' prior-year column";
+  } else {
+    const reAcct = bs61.filter((c) => c.field === "eoy" && /\b(retained\s+(earnings?|profits?)|accumulated\s+(profits?|earnings?))\b/i.test(c.label));
+    const result = bs61.filter((c) => c.field === "eoy" && /\b(net\s+(income|earnings|profit|loss)|profit\s+for\s+the\s+(year|period)|current\s+year\s+(earnings|profit))\b/i.test(c.label));
+    const filedOpening = ent.lines["BS:61"]?.boy;
+    const hasBooksBoy = bs61.some((c) => c.field === "boy");
+    if (reAcct.length && result.length && typeof filedOpening === "number" && !hasBooksBoy) {
+      const undistributed = r2(reAcct.reduce((n, c) => n + c.value, 0) - filedOpening);
+      if (undistributed > 0.01 && undistributed < closing - 0.01) {
+        opening = undistributed;
+        openingBasis = "the retained-earnings account less the retained earnings the prior-year Form 5471 filed";
+      }
+    }
+  }
+  /* An account that opened at nil moved by its whole closing balance: that
+     is the plain case, and it reads as one. */
+  if (opening !== null && !(opening > 0.01 && opening < closing - 0.01)) opening = null;
+  const amount = opening !== null ? r2(closing - opening) : closing;
+  return { amount, label: rows[0].label, addsToEquity, ...(opening !== null ? { closing, opening, openingBasis } : {}) };
 }
 
 /** Does a shareholder name read as a company rather than a person? The
@@ -4607,7 +5737,7 @@ function routeRow(
    is never silent: every caption that lands on a shared row is recorded here,
    named on the row, listed with its amount in an exception, and written out in
    full on the generated workbook's "Attached schedules" sheet. */
-type PoolState = Record<string, { byLabel: Map<string, number>; free: number[]; shared: string[] }>;
+type PoolState = Record<string, { byLabel: Map<string, number>; free: number[]; shared: string[]; groups?: Record<string, string[]> }>;
 
 function makePoolState(): PoolState {
   const s: PoolState = {};
@@ -4625,14 +5755,40 @@ export function resolvePool(
   pools: PoolState,
   target: string,
   label: string,
+  group?: string,
 ): { target: string; relabel?: string; overflowNote?: string; shared?: string[] } {
   const pool = POOLS[target];
   if (!pool) return { target };
   const st = pools[target];
-  const key = label.toLowerCase().trim();
+  /* Accounts of one statement group share one row; the row takes the
+     group's caption once a second account of the group arrives, and keeps
+     the account's own caption while it holds only one. */
+  const key = group ? `group:${group.toLowerCase().trim()}` : label.toLowerCase().trim();
   const prefix = pool.sheet === "is" ? "IS" : "BS";
   const existing = st.byLabel.get(key);
-  if (existing !== undefined) return { target: `${prefix}:${existing}` };
+  if (existing !== undefined) {
+    if (group) {
+      const seen = ((st.groups ||= {})[key] ||= []);
+      if (!seen.includes(label)) seen.push(label);
+      if (seen.length >= 2 && !st.shared.length) return { target: `${prefix}:${existing}`, relabel: group };
+    }
+    /* A group whose first account reached the shared row brings the rest of
+       its accounts there too. Each one is an account on that row, so the
+       caption counts it: the label said "10 accounts" over a row the attached
+       schedule listed 14 on. */
+    if (st.shared.length && existing === st.free[0] && !st.shared.includes(label)) {
+      st.shared.push(label);
+      const shared = [...st.shared];
+      return {
+        target: `${prefix}:${existing}`,
+        relabel: `Other (${shared.length} accounts — see Attached schedules)`,
+        overflowNote: `${shared.length} separate accounts share one "${target}" row because the template offers ${pool.rows.length}: ${shared.join(" · ")}`,
+        shared,
+      };
+    }
+    return { target: `${prefix}:${existing}` };
+  }
+  if (group) (st.groups ||= {})[key] = [label];
   if (st.free.length > 1) {
     const row = st.free.shift()!;
     st.byLabel.set(key, row);
@@ -4678,6 +5834,22 @@ function relatedPartyTarget(label: string, stems: Set<string>): "BS:19" | "BS:52
   if (/\bdr\b|debtor|receivable|owed by|due from|loan to/.test(l)) return "BS:19";
   if (/\bcr\b|creditor|payable|owed to|due to|loan from/.test(l)) return "BS:52";
   return null;
+}
+
+/** The sign of the nearest row above this one, on the same page of the same
+    document, that is printed further left and carries a figure — the total
+    the row belongs to. 0 when there is none. */
+function parentTotalSign(rows: MapRow[], m: MapRow): -1 | 0 | 1 {
+  const at = rows.indexOf(m);
+  const x = typeof m.x0 === "number" ? m.x0 : null;
+  if (at < 0 || x === null) return 0;
+  for (let i = at - 1; i >= 0; i--) {
+    const p = rows[i];
+    if (p.docId !== m.docId || p.row.page !== m.row.page) break;
+    const v = (p.row.values || [])[0];
+    if (typeof p.x0 === "number" && p.x0 < x - 1 && typeof v === "number" && v !== 0) return v < 0 ? -1 : 1;
+  }
+  return 0;
 }
 
 const daysInYear = (y: number) => ((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 366 : 365);
@@ -4918,6 +6090,122 @@ function negativeDeductionTotals(lines: Record<string, LineValue>): string[] {
   return out;
 }
 
+/** The company's books printed under another name.
+
+    A prior-year return with ONE Form 5471 says which corporation this case
+    is about. When every current document then names one other company (and
+    never the corporation itself), that other name is how the same company's
+    books are kept — a trading name, the name of its disregarded LLC, the
+    bookkeeping file's name. It is not a second foreign corporation: a second
+    corporation would have its own Form 5471, or its own statements beside
+    this one's. Treating it as one held back every statement page and booked
+    nothing. The preparer is still asked to confirm the legal name; a "no,
+    different company" answer switches this off. Returns null whenever the
+    papers could be two companies. */
+export function booksNameAlias(
+  docs: Array<{ kind: string; entityName?: string | null; foreignCorpName?: string | null; duplicateOf?: string | null;
+    blocks5471?: Array<{ cfcName?: string | null }> }>,
+  otherEntityNames: string[],
+  decision?: { sameEntity: boolean } | null,
+): { alias: string; cfcName: string } | null {
+  if (decision && decision.sameEntity === false) return null;
+  const live = docs.filter((d) => !d.duplicateOf);
+  const distinct = (names: string[]) => {
+    const out: string[] = [];
+    for (const n of names) {
+      const t = String(n || "").trim();
+      if (t && !out.some((o) => entitySimilarity(o, t) >= 0.5)) out.push(t);
+    }
+    return out;
+  };
+  const prior = distinct(live.filter((d) => d.kind === "prior-year-us-return").flatMap((d) => {
+    const blocks = (d.blocks5471 || []).map((b) => String(b.cfcName || "")).filter(Boolean);
+    return blocks.length ? blocks : [String(d.foreignCorpName || d.entityName || "")];
+  }));
+  if (prior.length !== 1) return null;
+  const current = live.filter((d) => d.kind !== "prior-year-us-return");
+  if (current.some((d) => d.entityName && entitySimilarity(String(d.entityName), prior[0]) >= 0.5)) return null;
+  const others = distinct(current.map((d) => String(d.entityName || "")));
+  if (others.length !== 1) return null;
+  const real = otherEntityNames.map((n) => String(n || "").trim()).filter((n) => n && !/^entity \d+$/i.test(n));
+  if (real.some((n) => entitySimilarity(n, others[0]) >= 0.5 || entitySimilarity(n, prior[0]) >= 0.5)) return null;
+  return { alias: others[0], cfcName: prior[0] };
+}
+
+/** Schedule F at whole US dollars.
+
+    Every line is rounded on its own (the template's USD columns), so a
+    balance sheet that ties to the cent can be a dollar or two out once
+    rounded — the form then does not foot. The preparer is told by how much
+    and where the usual fix goes (retained earnings), instead of finding a
+    stray figure on the check row. Rounding only: nothing when the
+    functional-currency columns do not tie, or when the gap is bigger than
+    the number of rounded lines could make it. */
+export function usdRoundingGaps(lines: Entity["lines"], cyRate: number | null, pyRate: number | null): ReviewItem[] {
+  const out: ReviewItem[] = [];
+  for (const [field, rate, col] of [["eoy", cyRate, "H"], ["boy", pyRate, "G"]] as const) {
+    if (!rate || !isFinite(rate) || rate <= 0) continue;
+    let assets = 0, lc = 0, assetsUsd = 0, lcUsd = 0, n = 0;
+    for (const l of BS_LINES) {
+      const v = lines[`BS:${l.row}`]?.[field];
+      if (typeof v !== "number" || !isFinite(v)) continue;
+      const usd = Math.round(v / rate);
+      n++;
+      if (/assets/i.test(l.group)) { assets += v; assetsUsd += usd; }
+      else if (l.row === 62) { lc -= v; lcUsd -= usd; }
+      else { lc += v; lcUsd += usd; }
+    }
+    const gap = assetsUsd - lcUsd;
+    if (!n || Math.abs(assets - lc) >= 0.01 || gap === 0 || Math.abs(gap) > n) continue;
+    out.push({
+      id: `usd-rounding-${field}`, level: "warn", category: "tie-out",
+      message: `At whole US dollars Schedule F is out by ${gap} at the ${field === "eoy" ? "end" : "beginning"} of the year (assets ${assetsUsd.toLocaleString()}, liabilities and equity ${lcUsd.toLocaleString()}), although it ties to the cent in the local-currency column: each line is rounded on its own. The filed form must foot — adjust retained earnings (line 22, USD column ${col}61) by ${gap > 0 ? "+" : ""}${gap} when filing, the usual home for a rounding difference.`,
+      target: `${SHEET.bs}!${col}61`,
+    });
+  }
+  return out;
+}
+
+/** Which class of stock the capital is, as the prior return filed it.
+ *
+ * A statement prints "Contributed capital" or "Share capital" without saying
+ * preferred or common, and the catalogue's default is common stock (line
+ * 20b). When last year's filed Schedule F carried the capital on line 20a
+ * (preferred) and nothing on 20b, this year follows the filing: the same
+ * shares do not change class between years, and the reviewed paper that
+ * prompted this kept them on 20a. A caption that names its class, a
+ * preparer's own assignment, and a line 20a the documents already fill are
+ * all left alone. Returns the moved maps, or null when nothing moves. */
+export function capitalClassFromPrior(
+  ent: Pick<Entity, "lines" | "contributions" | "sourceLabels" | "relabels" | "mapOverrides">,
+  prior: { preferredStock?: number; commonStock?: number },
+): Pick<Entity, "lines" | "contributions" | "sourceLabels" | "relabels"> | null {
+  const pf = prior.preferredStock, cs = prior.commonStock;
+  if (!(typeof pf === "number" && pf > 0) || (typeof cs === "number" && cs !== 0)) return null;
+  const from = ent.lines["BS:59"];
+  if (!from) return null;
+  const to = ent.lines["BS:58"] || {};
+  const fields = (["boy", "eoy"] as const).filter((f) => typeof from[f] === "number");
+  if (!fields.length || fields.some((f) => typeof to[f] === "number")) return null;
+  const caps = ent.contributions?.["BS:59"] || [];
+  const ov = ent.mapOverrides || {};
+  if (caps.some((c) => c.via === "manual" || c.via === "groq"
+      || /\b(common|ordinary|preferred|preference)\b/i.test(c.label)
+      || ov[norm(c.label)] !== undefined)) return null;
+  const lines: Entity["lines"] = { ...ent.lines, "BS:58": { ...to, ...Object.fromEntries(fields.map((f) => [f, from[f]])) } };
+  delete lines["BS:59"];
+  const contributions = { ...(ent.contributions || {}) };
+  contributions["BS:58"] = [...(contributions["BS:58"] || []), ...caps];
+  delete contributions["BS:59"];
+  const sourceLabels = { ...(ent.sourceLabels || {}) };
+  if (sourceLabels["BS:59"] && !sourceLabels["BS:58"]) sourceLabels["BS:58"] = sourceLabels["BS:59"];
+  delete sourceLabels["BS:59"];
+  const relabels = { ...(ent.relabels || {}) };
+  if (relabels["BS:59"] && !relabels["BS:58"]) relabels["BS:58"] = relabels["BS:59"];
+  delete relabels["BS:59"];
+  return { lines, contributions, sourceLabels, relabels };
+}
+
 /* The same figure, read twice off one page.
  *
  * A rule booked "Net turnover 10,400" from page 10 of a scanned Dutch annual
@@ -4983,6 +6271,49 @@ export function manualApply(
   return true;
 }
 
+/** The filer's share of a distribution to all shareholders: its own
+    ownership percentage, or the whole when that is unknown or 100%. */
+function filerShare(ent: Entity): number {
+  const pct = Number(ent.ownership.ownEnd || ent.ownership.ownStart || 0);
+  return pct > 0 && pct < 100 ? pct / 100 : 1;
+}
+
+/** Who received a distribution, by the register of direct holders. A
+    dividend is paid on the shares a person holds directly, so when the
+    register names two or more holders the distribution splits by their
+    closing share counts — the filer's stock ownership for the filer
+    categories may be larger (family attribution), but that is not what they
+    were paid. One or no named holder: null, and the caller keeps its old
+    single-recipient behaviour. The last holder takes the rounding so the
+    parts add back to the whole. */
+export function distributionSplit(ent: Entity, amount: number): Array<{ name: string; share: number; amount: number }> | null {
+  const holders = (ent.shareholders || []).filter((h) => (Number(h.eoy) || Number(h.boy) || 0) > 0 && String(h.name || "").trim());
+  const total = holders.reduce((n, h) => n + (Number(h.eoy) || Number(h.boy) || 0), 0);
+  if (holders.length < 2 || !(total > 0)) return null;
+  /* Only when every holder is a U.S. shareholder of the work paper: then the
+     parts are the distributions the U.S. persons received and they add up to
+     the whole. With a foreign holder in the register the schedule keeps the
+     single row of the whole distribution, as the reviewed papers do. */
+  const key = (n: string) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const us = ent.usShareholders || [];
+  if (!holders.every((h) => us.some((u) => samePerson(u.name, h.name) || key(u.name) === key(h.name)))) return null;
+  let left = amount;
+  return holders.slice(0, 14).map((h, i, arr) => {
+    const share = (Number(h.eoy) || Number(h.boy) || 0) / total;
+    const part = i === arr.length - 1 ? r2(left) : r2(amount * share);
+    left = r2(left - part);
+    return { name: h.name, share, amount: part };
+  });
+}
+
+/** The filer's own part of a distribution: the register's direct share when
+    the filer is one of two or more named holders, else the ownership share. */
+function dividendShareOfFiler(ent: Entity): number {
+  const split = distributionSplit(ent, 1);
+  const me = split && ent.profile.clientName ? split.find((h) => samePerson(h.name, ent.profile.clientName || "")) : null;
+  return me ? me.share : filerShare(ent);
+}
+
 /* ---------------- targeted document facts ---------------- */
 
 type EquityFacts = {
@@ -5012,6 +6343,51 @@ function pullEquityFacts(pdf: NonNullable<ParsedDoc["pdf"]>, pages: Set<number>,
     else if (out.profitCY === null && /(net )?(profit|loss)/.test(l) && !/retained/.test(l)) {
       // "Loss for the year 25,164" prints positive; a loss-only caption means negative.
       out.profitCY = /\bloss\b/.test(l) && !/\bprofit\b/.test(l) ? -Math.abs(v) : v;
+    }
+  }
+  if (out.dividendsCY === null || out.profitCY === null) {
+    const col = columnarEquityFacts(pdf, pages);
+    if (out.dividendsCY === null && col.dividends !== null) out.dividendsCY = col.dividends;
+    if (out.profitCY === null && col.profit !== null) out.profitCY = col.profit;
+  }
+  return out;
+}
+
+/* A UK statement of changes in equity runs its columns by RESERVE (Share
+   capital | Share premium | Retained earnings | Total equity) and prints no
+   year header: its two years are told apart only by the balance lines
+   between them ("At 1 December 2022", "At 30 November 2023 and 1 December
+   2023", "At 30 November 2024"). The current year is the block between the
+   last two of those lines. A movement that touches one reserve prints the
+   same figure in that reserve's column and in the total, so a line whose
+   figures all agree is read; anything else is left alone. */
+function columnarEquityFacts(pdf: NonNullable<ParsedDoc["pdf"]>, pages: Set<number>): { dividends: number | null; profit: number | null } {
+  const out = { dividends: null as number | null, profit: null as number | null };
+  const lines: { label: string; nums: number[] }[] = [];
+  for (const r of pdf.rows) {
+    if (!pages.has(r.page)) continue;
+    let label = "";
+    const nums: number[] = [];
+    for (const c of r.cells) {
+      const t = c.text.trim();
+      const n = label ? numericCell(t) : null;
+      if (n !== null) nums.push(n);
+      else if (!label && /[a-z]/i.test(t)) label = t;
+    }
+    lines.push({ label, nums });
+  }
+  const bounds = lines.map((l, i) => (/^(?:balance\s+)?(?:at|as\s+at)\s+\d{1,2}(?:st|nd|rd|th)?\s+[a-z]+/i.test(l.label) ? i : -1)).filter((i) => i >= 0);
+  if (bounds.length < 2) return out;
+  const block = lines.slice(bounds[bounds.length - 2] + 1, bounds[bounds.length - 1]);
+  const one = (nums: number[]) =>
+    nums.length && nums.every((v) => Math.abs(Math.abs(v) - Math.abs(nums[0])) <= 0.5) ? nums[0] : null;
+  for (const l of block) {
+    const v = one(l.nums);
+    if (v === null) continue;
+    const lab = l.label.toLowerCase();
+    if (out.dividends === null && /dividend/.test(lab)) out.dividends = Math.abs(v);
+    else if (out.profit === null && /\b(profit|loss)\b/.test(lab) && !/retained/.test(lab)) {
+      out.profit = /\bloss\b/.test(lab) && !/\bprofit\b/.test(lab) ? -Math.abs(v) : v;
     }
   }
   return out;
@@ -5113,6 +6489,11 @@ export async function materializeCaseWrites(
   const cyRate = numeric(ent.fx.cyRate);
   const pyRate = numeric(ent.fx.pyRate);
   const w = (write: CellWrite) => list.push(write);
+  /* The year's distribution: an equity-movement statement, an Australian
+     return's franked dividends, or — when neither — a dividend line printed
+     inside the balance sheet's equity ("Dividend Payouts 43,478"). */
+  const eqDiv = equityDividendLine(ent);
+  const divPlanned = equity?.dividendsCY ?? ato.frankedDividendsPaid ?? eqDiv?.amount ?? null;
 
   /* ---- carry-forward: separate-category code ---- */
   /* The template ships with "FB - Foreign Branch" selected on Schedule J,
@@ -5146,10 +6527,18 @@ export async function materializeCaseWrites(
      Information, and both were being left blank for the preparer to copy
      across by hand. Nothing is written that is not already known. */
   {
-    const unitName = ent.profile.legalName;
+    /* A corporation whose accounts are kept under another company's name
+       (a disregarded LLC, a trading name — see booksNameAlias) reports that
+       business as its tested unit; the reviewed paper named the unit after
+       the books, not the corporation. */
+    const legal = String(ent.profile.legalName || "");
+    const booksName = (ent.nameAliases || []).find((a) => entitySimilarity(a, legal) < 0.5)
+      || (ent.nameMismatch && entitySimilarity(ent.nameMismatch.priorName, legal) >= 0.5 ? ent.nameMismatch.statementName : "")
+      || "";
+    const unitName = booksName || ent.profile.legalName;
     const code = irsCountryCode(ent.profile.countryInc);
     if (unitName) {
-      w({ sheet: SHEET.schQ, ref: "C57", value: unitName, source: `Basic Information B11 · legal name`, reviewId: "schq-unit" });
+      w({ sheet: SHEET.schQ, ref: "C57", value: unitName, source: booksName ? "the books name the statements are kept under — confirm it is the tested unit" : `Basic Information B11 · legal name`, reviewId: "schq-unit" });
     }
     if (code) {
       w({ sheet: SHEET.schQ, ref: "F57", value: code, source: `Basic Information B19 "${ent.profile.countryInc}" · IRS country code`, reviewId: "schq-unit" });
@@ -5169,6 +6558,56 @@ export async function materializeCaseWrites(
     }
   }
 
+  /* ---- Schedule Q's tested-income unit: the figures ----
+     Written when the workbook is generated (buildWrites), from the lines as
+     they stand then, so a remap made after processing — "Business tax" moved
+     to line 21a — reaches Schedule Q. Here only the note. */
+  if (Object.keys(ent.lines).some((k) => k.startsWith("IS:"))) {
+    rv({
+      id: "schq-figures", level: "info", category: "consistency", applied: true,
+      message: "Schedule Q unit 1 carries Schedule C's gross income (line 10 less line 8a), deductions (line 18) and income taxes (line 21a), taken when the workbook is generated. If the corporation has more than one tested unit, split them by hand.",
+      target: `${SHEET.schQ}!H57`,
+    });
+  }
+
+  /* ---- the GILTI high-tax exception: named, never elected ----
+     A tax rate above 18.9% (90% of the 21% U.S. rate) lets the shareholder
+     elect to exclude the income from tested income. That is the filer's
+     election, not a figure the documents prove, so the tool does not make
+     it; it says the test is met and what the election changes. */
+  {
+    const ni = bookNetIncome(ent.lines);
+    const tax = Number(ent.lines["IS:62"]?.amount) || 0;
+    if (ni !== null && tax > 0 && ni + tax > 0 && tax / (ni + tax) > 0.189) {
+      const etr = r2((tax / (ni + tax)) * 100);
+      rv({
+        id: "hte-candidate", level: "warn", category: "consistency",
+        message: `Income tax ${tax.toLocaleString()} on pre-tax income ${r2(ni + tax).toLocaleString()} is an effective rate of ${etr}%, above the 18.9% high-tax threshold (90% of the 21% U.S. rate). If the U.S. shareholder elects the GILTI high-tax exception, the income is excluded from tested income (Form 8992 nil) and the tax is shown in Schedule E Part III "Other" (row 38) instead of Part I row 16. The tool has not made the election — confirm it with the preparer and move the tax if it is elected.`,
+        target: `${SHEET.schE}!Q38`,
+      });
+    }
+  }
+
+  /* ---- Schedule H line 2i: donations, offered — not written ----
+     Reviewers differ: the Blue Water Grill paper adds its donations back as
+     "Non Deductible", the HMC paper leaves a 114,000 donation in E&P (under
+     U.S. principles a gift generally does reduce earnings and profits). So
+     the add-back is offered with its amount; confirming it (Resubmit with the
+     value) writes Schedule H C21/E21, acknowledging leaves E&P as booked. */
+  {
+    const gifts = Object.entries(ent.contributions).filter(([k]) => k.startsWith("IS:"))
+      .flatMap(([, cs]) => cs).filter((c) => c.field === "amount" && /\b(donations?|charit(?:y|able)|gifts?\s+to)\b/i.test(c.label));
+    const total = r2(gifts.reduce((n, c) => n + c.value, 0));
+    if (total > 0) {
+      rv({
+        id: "schh-nondeductible", level: "warn", category: "consistency",
+        suggestedValue: total,
+        message: `${total.toLocaleString()} of donations (${gifts.map((c) => `"${c.label}"`).join(", ")}) is deducted on Schedule C. If your practice treats it as not deductible for earnings and profits, confirm this item with ${total.toLocaleString()} to add it back on Schedule H line 2i (C21/E21); otherwise acknowledge it and E&P keeps the deduction.`,
+        target: `${SHEET.schH}!E21`,
+      });
+    }
+  }
+
   /* ---- carry-forward: opening E&P, shareholding, prior-filed USD ---- */
   if (cf?.openingEP && !cfStale) {
     w({
@@ -5176,6 +6615,28 @@ export async function materializeCaseWrites(
       source: `${cfSource} p.${cf.openingEP.page} · prior Sch J line 14`, reviewId: "cf-opening-ep",
       prov: { docName: cfSource, page: cf.openingEP.page, rowText: cf.openingEP.rowText },
     });
+    /* The previously taxed E&P the prior return closed with opens this year
+       in the same column: (e)(i) is column N, each next numeral two columns
+       on, (e)(x) is AF. Schedule P reads them from here. */
+    const PTEP_COL: Record<string, string> = { b: "H", c: "J", d: "L", i: "N", ii: "P", iii: "R", iv: "T", v: "V", vi: "X", vii: "Z", viii: "AB", ix: "AD", x: "AF" };
+    const carried: string[] = [];
+    for (const [roman, v] of Object.entries(cf.priorPtep || {})) {
+      const col = PTEP_COL[roman];
+      if (!col || !v.value) continue;
+      w({
+        sheet: SHEET.schJ, ref: `${col}15`, value: v.value,
+        source: `${cfSource} p.${v.page} · prior Sch J line 14, column ${/^[bcd]$/.test(roman) ? `(${roman})` : `(e)(${roman})`}`, reviewId: "cf-opening-ptep",
+        prov: { docName: cfSource, page: v.page, rowText: v.rowText },
+      });
+      carried.push(`${/^[bcd]$/.test(roman) ? `(${roman})` : `(e)(${roman})`} ${v.value.toLocaleString()}`);
+    }
+    if (carried.length) {
+      rv({
+        id: "cf-opening-ptep", level: "warn", category: "carry-forward", applied: true,
+        message: `Other Schedule J columns carried from ${cfSource} (prior-year Schedule J line 14): ${carried.join(", ")}. Each opens Schedule J line 1a in the same column, and Schedule P reads the previously taxed E&P from there. Confirm before filing.`,
+        target: `${SHEET.schJ}!F15`, source: cfSource,
+      });
+    }
     const priorTax = cf.priorTaxAccruedFunctional?.value;
     const ccy = ent.profile.currency || "local";
     rv({
@@ -5187,6 +6648,43 @@ export async function materializeCaseWrites(
         " Confirm before filing.",
       target: `${SHEET.schJ}!F15`, source: cfSource, suggestedValue: cf.openingEP.value,
     });
+  }
+  /* ---- no prior return: the opening read from the balance sheet itself ----
+     A Latin-American balance sheet closes equity with the year's result on
+     its own row ("RESULTADO DEL EJERCICIO -90,666,927") beside the earnings
+     brought forward ("UTILIDADES ACUMULADAS 30,010,429"). With no prior
+     Form 5471 and no prior-year column, Schedule J line 1a and the Retained
+     Earnings tab opened blank, so the tab could not tie and Schedule J closed
+     at the year's loss alone. The earnings brought forward ARE the opening
+     balance, less any distribution already taken out of them, so that is
+     what is written — flagged, because E&P follows tax rules and a prior
+     return, when one arrives, outranks it. Only when the equity's result row
+     equals the booked net income: that is what proves the other rows are
+     the opening balance and not this year's figures. */
+  if (!cf && ent.lines["BS:61"]?.boy === undefined) {
+    const re61 = (ent.contributions["BS:61"] || []).filter((c) => c.field === "eoy");
+    const ni = bookNetIncome(ent.lines);
+    const result = re61.filter((c) => isProfitLine(c.label));
+    /* A dividend printed in equity is this year's movement too, like the
+       result: the earnings row beside them is the opening balance as it
+       stands ("Retained Earnings 824,781.28" next to "Dividends -728,941.18"). */
+    const isDivRow = (c: Contribution) => /\b(dividends?|distributions?|drawings?|withdrawals?|dividendos?|retiros?)\b/i.test(c.label) && !/\b(payable|por pagar)\b/i.test(c.label);
+    const divRows = re61.filter((c) => !isProfitLine(c.label) && isDivRow(c));
+    const rest = re61.filter((c) => !isProfitLine(c.label) && !isDivRow(c));
+    if (ni !== null && result.length === 1 && rest.length
+      && Math.abs(result[0].value - ni) <= Math.max(2, Math.abs(ni) * 1e-5)) {
+      // Distributions are added back only when equity does not print them.
+      const distributions = divRows.length ? 0 : r2((ent.dividends || []).reduce((n, d) => n + (Number(d.amountFunctional) || 0), 0));
+      const opening = r2(rest.reduce((n, c) => n + c.value, 0) + distributions);
+      const source = `${rest.map((c) => `"${c.label}"`).join(" + ")} on the balance sheet${distributions ? ` + distributions ${distributions.toLocaleString()}` : ""}`;
+      w({ sheet: SHEET.schJ, ref: "F15", value: opening, source, reviewId: "book-opening-ep" });
+      w({ sheet: SHEET.re, ref: "F10", value: opening, source, reviewId: "book-opening-ep", replaceFormula: true });
+      rv({
+        id: "book-opening-ep", level: "warn", category: "carry-forward", applied: true,
+        message: `No prior-year Form 5471 was supplied, so Schedule J line 1a and the opening retained earnings were taken from the balance sheet: ${source} = ${opening.toLocaleString()}. The statement shows this year's result ("${result[0].label}" ${result[0].value.toLocaleString()}) on its own row, so the remaining retained earnings are the balance brought forward. E&P follows tax rules and can differ from book retained earnings — replace it with the prior return's Schedule J line 14 when you have it.`,
+        target: `${SHEET.schJ}!F15`, suggestedValue: opening,
+      });
+    }
   }
   /* Shareholding rows 19–26: the edited/seeded shareholder list first, the
      legacy single-holder facts second. Demo rows A/B/C/D (60/20/10/10) are
@@ -5400,9 +6898,9 @@ export async function materializeCaseWrites(
       const cy = cyRate && Math.abs(cyRate - stated) / stated > 0.005 ? ` The current year-end rate ${cyRate} differs from it in the same way.` : "";
       rv({
         id: "fx-prior-rate", level: "warn", category: "fx",
-        message: `The prior filing states an exchange rate of ${stated} (${cfSource} p.${cf.priorRate.page}); the rate table gives ${pyRate} for the prior year end. The opening column uses the prior filing's stated rate so it continues that filing consistently. Re-translated at the table rate ${pyRate} instead: ${
+        message: `The prior filing states an exchange rate of ${stated} (${cfSource} p.${cf.priorRate.page}); the rate table gives ${pyRate} for the prior year end. One rate is used for the prior year end: the opening column is translated at the prior-year rate in Basic Information C61 (${pyRate}), the same cell the workbook's USD columns divide by. At the table rate instead of the filed rate: ${
           fx.lines.map((l) => `${l.label} ${l.atPrior.toLocaleString()} → ${l.atTable.toLocaleString()} (${l.diff > 0 ? "+" : ""}${l.diff.toLocaleString()})`).join("; ")
-        }; net current assets ${fx.net.atPrior.toLocaleString()} → ${fx.net.atTable.toLocaleString()} (${fx.net.diff > 0 ? "+" : ""}${fx.net.diff.toLocaleString()}). The column ties to the prior filing in USD either way; at the table rate, functional-currency opening figures move by that amount.${cy} Use the table rate only when the preparer explicitly elects it in Basic Information C61.`,
+        }; net current assets ${fx.net.atPrior.toLocaleString()} → ${fx.net.atTable.toLocaleString()} (${fx.net.diff > 0 ? "+" : ""}${fx.net.diff.toLocaleString()}). The column ties to the prior filing in USD either way; at the table rate, functional-currency opening figures move by that amount.${cy} To continue the prior filing's rate instead, enter ${stated} in C61 and re-process — the opening column always follows C61.`,
         target: `${SHEET.basic}!C61`, source: cfSource, suggestedValue: stated,
       });
     }
@@ -5426,7 +6924,27 @@ export async function materializeCaseWrites(
         const rateUsed = opening?.rate ?? null;
         const priorFc = rateUsed ? r2(filedUsd * rateUsed) : null;
         const ni = bookNetIncome(ent.lines);
-        const distributions = r2(ent.dividends.reduce((n, d) => n + (Number(d.amountFunctional) || 0), 0));
+        const distributions = ent.dividends.length
+          ? r2(ent.dividends.reduce((n, d) => n + (Number(d.amountFunctional) || 0), 0))
+          : r2(divPlanned ?? 0);
+        /* The books themselves, before any exchange rate: last year's closing
+           column + this year's result − this year's distribution must equal
+           this year's closing column. When it does not, the difference is in
+           the client's own figures, and calling it translation would hide it. */
+        /* Only an opening figure the statements print themselves (their
+           prior-year column) is "the books": one carried from last year's
+           return is exactly what the translation comparison below is for. */
+        const boyRows = (ent.contributions["BS:61"] || []).filter((c) => c.field === "boy");
+        const booksBoy = boyRows.length ? r2(boyRows.reduce((n, c) => n + c.value, 0)) : null;
+        const localGap = booksBoy !== null && ni !== null ? r2(closing - (booksBoy + ni - distributions)) : null;
+        const booksBroken = localGap !== null && Math.abs(localGap) > Math.max(1, Math.abs(closing) * 0.001);
+        if (booksBroken && ni !== null && booksBoy !== null) {
+          rv({
+            id: "re-books-not-rolling", level: "warn", category: "consistency",
+            message: `The client's own retained earnings do not add up, before any exchange rate: opening ${booksBoy.toLocaleString()} + net income ${ni.toLocaleString()} − distributions ${distributions.toLocaleString()} = ${r2(booksBoy + ni - distributions).toLocaleString()}, but the balance sheet closes with ${closing.toLocaleString()} (${ent.profile.currency || "functional currency"}) — ${localGap!.toLocaleString()} apart. Ask the client for corrected statements; Schedule F carries the balance sheet as printed and nothing has been adjusted.`,
+            target: `${SHEET.bs}!F61`, source: cfSource,
+          });
+        }
         if (priorFc !== null && ni !== null) {
           w({
             sheet: SHEET.re, ref: "F10", value: priorFc, reviewId: "re-rollforward",
@@ -5435,12 +6953,21 @@ export async function materializeCaseWrites(
           const booksOpening = r2(closing - ni + distributions);
           const residual = r2(booksOpening - priorFc);
           const ties = Math.abs(residual) <= 1;
+          /* One rate for everything (a US-dollar corporation, or three equal
+             rates) cannot produce a translation difference: the residual is
+             an equity movement the books made — owner draws, a prior-period
+             adjustment, capital moved into retained earnings. Offering it as
+             "translation" put a -9,588 currency adjustment on a USD company. */
+          const rateVals = [ent.fx?.avgRate, ent.fx?.cyRate, ent.fx?.pyRate].map((v) => Number(v)).filter((v) => isFinite(v) && v > 0);
+          const oneRate = String(ent.profile.currency || "").toUpperCase() === "USD"
+            || (rateVals.length === 3 && rateVals.every((v) => Math.abs(v - rateVals[0]) < 1e-9));
+          const residualCell = oneRate ? "F25" : "F24";
           rv({
             id: "re-rollforward", level: ties ? "info" : "warn", category: "consistency", applied: true,
             message: ties
               ? `Retained earnings roll forward: prior filing ${priorFc.toLocaleString()} + net income ${ni.toLocaleString()} − distributions ${distributions.toLocaleString()} = ${closing.toLocaleString()} per Schedule F. Ties.`
-              : `Retained earnings do not roll forward. Prior filing closed at US$${filedUsd.toLocaleString()} = ${priorFc.toLocaleString()} at ${rateUsed}; the books' closing ${closing.toLocaleString()} less net income ${ni.toLocaleString()} plus distributions ${distributions.toLocaleString()} implies an opening of ${booksOpening.toLocaleString()}. Difference ${residual.toLocaleString()} — a re-statement, a rate difference, or a prior return prepared from other figures. Nothing has been plugged: confirm the cause and enter it on the Retained Earnings tab (F24) so the tab ties to Schedule F.`,
-            target: `${SHEET.re}!F24`, source: cfSource, suggestedValue: residual,
+              : `Retained earnings do not roll forward. Prior filing closed at US$${filedUsd.toLocaleString()} = ${priorFc.toLocaleString()} at ${rateUsed}; the books' closing ${closing.toLocaleString()} less net income ${ni.toLocaleString()} plus distributions ${distributions.toLocaleString()} implies an opening of ${booksOpening.toLocaleString()}. Difference ${residual.toLocaleString()} — ${oneRate ? "not a rate difference (one rate applies throughout), so a movement in the books themselves: owner draws, a prior-period adjustment, or capital moved into retained earnings" : "a re-statement, a rate difference, or a prior return prepared from other figures"}. Nothing has been plugged: confirm the cause and enter it on the Retained Earnings tab (${residualCell}) so the tab ties to Schedule F.`,
+            target: `${SHEET.re}!${residualCell}`, source: cfSource, suggestedValue: residual,
           });
           /* The residual, offered as a single controlled action.
              Deliberately its OWN item: "re-rollforward" already owns the F10
@@ -5448,7 +6975,14 @@ export async function materializeCaseWrites(
              filing's opening balance instead of booking an adjustment. This
              one carries no write until the preparer signs one off, so nothing
              is ever plugged on its own. */
-          if (!ties) {
+          if (!ties && !booksBroken && oneRate) {
+            rv({
+              id: "re-equity-movement", level: "warn", category: "consistency",
+              message: `Retained earnings moved by ${residual.toLocaleString()} beyond this year's net income and distributions. With one exchange rate throughout this is not currency translation — it is a movement in the client's own equity: owner draws or contributions, a prior-period adjustment, or capital reclassified into retained earnings. If it was a distribution, enter it on the Dividends tab instead (it then reaches Schedules J, M and R). Otherwise book it as an other adjustment on the Retained Earnings tab (F25): saving the figure signs it off in your name with its own audit line. Leave it alone to keep the difference visible.`,
+              target: `${SHEET.re}!F25`, source: cfSource, suggestedValue: residual,
+            });
+          }
+          if (!ties && !booksBroken && !oneRate) {
             rv({
               id: "re-translation-adjustment", level: "warn", category: "consistency",
               message: `Book the ${residual.toLocaleString()} difference as a translation adjustment on the Retained Earnings tab (F24)? Saving the figure signs it off in your name, writes it with its own audit line, and makes the tab tie to Schedule F. Do this only if the difference IS translation — a re-statement or a prior return built from other figures needs the cause fixed, not a plug. Leave it alone to keep the difference visible.`,
@@ -5464,9 +6998,13 @@ export async function materializeCaseWrites(
       const boyRe = numeric(String(ent.lines["BS:61"]?.boy ?? ""));
       if (boyRe !== null && cf.openingEP && Math.abs(boyRe - cf.openingEP.value) > 1) {
         const impliedRate = cf.priorClosingUSD.re?.value && cf.openingEP.value ? Math.round(cf.priorClosingUSD.re.value / cf.openingEP.value * 1e6) / 1e6 : null;
+        /* Book retained earnings (Schedule F) and earnings and profits
+           (Schedule J) are different measures: E&P follows tax rules and the
+           two differ whenever there are tax adjustments. The gap is shown so
+           it can be checked, not called an error. */
         rv({
-          id: "re-opening-mismatch", level: "warn", category: "consistency",
-          message: `Schedule F opens retained earnings at ${boyRe.toLocaleString()} (the filed US$${(cf.priorClosingUSD.re?.value ?? 0).toLocaleString()} at the ${ent.profile.pyEnd || "prior year-end"} rate ${pyRate ?? "—"}), while Schedule J line 1a carries ${cf.openingEP.value.toLocaleString()} as filed in functional currency — a difference of ${r2(boyRe - cf.openingEP.value).toLocaleString()}.${impliedRate ? ` The prior filing's own figures imply a rate of ${impliedRate}` : ""}${cf.priorRate ? `, and it states ${cf.priorRate.value} on Schedule H` : ""}. Both are the same year-end balance; one rate should serve both.`,
+          id: "re-opening-mismatch", level: "info", category: "consistency",
+          message: `Schedule F opens book retained earnings at ${boyRe.toLocaleString()} (the filed US$${(cf.priorClosingUSD.re?.value ?? 0).toLocaleString()} at the ${ent.profile.pyEnd || "prior year-end"} rate ${pyRate ?? "—"}); Schedule J line 1a opens earnings and profits at ${cf.openingEP.value.toLocaleString()} as filed — ${r2(boyRe - cf.openingEP.value).toLocaleString()} apart. E&P follows tax rules, so the two usually differ; confirm the difference is the prior year's tax adjustments.`,
           target: `${SHEET.bs}!D61`, source: cfSource,
         });
       }
@@ -5481,7 +7019,7 @@ export async function materializeCaseWrites(
     if (cf.referenceIds.length) {
       rv({
         id: "cf-refid", level: "info", category: "carry-forward",
-        message: `Reference ID ${cf.referenceIds[0]} must be identical on every year's filing; the template has no designated cell for it — carry it on the form itself.`,
+        message: `Reference ID ${cf.referenceIds[0]} carried to Basic Information B5 — it must be identical on every year's filing.`,
         source: cfSource, suggestedValue: cf.referenceIds[0],
       });
     }
@@ -5517,8 +7055,32 @@ export async function materializeCaseWrites(
      this year's statements show no distribution either, the work paper
      carries the same row, dated this year end, rather than an empty schedule
      that reads as "not considered". */
-  const divAmount = equity?.dividendsCY ?? ato.frankedDividendsPaid ?? null;
-  if (!divAmount && cf?.schRNone && !ent.dividends.length) {
+  const divAmount = divPlanned;
+  /* A dividend seen only as a line of the balance sheet's equity proves a
+     distribution was DECLARED, not that it was paid in the year. It goes on
+     the Dividends tab; Schedule R and Schedule J line 9 stay as the prior
+     filing had them until the preparer confirms the payment. */
+  const fromEqLine = !!divAmount && !equity?.dividendsCY && !ato.frankedDividendsPaid && !!eqDiv && eqDiv.addsToEquity;
+  if (fromEqLine && eqDiv) {
+    rv({
+      id: "dividend-from-equity-line", level: "warn", category: "consistency", applied: true,
+      message: `The balance sheet prints "${eqDiv.label}" ${eqDiv.amount.toLocaleString()} inside equity for this year. It is recorded on the Dividends tab. Schedule R, Schedule J line 9 and Schedule M are left as the prior filing had them: a line in the balance sheet shows a dividend was declared, not that it was paid in the year — enter it there if it was paid. The statement adds it to equity rather than taking it out of retained earnings, so Schedule F line 22 carries it as printed; confirm the dividend and the equity figures with the client.${filerShare(ent) < 1 ? ` The filer holds ${r2(filerShare(ent) * 100)}%, so the filer's share is ${r2(eqDiv.amount * filerShare(ent)).toLocaleString()}.` : ""}`,
+      target: `${SHEET.dividends}!C3`,
+    });
+  } else if (divAmount && eqDiv && !equity?.dividendsCY && !ato.frankedDividendsPaid && eqDiv.opening !== undefined) {
+    rv({
+      id: "dividend-from-equity-line", level: "warn", category: "consistency", applied: true,
+      message: `The balance sheet's "${eqDiv.label}" account closes at ${(eqDiv.closing ?? 0).toLocaleString()} and opened the year at ${eqDiv.opening.toLocaleString()} (${eqDiv.openingBasis}), so this year's distribution is the movement, ${eqDiv.amount.toLocaleString()} — the rest was paid in earlier years and is still sitting in the account because the books have not closed it into retained earnings. It is recorded as the year's distribution (Dividends tab, Schedule R, Schedule J line 9). Confirm the payment dates and amounts with the client${eqDiv.openingBasis?.startsWith("the retained") ? ", and check the opening balance against last year's balance sheet: a figure derived from a return rounded to whole dollars can be a few units out" : ""}.`,
+      target: `${SHEET.dividends}!C3`,
+    });
+  } else if (divAmount && eqDiv && !equity?.dividendsCY && !ato.frankedDividendsPaid) {
+    rv({
+      id: "dividend-from-equity-line", level: "warn", category: "consistency", applied: true,
+      message: `The balance sheet prints "${eqDiv.label}" (${eqDiv.amount.toLocaleString()}) as a reduction of equity for this year. It is recorded as the year's distribution (Dividends tab, Schedule R, Schedule J line 9). Confirm the payment date and amount with the client.${filerShare(ent) < 1 ? ` The filer holds ${r2(filerShare(ent) * 100)}%, so the filer's share is ${r2(eqDiv.amount * filerShare(ent)).toLocaleString()}; Schedule R shows the whole distribution — reduce it if the return reports the filer's share only.` : ""}`,
+      target: `${SHEET.dividends}!C3`,
+    });
+  }
+  if ((!divAmount || fromEqLine) && cf?.schRNone && (fromEqLine || !ent.dividends.length)) {
     const cyEnd = ent.profile.cyEnd?.trim() || (caseYears.cy ? `12/31/${String(caseYears.cy).slice(2)}` : "");
     const src = `${cfSource} · Schedule R p.${cf.schRNone.page}`;
     w({ sheet: SHEET.schR, ref: "B10", value: "NONE", source: src, reviewId: "sch-r-none" });
@@ -5567,10 +7129,27 @@ export async function materializeCaseWrites(
       target: `${SHEET.dividends}!D3`,
     });
 
+    if (!fromEqLine) {
+    const parts = distributionSplit(ent, divAmount);
+    if (parts) {
+      parts.forEach((p, i) => {
+        const row = 10 + i;
+        w({ sheet: SHEET.schR, ref: `B${row}`, value: `Cash dividend distribution to ${p.name}`, source: "equity movement · register of direct holders" });
+        w({ sheet: SHEET.schR, ref: `E${row}`, value: date, source: "equity movement" });
+        w({ sheet: SHEET.schR, ref: `G${row}`, value: p.amount, source: `${r2(p.share * 100)}% of ${divAmount.toLocaleString()} by shares held`, reviewId: "sch-r-split" });
+        w({ sheet: SHEET.schR, ref: `I${row}`, value: p.amount, source: "distribution of E&P", reviewId: "sch-r-split" });
+      });
+      rv({
+        id: "sch-r-split", level: "info", category: "consistency", applied: true,
+        message: `Schedule R lists the ${divAmount.toLocaleString()} distribution by shareholder, split by the shares each holds directly: ${parts.map((p) => `${p.name} ${p.amount.toLocaleString()} (${r2(p.share * 100)}%)`).join(", ")}. Schedule J line 9 carries the whole distribution.`,
+        target: `${SHEET.schR}!G10`,
+      });
+    } else {
     w({ sheet: SHEET.schR, ref: "B10", value: `Cash dividend distribution to ${cf?.holderName || "the US parent"}`, source: "equity movement / AU return" });
     w({ sheet: SHEET.schR, ref: "E10", value: date, source: "AU return dividend schedule" });
     w({ sheet: SHEET.schR, ref: "G10", value: divAmount, source: "equity movement / AU return" });
     w({ sheet: SHEET.schR, ref: "I10", value: divAmount, source: "distribution of E&P" });
+    }
 
     w({
       sheet: SHEET.schJ, ref: "F33", value: -divAmount, reviewId: "dividend-schj-sign",
@@ -5581,16 +7160,23 @@ export async function materializeCaseWrites(
       message: `Schedule J line 9 (actual distributions) entered as −${divAmount.toLocaleString()}: the template's closing balance is a plain SUM, so distributions must carry a minus sign.`,
       target: `${SHEET.schJ}!F33`,
     });
+    }
 
-    if (avgRate) {
+    if (avgRate && !fromEqLine) {
+      /* Schedule M reports what passed between the corporation and the
+         FILER, so a dividend paid to every shareholder enters at the filer's
+         own share of it (40% of 70,000 for a 40% holder). An unknown or 100%
+         holding keeps the whole dividend, as before. */
+      const share = dividendShareOfFiler(ent);
+      const ownPct = r2(share * 100);
       w({
-        sheet: SHEET.schM, ref: "E32", value: Math.round(divAmount / avgRate),
+        sheet: SHEET.schM, ref: "E32", value: Math.round((divAmount * share) / avgRate),
         labelKey: { col: "B", contains: "dividends paid", excludes: "hybrid" },
         source: "dividend at the year-average rate", reviewId: "dividend-schm",
       });
       rv({
         id: "dividend-schm", level: "warn", category: "related-party", applied: true,
-        message: `Schedule M dividends-paid entered in column (b) at the year-average rate (US$${Math.round(divAmount / avgRate).toLocaleString()}). Column (b) is an inference — the recipient is the filer itself; Schedule M instructions use the average rate, the 18-Dec spot alternative would be US$${dividends[0].usdPerUnit ? Math.round(divAmount * dividends[0].usdPerUnit).toLocaleString() : "n/a"}. Confirm both choices.`,
+        message: `Schedule M dividends-paid entered in column (b) at the year-average rate (US$${Math.round((divAmount * share) / avgRate).toLocaleString()}${share < 1 ? `, the filer's ${ownPct}% share of the ${divAmount.toLocaleString()} paid` : ""}). Column (b) is an inference — the recipient is the filer itself; Schedule M instructions use the average rate, the 18-Dec spot alternative would be US$${dividends[0].usdPerUnit ? Math.round(divAmount * dividends[0].usdPerUnit).toLocaleString() : "n/a"}. Confirm both choices.`,
         target: `${SHEET.schM}!dividends-paid row`,
       });
     }
@@ -5716,6 +7302,24 @@ export async function materializeCaseWrites(
           target: `${SHEET.schM}!${ref}`, source: fact.booked ? fact.booked.docName : fact.source,
         });
       }
+    }
+  }
+
+  /* ---- loans from shareholders → Schedule M ----
+     A balance on Schedule F line 18 is money the shareholders (or companies
+     related to them) lent the corporation. Schedule M reports the loan and the
+     interest paid on it; neither is on the P&L as such, so the preparer is
+     told what to carry and where the figures came from. */
+  {
+    const loans = ent.lines["BS:52"];
+    const boy = numeric(String(loans?.boy ?? "")), eoy = numeric(String(loans?.eoy ?? ""));
+    if ((boy && boy !== 0) || (eoy && eoy !== 0)) {
+      const labels = [...new Set((ent.contributions["BS:52"] || []).map((c) => c.label))].slice(0, 4);
+      rv({
+        id: "schm-shareholder-loans", level: "warn", category: "related-party",
+        message: `Schedule F line 18 carries loans from shareholders or related persons (${labels.map((l) => `"${l}"`).join(", ") || "line 18"}): ${boy !== null ? `beginning ${boy.toLocaleString()}` : "no opening balance"}, ${eoy !== null ? `end ${eoy.toLocaleString()}` : "no closing balance"} ${ent.profile.currency || ""}. Report the amounts borrowed from the related person on Schedule M, and the interest paid to them (the notes to the accounts usually state the interest on the shareholder loan or current account).`,
+        target: `${SHEET.schM}!amounts borrowed row`,
+      });
     }
   }
 
@@ -5901,11 +7505,17 @@ export async function materializeCaseWrites(
       w({ sheet: SHEET.schE, ref: "K16", value: ent.profile.cyEnd, source: "US tax year" });
       nonCalendarTaxYear(ent, rv);
     }
-    w({ sheet: SHEET.schE, ref: "O16", value: 0, source: "placeholder — P&L tax expense is not payment/accrual evidence", reviewId: "sch-e-current-tax" });
+    /* The year's income tax charge is the tax paid or accrued on the year's
+       income: it goes to Schedule E row 16 and, as the Schedule E line 8
+       total, to Schedule E-1 line 4 (current E&P). Schedule I-1 reads
+       Schedule E through the template's own formulas. Whether it was paid or
+       only accrued is the preparer's to confirm. */
+    w({ sheet: SHEET.schE, ref: "O16", value: taxAbs, source: "income tax expense — current (Schedule C line 21a)", reviewId: "sch-e-current-tax" });
+    w({ sheet: SHEET.schE, ref: "E57", value: taxAbs, source: "Schedule E-1 line 4 — taxes reported on Schedule E line 8" });
     if (avgRate) w({ sheet: SHEET.schE, ref: "Q16", value: avgRate, dp: 6, source: "average rate" });
     rv({
-      id: "sch-e-current-tax", level: "block", category: "consistency",
-      message: `The P&L books ${taxAbs.toLocaleString()} of income-tax expense, but that is not proof it was paid or accrued for Schedule E. Schedule E remains zero until a tax return, assessment, payment record, or preparer assignment confirms the amount.`,
+      id: "sch-e-current-tax", level: "warn", category: "consistency", applied: true,
+      message: `Schedule E row 16 and Schedule E-1 line 4 carry the ${taxAbs.toLocaleString()} income tax from the P&L; Schedule I-1 picks it up through the template. Confirm it was paid or accrued for the year (a return, an assessment or a payment record) before filing.`,
       target: `${SHEET.schE}!O16`, source: "income statement", suggestedValue: taxAbs,
     });
   }
@@ -5994,12 +7604,21 @@ export function buildWrites(ent: Entity): Writes {
     if (v === undefined || v === "") return;
     basic[f.cell] = f.key === "formed" ? formedCell(v, ent.detected?.formed?.sourceLabel) : v;
   });
+  // The template has no label for the two added boxes; they are written
+  // whether or not a value was found, so the preparer sees where it goes.
+  basic.A5 = "Reference ID:";
+  basic.A29 = "Principal Place of Business";
+  /* One name, entered once. The header (B4) feeds the title of every sheet,
+     so it cannot go; it now follows Legal Name of Entity (B11) instead of
+     being a second box to keep in step. */
+  if (ent.profile.legalName) basic.B4 = "=B11";
   OWNERSHIP_FIELDS.forEach((f) => {
     const v = ent.ownership[f.key];
     if (v === undefined || v === "") return;
     basic[f.cell] = f.type === "pct" ? Number(v) / 100 : f.type === "num" ? Number(v) : v;
   });
-  Object.entries(CATEGORY_CELLS).forEach(([cat, cell]) => { if (ent.categories[cat]) basic[cell] = "Yes"; });
+  // The reviewed papers tick a filer category with "X", like the form's box.
+  Object.entries(CATEGORY_CELLS).forEach(([cat, cell]) => { if (ent.categories[cat]) basic[cell] = "X"; });
   FX_FIELDS.forEach((f) => {
     const v = ent.fx[f.key];
     if (v !== undefined && v !== "") basic[f.cell] = Number(v);
@@ -6048,6 +7667,32 @@ export function buildWrites(ent: Entity): Writes {
     sheet[w.ref] = value;
   }
 
+  /* A dividend found before the year-average rate was known left Schedule M
+     without its dividends-paid line; the rate entered afterwards completes
+     it here, exactly as processing would have. */
+  {
+    const avg = numeric(ent.fx.avgRate);
+    const div0 = ent.dividends[0];
+    if (div0 && avg && !ent.extraWrites.some((w) => w.sheet === SHEET.schM && w.ref === "E32")) {
+      const sm = (writes[SHEET.schM] ||= {});
+      if (sm.E32 === undefined) sm.E32 = Math.round((div0.amountFunctional * dividendShareOfFiler(ent)) / avg);
+    }
+  }
+
+  /* Schedule Q unit 1: Schedule C's own totals as they stand now — line 10
+     less line 8a (as Schedule I-1 reads it), line 18 and line 21a, computed
+     the way the template's totals are. Values, never formulas: the workbook
+     receives no formula it did not ship with. */
+  if (Object.keys(ent.lines).some((k) => k.startsWith("IS:"))) {
+    const amt = (row: number) => { const v = ent.lines[`IS:${row}`]?.amount; return typeof v === "number" ? v : 0; };
+    const totalIncome = amt(7) - amt(8) - (amt(10) + amt(11) + amt(12)) + [14, 15, 16, 17, 18, 19, 20, 22, 23, 24].reduce((n, r) => n + amt(r), 0);
+    const deductions = [26, 27, 28, 29, 30, 31, 32].reduce((n, r) => n + amt(r), 0) + POOLS["IS:OD"].rows.reduce((n, r) => n + amt(r), 0);
+    const sq = (writes[SHEET.schQ] ||= {});
+    if (sq.H57 === undefined) sq.H57 = r2(totalIncome - amt(19));
+    if (sq.J57 === undefined) sq.J57 = r2(deductions);
+    if (sq.X57 === undefined) sq.X57 = r2(amt(62));
+  }
+
   // Leftover demo captions on unused relabel rows are cleared, never shipped.
   // This runs LAST so it can never blank a cell some other source filled.
   for (const ref of DEMO_RELABELS[SHEET.is] || []) {
@@ -6093,6 +7738,106 @@ export function validateEntity(ent: Entity): ReviewItem[] {
   const hasBS = BS_LINES.some((l) => ent.lines[`BS:${l.row}`]);
   const hasIS = IS_LINES.some((l) => ent.lines[`IS:${l.row}`]);
 
+  /* The income statement must arrive at the result the statements themselves
+     report. The balance sheet prints it inside equity ("Net Income",
+     "Bénéfice de l'exercice"); when Schedule C, built line by line, lands
+     somewhere else, a P&L line was missed, read twice or signed the wrong
+     way — and a balanced Schedule F cannot show it, because the stated
+     result is booked there as printed. */
+  const differ = resultsDisagree(ent);
+  if (differ) {
+    out.push({
+      id: "pnl-bs-result-differ", level: "warn", category: "consistency",
+      message: `The client's two reports disagree about the year's result: the profit and loss says "${differ.pnlLabel}" ${differ.pnl.toLocaleString()}, the balance sheet's equity carries "${differ.bsLabel}" ${differ.bs.toLocaleString()} — ${differ.diff.toLocaleString()} apart. They were run at different times or with different settings. Schedule C follows the P&L and Schedule F the balance sheet as printed; ask the client for a matching pair before filing.`,
+      target: `${SHEET.bs}!F61`,
+    });
+  }
+
+  /* Form 5471 page 1 asks for the principal business activity. A blank B25
+     used to go unnoticed until review. */
+  if (ent.processedAt && !String(ent.profile.activity || "").trim()) {
+    out.push({
+      id: "basic-activity-missing", level: "warn", category: "source-gap",
+      message: `Principal Business Activity (Basic Information B25) is blank: neither the prior return's page 1 (items f/g) nor a questionnaire stated it${ent.profile.activityCode ? `, although the activity code ${ent.profile.activityCode} was read` : ""}. Enter it on Basic Information before generating.`,
+      target: `${SHEET.basic}!B25`,
+    });
+  }
+
+  /* A numbered-box return states the year's result itself. Schedule C built
+     from it must reach that result before income tax — if it does not, a box
+     was missed or read wrong, and the work paper is not generated. */
+  const bookedNi = bookNetIncome(ent.lines);
+  if (hasIS && bookedNi !== null) {
+    const incomeTax = (ent.lines["IS:62"]?.amount || 0) + (ent.lines["IS:63"]?.amount || 0);
+    const preTax = r2(bookedNi + incomeTax);
+    const off = (ent.formResults || []).filter((fr) => Math.abs(fr.value - preTax) > Math.max(1, Math.abs(fr.value) * 0.001));
+    if (off.length) out.push({
+      id: "form-result-mismatch", level: "block", category: "consistency",
+      message: `Schedule C does not reach the result the tax return states: ${off.map((fr) => `${fr.label} in ${fr.docName} is ${fr.value.toLocaleString()}`).join("; ")}, but the booked lines give ${preTax.toLocaleString()} before income tax — a difference of ${r2(off[0].value - preTax).toLocaleString()}. A box was missed, read twice or has the wrong sign. Compare the Income Statement tab with the return box by box, correct it on Mapping & adjustments, and re-process. Generation stays blocked until they agree or you record the real reason they differ.`,
+      target: `${SHEET.is}!F64`,
+    });
+  }
+
+  /* One rate for the prior year end. The opening column was translated when
+     the entity was processed; if C61 has changed since, the workbook would
+     divide the opening column by one rate and the prior-year rate cell would
+     state another. */
+  if (ent.openingRate && hasBS) {
+    const now = openingRateFor(ent.profile.currency, rate("pyRate"), null);
+    if (now && Math.abs(now.rate - ent.openingRate.rate) / now.rate > 0.0005) out.push({
+      id: "fx-opening-rate-stale", level: "block", category: "fx",
+      message: `The opening balances (Schedule F column (a)) were translated at ${ent.openingRate.rate}, but the prior-year rate in Basic Information C61 is now ${now.rate}. One rate must serve both: re-process the entity so the opening column is rebuilt at ${now.rate}, or set C61 back to ${ent.openingRate.rate}.`,
+      target: `${SHEET.basic}!C61`,
+    });
+  }
+
+  /* Schedule F against the balance sheet's own "Total assets". */
+  const statedTa = (ent.statedResults || []).filter((x) => x.feed === "bs");
+  if (hasBS && statedTa.length) {
+    let bookedTa = 0;
+    for (const l of BS_LINES) {
+      const v = ent.lines[`BS:${l.row}`]?.eoy;
+      if (/assets/i.test(l.group) && typeof v === "number" && isFinite(v)) bookedTa += v;
+    }
+    bookedTa = r2(bookedTa);
+    if (statedTa.every((x) => Math.abs(x.value - bookedTa) > Math.max(1, Math.abs(x.value) * 0.001))) out.push({
+      id: "schf-total-assets-tie", level: "block", category: "consistency",
+      message: `Schedule F does not reach the balance sheet's own total: "${statedTa[0].label}" in ${statedTa[0].docName} is ${statedTa[0].value.toLocaleString()}, but the booked asset lines give ${bookedTa.toLocaleString()} at the end of the year — a difference of ${r2(statedTa[0].value - bookedTa).toLocaleString()}. An asset was missed, read twice, or a liability or note figure was booked as an asset. Compare the Balance Sheet tab with the statement line by line and correct it on Mapping & adjustments. Generation stays blocked until they agree or you record the real reason they differ.`,
+      target: `${SHEET.bs}!F42`,
+    });
+  }
+
+  /* Schedule F must foot at both ends of the year (dist: EN9tieOut). When it
+     does not, a single line whose amount alone explains the gap is named. */
+  {
+    const eoy = bsBalance(ent.lines, "eoy");
+    if (Math.abs(eoy.diff) >= 0.01) out.push({
+      id: "EN9-tie-bs-eoy", level: "block", category: "tie-out",
+      message: `Schedule F does not balance at the end of the year: assets ${eoy.assets.toLocaleString()} against liabilities and equity ${eoy.liabEquity.toLocaleString()}, out by ${eoy.diff.toLocaleString()}. A figure has been counted twice or a line is missing — check the contributions on each balance-sheet line before generating.${bsSuspectText(ent.lines, "eoy", eoy.diff)}`,
+      target: `${SHEET.bs}!F62`,
+    });
+    const boy = bsBalance(ent.lines, "boy");
+    if (Math.abs(boy.diff) >= 0.01 && (boy.assets || boy.liabEquity)) out.push({
+      id: "EN9-tie-bs-boy", level: "block", category: "tie-out",
+      message: `Schedule F does not balance at the beginning of the year: out by ${boy.diff.toLocaleString()}.${bsSuspectText(ent.lines, "boy", boy.diff)}`,
+      target: `${SHEET.bs}!D62`,
+    });
+  }
+
+  const tie = pnlTieOut(ent);
+  if (hasIS && tie) {
+    out.push({
+      id: "pnl-net-income-tie", level: "block", category: "consistency",
+      message: `Schedule C does not reach the statements' own result for the year: the booked lines give net income of ${tie.booked.toLocaleString()}, but "${tie.label}" on the ${tie.where} reports ${tie.stated.toLocaleString()} — a difference of ${tie.diff.toLocaleString()}. `
+        + (tie.candidates.length
+          ? `Unassigned income-statement row(s) of that amount: ${tie.candidates.map((c) => `"${c}"`).join(", ")} — assign ${tie.candidates.length > 1 ? "the right one" : "it"} on Mapping & adjustments.`
+          : tie.suspects.length
+            ? `Booked row(s) that alone explain the difference: ${tie.suspects.join("; ")}. Check ${tie.suspects.length > 1 ? "them" : "it"} first on Mapping & adjustments.`
+            : `A P&L line was missed, read twice or has the wrong sign: compare the Income Statement tab with the source P&L line by line${tie.unassigned ? ` (${tie.unassigned} income-statement row(s) are still unassigned in Review)` : ""}.`),
+      target: `${SHEET.is}!F64`,
+    });
+  }
+
   /* Every rate and balance check below is gated on there being lines to check,
      so an entity that mapped NOTHING raised no blocker at all and would have
      generated an empty work paper. Two Chilean CFCs did exactly that: their
@@ -6115,10 +7860,15 @@ export function validateEntity(ent: Entity): ReviewItem[] {
       : ent.profile.currency
         ? ` No IRS-table average was found for ${code} and no fallback figure was applied.`
         : "";
+    /* Nothing reachable: the mean of the two Treasury year-end rates is
+       offered as an ESTIMATE, one click to accept, never written on its own. */
+    const est = ent.fxMeta?.avgRateNote?.estimate;
     out.push({
       id: "fx-avg-missing", level: "block", category: "fx",
-      message: `Average exchange rate (C59) is missing — Schedule C USD columns will show #DIV/0!.${why} Enter the period's average rate manually.`,
+      message: `Average exchange rate (C59) is missing — Schedule C USD columns will show #DIV/0!.${why} Enter the period's average rate manually.`
+        + (est ? ` An estimate of ${est} — the mean of the prior and current year-end Treasury rates (${ent.fx.pyRate} and ${ent.fx.cyRate}) — is offered; accept it only if no better average (the client's bank, the central bank) is available. It is not an IRS rate.` : ""),
       target: `${SHEET.basic}!C59`,
+      ...(est ? { suggestedValue: est } : {}),
     });
   }
   if (hasBS && !rate("cyRate")) {
@@ -6213,9 +7963,47 @@ export function validateEntity(ent: Entity): ReviewItem[] {
       });
     }
   }
+  /* The filer categories decide which schedules are filed, and they are
+     usually carried from the prior return — which describes LAST year's
+     events (the year the shares were bought, say). The ownership answers on
+     Basic Information are this year's, so the two are checked against each
+     other. Nothing is switched automatically: the preparer confirms. */
+  if (ent.processedAt) {
+    const cats = ent.categories || {};
+    const on = Object.keys(cats).filter((k) => cats[k]);
+    const pctOf = (v: string | undefined) => { const n = Number(String(v ?? "").replace("%", "")); return isFinite(n) ? (n > 0 && n <= 1 ? n * 100 : n) : 0; };
+    const own = Math.max(pctOf(ent.ownership.ownStart), pctOf(ent.ownership.ownEnd));
+    const sel = on.length ? on.join(", ") : "none";
+    if (ent.ownership.cfc === "Yes" && own >= 10 && !on.some((k) => /^5/.test(k))) {
+      out.push({
+        id: "category-5-expected", level: "warn", category: "profile",
+        message: `Basic Information says the corporation is a CFC and the filer owns ${own}% — a U.S. shareholder of a CFC normally files as Category 5 (5a, 5b or 5c), which is not selected (selected: ${sel}). Confirm the categories in the Review summary before generating; they decide which schedules are required.`,
+        target: `${SHEET.basic}!B48`,
+      });
+    }
+    if (pctOf(ent.ownership.ownEnd) > 50 && !on.includes("4")) {
+      out.push({
+        id: "category-4-expected", level: "warn", category: "profile",
+        message: `The filer owns ${pctOf(ent.ownership.ownEnd)}% at the end of the year — more than 50% is control, which is Category 4, and it is not selected (selected: ${sel}). Confirm the categories in the Review summary.`,
+        target: `${SHEET.basic}!B47`,
+      });
+    }
+    if (on.includes("3") && own >= 10 && pctOf(ent.ownership.ownStart) === pctOf(ent.ownership.ownEnd)) {
+      out.push({
+        id: "category-3-carried", level: "warn", category: "profile",
+        message: `Category 3 is selected, but the filer's holding is ${own}% at both the start and the end of the year. Category 3 is for the year stock is acquired or disposed of (or the filer becomes a U.S. person); when it was carried from the prior return, confirm it applies to this year.`,
+        target: `${SHEET.basic}!B46`,
+      });
+    }
+  }
   if (!Object.keys(ent.categories).some((k) => ent.categories[k])) {
     out.push({ id: "profile-category", level: "warn", category: "profile", message: "No filing category selected" });
   }
+  /* Missing documents, OCR confidence, why a document produced nothing, how
+     Schedule C adds up, why the ownership answers read as they do, and what
+     the preparer chose before — advice only (insights.ts). */
+  try { out.push(...usdRoundingGaps(ent.lines, numeric(String(ent.fx?.cyRate ?? "")), numeric(String(ent.fx?.pyRate ?? "")))); } catch { /* never blocks validation */ }
+  try { out.push(...(entityInsights(ent, readChoiceMemory()) as ReviewItem[])); } catch { /* advice never blocks */ }
   return out;
 }
 
@@ -6225,6 +8013,7 @@ const DERIVED_IDS = new Set([
   "fx-avg-missing", "fx-cy-missing", "fx-py-missing", "fx-fiscal-manual", "fx-currency-unconfirmed",
   "cf-name-unconfirmed", "officer-flag-unconfirmed",
   "no-lines-mapped", "mapping-language",
+  "pnl-net-income-tie", "form-result-mismatch", "schf-total-assets-tie", "fx-opening-rate-stale", "pnl-bs-result-differ", "basic-activity-missing", "category-5-expected", "category-4-expected", "category-3-carried",
   "profile-currency", "profile-cyend", "mapping-unmatched", "profile-category",
   "profile-formed-ambiguous",
 ]);
@@ -6236,6 +8025,8 @@ const DERIVED_IDS = new Set([
  * the SHORI 2024 work paper shipped with Basic Information C35 empty. For
  * these ids the Exception Center offers the answer and nothing else. */
 export const MUST_ANSWER = new Set(["officer-flag-unconfirmed"]);
+
+
 
 const describePolicyRule = (p: PolicyRule) =>
   `${p.match.id ? `id=${p.match.id}` : p.match.category ? `category=${p.match.category}` : `message~"${p.match.message}"`} → ${p.action}`;
@@ -6259,6 +8050,9 @@ export function allReviewItems(ent: Entity, opts?: { raw?: boolean }): ReviewIte
       const en = displayLabel(ent.translations, r.sourceLabel);
       return en === r.sourceLabel ? r : { ...r, message: r.message.split(r.sourceLabel).join(en) };
     });
+  /* What to fix first and which cross-document checks pass — read from the
+     whole list, so it is built last, and shown first. */
+  try { merged.unshift(...(summarizeReview(ent, merged) as ReviewItem[])); } catch { /* advice never blocks */ }
   if (opts?.raw || !state.policies.length) return merged;
   /* A policy may downgrade or suppress almost anything, which is the point of
      policies — but not a gate whose only job is to fill a required cell. That
@@ -6387,7 +8181,7 @@ function attachedScheduleRows(ent: Entity): CellValue[][] | null {
     const tot = { boy: 0, eoy: 0, amount: 0 };
     for (const c of g.caps) {
       tot.boy += c.boy ?? 0; tot.eoy += c.eoy ?? 0; tot.amount += c.amount ?? 0;
-      rows.push([c.label, c.boy ?? "", c.eoy ?? "", c.amount ?? "",
+      rows.push([bilingualLabel(ent.translations, c.label), c.boy ?? "", c.eoy ?? "", c.amount ?? "",
                  [...c.docs].join(", "), [...c.pages].sort((a, b) => a - b).join(", ")]);
     }
     rows.push([`Total (${g.caps.length} accounts)`, tot.boy || "", tot.eoy || "", tot.amount || "", "", ""]);
@@ -6428,19 +8222,30 @@ function provenanceRows(ent: Entity): CellValue[][] {
   rows.push(["This sheet lists every booked figure with how its line was chosen (keyword rule, section heading, AI model or preparer), every exchange rate with its source, and every blocking exception acknowledged before generation. Verify AI-placed and section-placed figures against the source documents before filing. This work paper is a preparer aid — it is not tax advice, and the preparer remains responsible for the filed return."]);
   rows.push([]);
   rows.push(["Kind", "Line / field", "Source caption", "Document", "Page", "Value", "Confidence", "Note"]);
+  /* Where each booked figure sits in its source — the page or spreadsheet
+     row, the column it was taken from, and the figures the row printed — so
+     a reviewer can go straight to it. Added as the last column, after any
+     OCR columns, so existing columns keep their positions. */
+  const whereOf = new Map<CellValue[], string>();
 
   for (const [target, list] of Object.entries(ent.contributions || {})) {
     for (const c of list) {
       if (!c.via) continue;
       const flaggedLow = (ent.reviewItems || []).some((r) => r.id === `ai-low-${norm(c.label || "")}`);
-      rows.push([
+      const printed = (c.srcValues || []).map((v, i) => (c.srcYears && typeof c.srcYears[i] === "number" ? `${c.srcYears[i]}: ` : "") + v.toLocaleString()).join(" | ");
+      whereOf.set(rows[rows.push([
         PROVENANCE_KIND[c.via] || "Rule mapping",
         `${label(target)} (${c.field})`,
-        c.label || "", c.docName || "", c.page != null ? c.page : "",
+        bilingualLabel(ent.translations, c.label || ""), c.docName || "", c.page != null ? c.page : "",
         typeof c.value === "number" ? c.value : "",
         c.via === "groq" ? (flaggedLow ? "LOW — verify" : "model-reported ok") : "",
         PROVENANCE_NOTE[c.via] || PROVENANCE_NOTE.rule,
-      ]);
+      ]) - 1], [
+        c.page != null ? `page ${c.page}` : "spreadsheet",
+        `row "${c.label || ""}"`,
+        typeof c.year === "number" ? `${c.year} column` : c.period ? `${c.period} column` : c.field === "boy" ? "opening-year column" : "the row's figure",
+        printed ? `row prints ${printed}` : "",
+      ].filter(Boolean).join(" · "));
     }
   }
 
@@ -6477,6 +8282,21 @@ function provenanceRows(ent: Entity): CellValue[][] {
                "derived from Schedule C line 21a; drives Sch-H, Schedule I-1 and Form 8992"]);
   }
 
+  /* Figures carried from the prior-year return into a schedule cell (the
+     Schedule J opening E&P) are not bookings, so the loop above never listed
+     them and the work paper gave no source for them. Every write that kept a
+     source snapshot is listed here with the document, page and row read. */
+  const carried = (ent.extraWrites || []).filter((w) => w.prov);
+  if (carried.length) {
+    rows.push([]);
+    rows.push(["CARRIED FORWARD FROM THE PRIOR-YEAR RETURN"]);
+    for (const w of carried) {
+      rows.push(["Carried forward", `${w.sheet} ${w.ref}`, w.prov?.rowText || "", w.prov?.docName || "",
+                 w.prov?.page != null ? w.prov.page : "", typeof w.value === "number" ? w.value : String(w.value), "",
+                 `${w.source || "prior-year return"} · confirm before filing`]);
+    }
+  }
+
   /* A blocking exception the preparer acknowledged is a decision the work
      paper must record — the Boating paper shipped with an unbalanced Schedule
      F and nothing on the sheet said anyone had seen the block. */
@@ -6491,6 +8311,15 @@ function provenanceRows(ent: Entity): CellValue[][] {
                (said && isThinNote(said) ? " — NOTE GIVES NO REASON: check this figure before filing" : "")]);
   }
   ocrProvenance(rows, ent);
+  const head = rows.findIndex((r) => r[0] === "Kind" && r[1] === "Line / field");
+  if (head >= 0 && whereOf.size) {
+    const at = rows[head].length;
+    rows[head].push("Where it was read");
+    for (const [r, where] of whereOf) {
+      while (r.length < at) r.push("");
+      r.push(where);
+    }
+  }
   return rows;
 }
 
@@ -6585,7 +8414,8 @@ export async function buildWorkbook(ent: Entity, bytes?: Uint8Array | ArrayBuffe
   }
 
   const report = await applyWrites(zip, writes, {
-    mayReplaceFormula: (sheet, ref) => !!REPLACEABLE_FORMULA_REFS[sheet]?.(ref),
+    mayReplaceFormula: (sheet, ref) => !!REPLACEABLE_FORMULA_REFS[sheet]?.(ref)
+      || ent.extraWrites.some((w) => w.replaceFormula && w.sheet === sheet && w.ref === ref),
   });
 
   /* AFTER applyWrites, so the provenance describes what was actually written,
@@ -6631,6 +8461,70 @@ function downloadBlob(blob: Blob, filename: string) {
    A low-confidence answer is still booked — the figure belongs somewhere, and
    an unplaced figure is worse than a flagged one — but it is flagged too, and
    the flag names the model as its author. */
+
+/* Taxes a country charges IN PLACE OF a corporate income tax. Booked as a
+   tax other than income tax they leave Schedule C line 21a empty, and with it
+   Schedule E, the high-tax test and Form 8992. Known by the country (or its
+   currency) and the tax's own name; nothing here is about one client. */
+const IN_LIEU_INCOME_TAXES: { country: RegExp; currency: string; caption: RegExp; why: string }[] = [
+  {
+    country: /^belize$/i, currency: "BZD", caption: /\bbusiness\s+tax\b/i,
+    why: "Belize charges business tax on gross receipts in place of a corporate income tax, so it is the corporation's income tax",
+  },
+];
+
+/** Move an in-lieu income tax from line 16 to line 21a once the entity's
+    country is known (step 3, after the profile is read). A caption the
+    preparer has already placed on Mapping & adjustments is left alone. */
+function inLieuIncomeTax(
+  entityId: string,
+  profile: Entity["profile"],
+  review: ReviewItem[],
+  rv: (item: Omit<ReviewItem, "id"> & { id?: string }) => void,
+  log: string[],
+): void {
+  const country = String(profile.countryInc || "").trim();
+  const ccy = String(profile.currency || "").trim().toUpperCase();
+  const rule = IN_LIEU_INCOME_TAXES.find((r) => r.country.test(country) || (!!ccy && r.currency === ccy));
+  const cur = state.entities.find((e) => e.id === entityId);
+  if (!rule || !cur) return;
+  const ov = cur.mapOverrides || {};
+  const moving = (cur.contributions["IS:32"] || []).filter((c) =>
+    c.field === "amount" && rule.caption.test(c.label || "") && ov[norm(c.label || "")] === undefined);
+  if (!moving.length) return;
+  const total = r2(moving.reduce((n, c) => n + c.value, 0));
+  const lines = { ...cur.lines };
+  const contributions = { ...cur.contributions };
+  const left = (contributions["IS:32"] || []).filter((c) => !moving.includes(c));
+  if (left.length) contributions["IS:32"] = left; else delete contributions["IS:32"];
+  contributions["IS:62"] = [...(contributions["IS:62"] || []), ...moving];
+  const l16 = r2((lines["IS:32"]?.amount ?? 0) - total);
+  if (left.length || l16 !== 0) lines["IS:32"] = { ...lines["IS:32"], amount: l16 }; else delete lines["IS:32"];
+  lines["IS:62"] = { ...lines["IS:62"], amount: r2((lines["IS:62"]?.amount ?? 0) + total) };
+  updateEntity(entityId, { lines, contributions });
+  for (const c of moving) {
+    const qid = `business-tax-question-${norm(c.label || "")}`;
+    for (let i = review.length - 1; i >= 0; i--) if (review[i].id === qid) review.splice(i, 1);
+    rv({
+      id: `in-lieu-tax-${norm(c.label || "")}`, level: "info", category: "mapping", applied: true,
+      sourceLabel: c.label,
+      message: `"${c.label}" ${c.value.toLocaleString()} was booked to Schedule C line 21a (income tax expense), not line 16: ${rule.why}. Schedule E, the high-tax test and Form 8992 follow it. If this entity is outside that regime, move it back to line 16 on Mapping & adjustments.`,
+      target: `${SHEET.is}!F62`, source: c.docName,
+    });
+  }
+  log.push(`${moving.map((c) => `"${c.label}"`).join(", ")} ${total.toLocaleString()} moved to Schedule C line 21a — a tax charged in place of income tax (${country || ccy})`);
+}
+
+/** A balance sheet's grand total of assets, in the languages the banners know. */
+const TOTAL_ASSETS_CAPTION = /^(total\s+(of\s+)?assets|totaal\s+(der\s+)?activa|total\s+(del\s+|de\s+)?activos?|total\s+(de\s+l'|of\s+the\s+)?actif|summe\s+(der\s+)?aktiva|bilanzsumme|total\s+do\s+ativo|totale\s+(dell')?attivo)$/i;
+
+/** "Sch C line 17" for a target or pool — the form line a preparer looks up. */
+const formLineRef = (target: string) => {
+  const row = POOLS[target] ? POOLS[target].rows[0] : Number(target.split(":")[1]);
+  const isIs = target.startsWith("IS");
+  const l = (isIs ? IS_LINES : BS_LINES).find((x) => x.row === row);
+  return l ? `${isIs ? "Sch C" : "Sch F"} line ${l.ref}` : target;
+};
 
 /** Human-readable name for a template line, for messages the preparer reads. */
 const targetLabel = (target: string) => {
@@ -6703,7 +8597,7 @@ async function agentUnderstand(
   log: string[],
   /** What the run has already decided about which corporation this entity is,
       and which others the tool is about to create. */
-  hints?: { self?: string | null; planned?: string[] },
+  hints?: { self?: string | null; planned?: string[]; aliases?: string[] },
 ): Promise<AgentBrief | null> {
   if (state.agent?.enabled === false) return null;
   const ent = state.entities.find((e) => e.id === entityId);
@@ -6730,7 +8624,9 @@ async function agentUnderstand(
          attribution kept it for that entity) from one that genuinely carried
          no figures. */
       entityName: cls.entityName ?? null,
-      statementYear: cls.statementYear ?? null,
+      /* A statement grid never votes the year, but the period it heads its
+         newest column with is still the year it reports. */
+      statementYear: cls.statementYear ?? (cls.statementPeriodEnd ? Number(String(cls.statementPeriodEnd).slice(-4)) || null : null),
       periodEnd: cls.statementPeriodEnd ?? null,
       periodStart: cls.statementPeriodStart ?? null,
       rowsRead: rows.length,
@@ -6764,6 +8660,7 @@ async function agentUnderstand(
       docName: m.docName, page: m.row.page ?? null,
       dropped: m.skipReason,
       ruleMatched: matchRule(m.row.label, state.rules) !== null,
+      namedTotal: matchRule(m.row.label, state.rules) === "SKIP",
     }));
 
   const haveModel = aiReady();
@@ -6840,13 +8737,15 @@ async function agentUnderstand(
     corporation the documents name, and whether the case already has an entity
     for it. Built from the documents themselves, so it holds for any client
     whose papers cover more than one corporation. */
-function buildCaseContext(ent: Entity, hints?: { self?: string | null; planned?: string[] }): CaseContext {
+function buildCaseContext(ent: Entity, hints?: { self?: string | null; planned?: string[]; aliases?: string[] }): CaseContext {
   const corporations: CaseContext["corporations"] = [];
   const seen = new Set<string>();
   /* "Entity 1" is the card's placeholder, not a corporation. Read as one, it
      matched nothing and every document in the case looked like it belonged to
      somebody else. */
   const real = (n: string) => (/^entity \d+$/i.test(n.trim()) ? "" : n.trim());
+  const aliases = [...(hints?.aliases || []), ...state.entities.flatMap((e) => e.nameAliases || [])]
+    .map((n) => String(n || "").trim()).filter(Boolean);
   const known = state.entities
     .map((e) => real(String(e.profile.legalName || e.profile.entityShort || e.name || "")))
     .filter(Boolean)
@@ -6854,6 +8753,8 @@ function buildCaseContext(ent: Entity, hints?: { self?: string | null; planned?:
        tool is about to create as siblings, are accounted for — flagging them
        as missing would be the agent objecting to work already in hand. */
     .concat([hints?.self || ""], hints?.planned || [])
+    /* The names the same company prints its papers under are its own. */
+    .concat(aliases)
     .filter(Boolean);
   const add = (name: string, source: string, refId?: string | null) => {
     const clean = String(name || "").trim();
@@ -6875,6 +8776,7 @@ function buildCaseContext(ent: Entity, hints?: { self?: string | null; planned?:
     corporations,
     entityName: real(String(ent.profile.legalName || ent.profile.entityShort || "")) || hints?.self || null,
     mayCreateEntity: true,
+    aliases,
   };
 }
 
@@ -7014,10 +8916,16 @@ async function agentRun(entityId: string, log?: string[]): Promise<AgentRunResul
       refuse(`the agent suggested ${targetLabel(sg.target)}, but the caption names a bank account — a balance, not income or expense; refused.`);
       continue;
     }
+    if (isTaxRegisterCaption(row.label || "")) {
+      refuse(`the agent suggested ${targetLabel(sg.target)}, but the caption is a tax-register balance (a tax attribute such as RAI, REX, SAC, STUT, CPT, RLI, PPM or a prior-year tax loss), not an income, expense or book balance of the year — refused.`);
+      continue;
+    }
     if (row.section && !sectionOk(row.section, sg.target)) {
       refuse(`the agent suggested ${targetLabel(sg.target)} but the caption was printed under the "${row.section}" banner — refused as a documentary contradiction.`);
       continue;
     }
+    const sideVeto = statementSideVeto(row.reason, sg.target);
+    if (sideVeto) { refuse(`the agent suggested ${targetLabel(sg.target)}, but ${sideVeto}`); continue; }
     const dbl = figureAlreadyBooked(contributions, sg.target, row);
     if (dbl !== null) {
       refuse(`the agent suggested ${targetLabel(sg.target)} for ${dbl.toLocaleString()}, but that figure is already booked to the same line from page ${row.page} of the same document — one amount, read twice, so it was NOT added again.`);
@@ -7086,7 +8994,10 @@ async function agentRun(entityId: string, log?: string[]): Promise<AgentRunResul
     }
   }
   for (const key of Object.keys(lines)) if (/^IS:/.test(key)) filledTargets.push(key);
-  const stmtDoc = Object.values(fresh.docClasses || {}).find((c) => c.statementPeriodEnd && !c.duplicateOf);
+  /* This year's accounts first: a prior-year return also states a period
+     end, but it is last year's. */
+  const periodDocs = Object.values(fresh.docClasses || {}).filter((c) => c.statementPeriodEnd && !c.duplicateOf);
+  const stmtDoc = periodDocs.find((c) => c.kind !== "prior-year-us-return") ?? periodDocs[0];
   const brief = fresh.agentBrief;
   const facts = {
     cyEnd: fresh.profile.cyEnd,
@@ -7261,10 +9172,16 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
           refuse(`AI proposed ${targetLabel(p.t)}, but the caption names a bank account — a balance, not income or expense; refused.`);
           continue;
         }
+        if (isTaxRegisterCaption(row.label || "")) {
+          refuse(`AI proposed ${targetLabel(p.t)}, but the caption is a tax-register balance (a tax attribute such as RAI, REX, SAC, STUT, CPT, RLI, PPM or a prior-year tax loss), not an income, expense or book balance of the year — refused; place it yourself only if it belongs on the work paper.`);
+          continue;
+        }
         if (row.section && !sectionOk(row.section, p.t)) {
           refuse(`AI proposed ${targetLabel(p.t)} but the caption was printed under the "${row.section}" banner — refused as a documentary contradiction.`);
           continue;
         }
+        const side = statementSideVeto(row.reason, p.t);
+        if (side) { refuse(`AI proposed ${targetLabel(p.t)}, but ${side}`); continue; }
         const twice = figureAlreadyBooked(contributions, p.t, row);
         if (twice !== null) {
           refuse(`AI proposed ${targetLabel(p.t)} for ${twice.toLocaleString()}, but that figure is already booked to the same line from page ${row.page} of the same document — one amount, read twice, so it was NOT added again.`);
@@ -7350,6 +9267,7 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
       let filled = 0;
       let currencyChanged = false;
 
+      const profileCaptionNorms = new Set((fresh.unmatchedProfile || []).map((c) => norm(c.caption)));
       for (const cand of fresh.unmatchedProfile || []) {
         const p = answers.get(cand.norm);
         if (!p || !p.t) { stillUnmatched.push(cand); continue; }
@@ -7366,6 +9284,18 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
           flags.push({
             id: `ai-profile-bad-${norm(cand.caption)}`, level: "warn", category: "profile", applied: false,
             message: `“${cand.caption}” was read as ${spec.label} = “${String(value).slice(0, 48)}” by the model, which does not parse as a date — NOT applied. Enter it in Basic Information if known.`,
+            source: cand.src?.doc || undefined,
+          });
+          continue;
+        }
+        /* A form caption in the value position: the model was handed a
+           caption row ("Región | Capital Efectivo") and named the second
+           caption as the first one's value. */
+        if (profileCaptionNorms.has(norm(String(value))) || /^\d{1,4}\s+\D+$/.test(String(value).trim())) {
+          stillUnmatched.push(cand);
+          flags.push({
+            id: `ai-profile-bad-${norm(cand.caption)}`, level: "warn", category: "profile", applied: false,
+            message: `“${cand.caption}” was read as ${spec.label} = “${String(value).slice(0, 48)}” by the model, but that is another caption printed on the same form, not a value — NOT applied. Enter it in Basic Information if known.`,
             source: cand.src?.doc || undefined,
           });
           continue;

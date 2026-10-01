@@ -58,6 +58,12 @@ const HINTS: Array<{ name: string; code: string; words: string[] }> = [
   { name: "Dutch", code: "nl", words: ["omzet", "kosten", "vorderingen", "schulden", "eigen vermogen", "voorzieningen", "materiële", "overlopende"] },
 ];
 
+/* Hint words that are also ordinary English accounting words. */
+const ENGLISH_HOMOGRAPHS = new Set(["charges", "capital"]);
+/* Hint words that sit inside ordinary English words ("emp-LOYER's",
+   "job COSTIng"), so they only count as whole words. */
+const WHOLE_WORD_HINTS = new Set(["loyer", "costi"]);
+
 /** Script first, then accounting vocabulary, then accented-letter fallback. */
 export function detectLanguage(label: string): string {
   return detectLanguageEntry(label).name;
@@ -70,7 +76,19 @@ export function detectLanguageEntry(label: string): { name: string; code: string
   // Normalise the apostrophe: PDFs emit U+2019 as often as U+0027, and
   // "chiffre d'affaires" must match either form.
   const l = label.toLowerCase().replace(/[\u2018\u2019\u02BC]/g, "'");
-  for (const h of HINTS) if (h.words.some((w) => l.includes(w))) return { name: h.name, code: h.code };
+  /* An English homograph ("Bank charges", "Share capital") counts only as
+     a whole word beside a foreign word or letter, and a hint that hides
+     inside an English word only as a whole word. As plain substrings,
+     "loyer" found French inside "Employer's NIC", and "charges" and
+     "capital" read a plain UK set of accounts as French and Spanish. */
+  const foreignContext = /[\u00C0-\u024F]/.test(l) || /(^|[^\p{L}])(de|du|des|la|le|les|et|aux?|autres|del|los|las|y|e|do|da|dos|das|und|der|die|het|van|di|il)([^\p{L}]|$)/u.test(l);
+  const whole = (w: string) => new RegExp(`(^|[^\\p{L}])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}]|$)`, "u").test(l);
+  // Substring otherwise: German and Dutch compound their accounting words.
+  const hit = (w: string) =>
+    ENGLISH_HOMOGRAPHS.has(w) ? whole(w) && foreignContext
+    : WHOLE_WORD_HINTS.has(w) ? whole(w)
+    : l.includes(w);
+  for (const h of HINTS) if (h.words.some(hit)) return { name: h.name, code: h.code };
   // Vietnamese shares ă â ê ô with French/Portuguese, so it is tested AFTER the
   // vocabulary hints and only on letters no other Latin language uses.
   if (/[đơưạảấầẩẫậắằẳẵặẹẻẽếềểễệỉịọỏốồổỗộớờởỡợụủứừửữựỳỵỷỹ]/i.test(label)) return { name: "Vietnamese", code: "vi" };
@@ -136,4 +154,12 @@ export function displayLabel(
   const en = translations?.[label];
   if (!en || en === label) return label;
   return isServiceErrorText(en) ? label : en;
+}
+
+/** The caption as every export shows it: the English, with the words the
+    document printed kept beside it for the audit trail. One form, so the
+    Provenance sheet, the attached schedules and the mapping screen agree. */
+export function bilingualLabel(translations: Record<string, string> | undefined, label: string): string {
+  const en = displayLabel(translations, label);
+  return en === label ? label : `${en} (original: ${label})`;
 }

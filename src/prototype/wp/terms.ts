@@ -149,6 +149,79 @@ export const CAPTION_TERMS: Record<string, string> = {
   "lucro liquido do exercicio": "net profit for the year",
   // French
   "chiffre d'affaires": "turnover",
+  // French and Swiss statements — leaf captions only. A subtotal line is
+  // left out on purpose ("Trésorerie", "Passifs de régularisation"): it is
+  // dropped by its arithmetic, and translating it would book it twice.
+  // "Bénéfice de l'exercice" is left out too: on a balance sheet it is the
+  // year's result inside equity, and "profit for the year" is a skipped total.
+  "banques": "cash at bank",
+  "caisse": "cash on hand",
+  "caisses": "cash on hand",
+  "liquidites": "cash",
+  "clients": "trade receivables",
+  "debiteurs": "accounts receivable",
+  "c/c associe": "loan to shareholder",
+  "compte courant associe": "loan to shareholder",
+  "comptes courants associes": "loan to shareholder",
+  "stocks": "inventory",
+  "marchandises": "inventory",
+  "actifs transitoires": "prepaid expenses",
+  "charges constatees d'avance": "prepaid expenses",
+  "immobilisations corporelles": "property, plant and equipment",
+  "mobilier et installations": "furniture and fittings",
+  "materiel informatique": "computer equipment",
+  "vehicules": "motor vehicles",
+  "amortissements cumules": "accumulated depreciation",
+  "fournisseurs": "trade creditors",
+  "dettes fournisseurs": "trade creditors",
+  "creanciers": "trade creditors",
+  "charges a payer": "accrued expenses",
+  "passifs transitoires": "accrued expenses",
+  "provision pour impots": "income tax payable",
+  "provisions pour impots": "income tax payable",
+  "impots a payer": "income tax payable",
+  "capital-actions": "share capital",
+  "capital actions": "share capital",
+  "capital-social": "share capital",
+  "report a nouveau": "retained earnings",
+  "benefice reporte": "retained earnings",
+  "perte reportee": "retained earnings",
+  "prestations de services": "revenue from services",
+  "ventes": "sales",
+  "ventes de marchandises": "sales of goods",
+  "loyer": "rent",
+  "loyers": "rent",
+  "loyers et charges": "rent",
+  "salaires": "salaries and wages",
+  "charges sociales": "payroll taxes",
+  "fournitures de bureau": "office expenses",
+  "fournitures de bureau et informatique": "office expenses",
+  "cotisations": "subscriptions",
+  "cotisations, affiliations": "subscriptions",
+  "frais de communication": "telephone and communications",
+  "frais de telecommunication": "telephone and communications",
+  "frais de publicite": "advertising",
+  "publicite": "advertising",
+  "frais de deplacements": "travel expenses",
+  "frais de deplacement": "travel expenses",
+  "frais de documentation et de formation": "books and subscriptions",
+  "frais de comptabilite": "accounting fees",
+  "petit materiel": "small material",
+  "petit materiel et fournitures": "small material and supplies",
+  "petit materiel et fournitures de training": "small material and training supplies",
+  "honoraires comptables": "accounting fees",
+  "honoraires juridiques": "legal fees",
+  "assurances": "insurance",
+  "entretien et reparations": "repairs and maintenance",
+  "interets crediteurs": "interest income",
+  "produits financiers": "interest income",
+  "interets debiteurs": "interest expense",
+  "charges financieres": "interest expense",
+  "frais bancaires": "bank charges",
+  "impots": "income tax expense",
+  "impots directs": "income tax expense",
+  "impots sur le benefice": "income tax expense",
+  "amortissements": "depreciation",
   "achats de marchandises": "purchases of goods",
   "charges de personnel": "personnel costs",
   "dotations aux amortissements": "depreciation charge",
@@ -171,7 +244,31 @@ export const CAPTION_TERMS: Record<string, string> = {
 /** The English for one caption, or null. Whole-phrase only — see above. */
 export function translateCaption(label: string): string | null {
   const k = fold(label).replace(/[.:;]+$/, "").replace(/\s*\.{2,}\s*$/, "");
-  return CAPTION_TERMS[k] || null;
+  const hit = CAPTION_TERMS[k] || CAPTION_SQUEEZED().get(squeeze(k));
+  if (hit) return hit;
+  /* "Frais de comptabilitée": a doubled final e (a common typo, and an OCR
+     echo) is the only difference from the glossary word. */
+  const e = k.replace(/ee\b/g, "e");
+  return e !== k ? CAPTION_TERMS[e] || CAPTION_SQUEEZED().get(squeeze(e)) || null : null;
+}
+
+/* OCR drops spaces and apostrophes in running text ("Report à nouveau" →
+   "Reporta nouveau", "pour impôts" → "pourimpots") and confuses the thin
+   strokes ("C/C" → "CIC"). The second look-up compares the whole caption
+   with those removed or merged — still whole-phrase, never a partial match,
+   and only for keys of five or more characters. "rn" read as "m"
+   ("fournitures" → "foumitures") is folded the same way. */
+const squeeze = (s: string): string =>
+  fold(s).replace(/[\s'\u2019.,&-]+/g, "").replace(/[/|il1]/g, "l").replace(/0/g, "o").replace(/rn/g, "m");
+let squeezed: Map<string, string> | null = null;
+function CAPTION_SQUEEZED(): Map<string, string> {
+  if (squeezed) return squeezed;
+  squeezed = new Map();
+  for (const [k, v] of Object.entries(CAPTION_TERMS)) {
+    const z = squeeze(k);
+    if (z.length >= 5 && !squeezed.has(z)) squeezed.set(z, v);
+  }
+  return squeezed;
 }
 
 /* Function words that give a language away. Script alone cannot separate

@@ -10,11 +10,11 @@
 
 import type { PdfDoc } from "./pdfText";
 import { looksLikeQuestionnaire } from "./questionnaire";
-import { SECTION_BANNERS } from "./sectionBanners";
+import { SECTION_BANNERS, bannerKey } from "./sectionBanners";
 import { detectTextLanguage, identifyByTerms } from "./terms";
 import { looksLikeSalarySchedule } from "./relatedPartyLedger";
 import type { ParsedDoc } from "./engine";
-import { numeric } from "./engine";
+import { detectGridYearHeader, numeric } from "./engine";
 
 export type DocKind =
   | "cfc-financial-statements"
@@ -52,6 +52,12 @@ export type PageKind =
       expense boxes are booked and its balance-sheet boxes are offered for
       review. */
   | "tax-form"
+  /** A cash-flow statement. It restates the balance sheet and the P&L, so
+      it is read for identification only and never booked. */
+  | "fs-cashflow"
+  /** A page with no financial content: an identity card, a passport copy,
+      a signature page. Read for identification only; never booked. */
+  | "non-financial"
   | "tandc" | "unknown";
 
 export type PageInfo = { page: number; kind: PageKind; score: number };
@@ -207,7 +213,7 @@ type BannerSide = "assets" | "liabilities" | "equity" | "income" | "costs";
 function bannerSides(doc: PdfDoc, page: number): Set<BannerSide> {
   const out = new Set<BannerSide>();
   for (const text of pageRowTexts(doc, page)) {
-    const label = text.trim();
+    const label = bannerKey(text);
     if (!label || label.length > 60) continue;
     for (const [re, section] of SECTION_BANNERS) {
       if (!re.test(label)) continue;
@@ -372,6 +378,14 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     return mk("tax-form", 2);
   }
 
+  /* Pages that are part of the pack but are not a statement the work paper
+     books: the cash-flow statement, the notes, an identity card, a signature
+     page. Decided before the statement tests so that none of them can be
+     filed as a balance sheet, or inherit one as an anchor-less continuation,
+     and have its dates, card numbers or cash movements booked. */
+  const notStatement = nonStatementKind(doc, page);
+  if (notStatement) return mk(notStatement, 2);
+
   // Statutory financial statements: entity + company-number band, section
   // title. UK statutory accounts print "Company No. SC240721" and Companies
   // House registration lines — all count as the band.
@@ -397,6 +411,10 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
   if (fsBand) {
     // Cover/administrative pages mention every section name — test them first.
     if (/\bcontents\b|directors'? (statement|report)|accountants'? report|compilation report|independent auditor/.test(head)) return mk("fs-cover", 3);
+    /* A covering letter in the pack names the statements it encloses ("the
+       limited balance sheet, with explanation"); addressed to someone and
+       carrying no figures, it is the cover, not a balance sheet. */
+    if (pageRowTexts(doc, page).slice(0, 8).some((t) => LETTER_OPENING.test(foldAccents(t).trim())) && amountRowCount(doc, page) <= 2) return mk("fs-cover", 2);
     // Under an ASSUMED band (statutory second pass) a titled notes page wins
     // before the statement tests — note prose mentions "balance sheet" freely.
     if (opts?.assumeFsBand && /accounting policies|notes to the (accounts|financial statements)/.test(head)) return mk("fs-notes", 2);
@@ -407,7 +425,7 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
     // Equity movements need the strong anchor — a P&L-titled page carrying the
     // retained-profits roll-forward is the equity statement, not a P&L.
     if (/statement of changes in equity/.test(head) || /opening retained (profits|earnings)|retained (profits|earnings) at the (beginning|start)|movements? in equity/.test(all)) return mk("fs-equity", 3);
-    if (/statement of financial performance|profit (and|or) loss|income statement|statement of comprehensive income|estado de resultados?|estado de ganancias y p\u00e9rdidas|estado de ganancias y perdidas|cuenta de resultados|demonstra\u00e7\u00e3o do resultado|demonstracao do resultado|compte de profits et pertes|compte de r\u00e9sultat|compte de resultat|erfolgsrechnung|conto economico|winst- en verliesrekening|gewinn- und verlustrechnung/.test(head)) return mk("fs-pnl", 3);
+    if (/statement of financial performance|profit (and|or) [l1i|]oss|income statement|statement of comprehensive income|estado de resultados?|estado de ganancias y p\u00e9rdidas|estado de ganancias y perdidas|cuenta de resultados|demonstra\u00e7\u00e3o do resultado|demonstracao do resultado|compte de profits et pertes|compte de r\u00e9sultat|compte de resultat|erfolgsrechnung|conto economico|winst- en verliesrekening|gewinn- und verlustrechnung/.test(head)) return mk("fs-pnl", 3);
     if (/accounting policies|notes to /.test(head)) return mk("fs-notes", 2);
     if (/financial statements/.test(head)) return mk("fs-cover", 2);
   }
@@ -458,10 +476,64 @@ function classifyPdfPage(doc: PdfDoc, page: number, opts?: { assumeFsBand?: bool
   return mk("unknown", 0);
 }
 
+const CASHFLOW_TITLE = /\b(?:estados?\s+de\s+flujos?\s+de\s+efectivo|flujos?\s+de\s+efectivo|statement\s+of\s+cash\s*flows?|cash\s*flows?\s+statement|tableau\s+des\s+flux\s+de\s+tresorerie|kapitalflussrechnung|rendiconto\s+finanziario|demonstracao\s+dos?\s+fluxos?\s+de\s+caixa|kasstroomoverzicht)\b/;
+const NOTES_TITLE = /\bnotas?\s+a\s+los\s+estados\s+financieros\b|\bnotes\s+to\s+(?:the\s+)?(?:financial\s+statements|accounts)\b|^notas?(?:\s+\d+)?\s*[:.\-\u2013]?$/;
+/* "2.4 Notes to the balance sheet", "Notes to the profit and loss account":
+   a notes heading that NAMES a statement. It opens the line (a section
+   number may lead), which is what separates it from a statement page that
+   refers the reader to its notes. */
+const NOTES_TO_STATEMENT = /^(?:\d+(?:\.\d+)*\.?\s+)?notes?\s+to\s+(?:the\s+)?(?:balance\s+sheet|profit\s+and\s+[l1i|]oss(?:\s+account)?|income\s+statement|statement\s+of\s+(?:financial\s+position|comprehensive\s+income))\b/;
+/* A covering letter: addressed to someone, and carrying no statement. */
+const LETTER_OPENING = /^(?:to\s+the\s+(?:directors|board|shareholders|management)\s+of\b|for\s+the\s+attention\s+of\b|dear\s+(?:mr|mrs|ms|sir|madam|client)\b|geachte\s|sehr\s+geehrte|estimad[oa]s?\s|madame,?\s+monsieur)/;
+/* The tax adviser's computation of the taxable amount: it restates the
+   result, and is not a statement the work paper books. */
+const FISCAL_TITLE = /\bfiscal\s+position\b|\bcalculation\s+(?:of\s+(?:the\s+)?)?taxable\s+(?:amount|income|profit)\b|\btax\s+computation\b|\bfiscale\s+positie\b|\bberekening\s+belastbaar\b/;
+const ID_DOCUMENT = /carne?\s*de\s*ident|cedula\s+de\s+identidad|documento\s+(?:nacional\s+)?de\s+identidad|tribunal\s+electoral|identity\s+card|\bpassport\b|\bpasaporte\b/;
+const ID_DETAIL = /fecha\s*de\s*(?:nacimiento|expiracion|emision|vencimiento)|lugar\s+de\s+nacimiento|date\s+of\s+(?:birth|expiry|issue)/;
+/* The heading alone, or beside the "Pages" / "Página" column heading OCR
+   puts on the same line. */
+const CONTENTS_TITLE = /^(?:(?:pages?|p[a\u00e1]ginas?)\s+)?(?:indice|contenido|tabla\s+de\s+contenidos?|contents|table\s+of\s+contents|sommaire|inhalt(?:sverzeichnis)?|inhoud(?:sopgave)?)(?:\s+(?:pages?|p[a\u00e1]ginas?))?$/;
+const SIGNATURE = /\b(?:firma|firmado|signature|signed)\b/;
+
+/** A page of the pack that is not a statement the work paper books, or null.
+    The title lines are the page's first six rows; a contents page names
+    every statement at once and is left to the cover rules. */
+export function nonStatementKind(doc: PdfDoc, page: number): "fs-cover" | "fs-cashflow" | "fs-notes" | "non-financial" | null {
+  const lines = pageRowTexts(doc, page).map(foldAccents);
+  const all = lines.join("\n");
+  if (ID_DOCUMENT.test(all) && ID_DETAIL.test(all)) return "non-financial";
+  /* Title lines carry no figure: "Resultado del periodo (621)" in the first
+     rows of a cash-flow statement is a data row, not a P&L title. */
+  /* A contents page ("Índice") names every statement, each beside its page
+     number; read as a statement, the page numbers were booked. */
+  if (lines.slice(0, 8).some((t) => CONTENTS_TITLE.test(t.trim()))) return "fs-cover";
+  const title = lines.slice(0, 6).filter((t) => !/\d[\d.,]*\)?\s*$/.test(t) || /\b(?:19|20)\d{2}\s*$/.test(t));
+  if (title.some((t) => NOTES_TO_STATEMENT.test(t.trim()))) return "fs-notes";
+  if (title.some((t) => FISCAL_TITLE.test(t))) return "fs-notes";
+  const statementTitle = title.some((t) => BS_TITLE_WORDS.test(t) || IS_TITLE_WORDS.test(t));
+  if (statementTitle) return null;
+  if (title.some((t) => CASHFLOW_TITLE.test(t))) return "fs-cashflow";
+  if (title.some((t) => NOTES_TITLE.test(t.trim()))) return "fs-notes";
+  return null;
+}
+
+/** Is this page headed "Notes to the balance sheet" (or to another named statement)? */
+function notesToStatementPage(doc: PdfDoc, page: number): boolean {
+  const title = pageRowTexts(doc, page).map(foldAccents).slice(0, 6);
+  return title.some((t) => NOTES_TO_STATEMENT.test(t.trim()));
+}
+
+/** A signature page: signing words and no money. Only asked of a page no
+    title placed, before it could inherit the statement in front of it. */
+function signaturePage(doc: PdfDoc, page: number): boolean {
+  const lines = pageRowTexts(doc, page).map(foldAccents);
+  return SIGNATURE.test(lines.join("\n")) && amountRowCount(doc, page) <= 1 && lines.length <= 30;
+}
+
 /* Which of the two statements a matched title names. Folded, so the accented
    and unaccented spellings are one pattern. */
 const BS_TITLE_WORDS = /balance sheet|financial position|balance general|balance de situacion|posicion financiera|situacion financiera|balanco|bilan\b|bilanz|bilancio|balans/;
-const IS_TITLE_WORDS = /income statement|profit (and|or|&) loss|comprehensive income|financial performance|estado de resultados?|cuenta de resultados|resultado|compte de (profits|resultat)|conto economico|verliesrekening|verlustrechnung|erfolgsrechnung/;
+const IS_TITLE_WORDS = /income statement|profit (and|or|&) [l1i|]oss|comprehensive income|financial performance|estado de resultados?|cuenta de resultados|resultado|compte de (profits|resultat)|conto economico|verliesrekening|verlustrechnung|erfolgsrechnung/;
 
 /** Kinds that legitimately continue onto anchor-less following pages. */
 const CONTINUABLE = new Set<PageKind>([
@@ -489,7 +561,26 @@ export function classifyPages(doc: PdfDoc): PageInfo[] {
     }
   }
   // Pass 3 — anchor-less continuation pages inherit the previous kind.
+  /* Notes continue too, once the face statements have been found: an
+     untitled page after "Notes to the balance sheet" is more notes (a
+     roll-forward, a loan schedule), never a second balance sheet. */
+  const hasFace = out.some((p) => p.kind === "fs-balance-sheet") && out.some((p) => p.kind === "fs-pnl");
+  /* Only a notes section that names its statement ("Notes to the balance
+     sheet") is known to run on: general notes are followed as often by
+     supplementary schedules as by more notes. */
+  let notesRun = false;
   for (let i = 1; i < out.length; i++) {
+    const prev = out[i - 1];
+    if (prev.kind !== "fs-notes") notesRun = false;
+    else if (notesToStatementPage(doc, prev.page)) notesRun = true;
+    if (hasFace && notesRun && out[i].kind === "unknown") {
+      out[i] = { page: out[i].page, kind: "fs-notes", score: 1 };
+      continue;
+    }
+    if (out[i].kind === "unknown" && CONTINUABLE.has(out[i - 1].kind) && signaturePage(doc, out[i].page)) {
+      out[i] = { page: out[i].page, kind: "non-financial", score: 1 };
+      continue;
+    }
     if (out[i].kind === "unknown" && CONTINUABLE.has(out[i - 1].kind)) {
       out[i] = { page: out[i].page, kind: out[i - 1].kind, score: 1 };
     }
@@ -529,6 +620,13 @@ const YEAR_ANCHORS: RegExp[] = [
   /\bal\s+\d{1,2}\s*[\/.-]\s*[a-z\u00e0-\u00ff]{3,}\.?\s*[\/.-]\s*(\d{4})/,
   /\bal\s+\d{1,2}\s+de\s+[a-z\u00e0-\u00ff]+\s+de\s+(\d{4})/,
   /\bem\s+\d{1,2}\s*[\/.-]\s*[a-z\u00e0-\u00ff]{3,}\.?\s*[\/.-]\s*(\d{4})/,
+  /* How a Dutch package (and many others) heads its pages: "Balance sheet as
+     of 2024", "Results until end of 2024", and a cover printing the period
+     as two numeric dates, "01/01/2024 - 31/12/2024". None was read, so a
+     2024 set of accounts reported no year at all. The range's END year. */
+  /balance sheet (?:as )?(?:at|of) (\d{4})\b/,
+  /(?:until|up to|to) (?:the )?end of (\d{4})\b/,
+  /\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{4}\s*(?:-|\u2013|\u2014|to|through|t\/m)\s*\d{1,2}[\/.-]\d{1,2}[\/.-](\d{4})\b/,
 ];
 
 /* ---------- the period the statements themselves report on ----------
@@ -658,7 +756,38 @@ export function detectStatementPeriod(doc: PdfDoc, pages: PageInfo[], year: numb
       return { start, end };
     }
   }
+  /* A range printed as two numeric dates ("01/01/2024 - 31/12/2024"). The
+     day and month order is taken from the dates themselves — a part over 12
+     can only be a day — and a range that cannot be ordered is not read.
+     A statement set's own cover prints it too ("Financial report, 01/01/2024
+     - 31/12/2024") though the cover itself names no statement: the FIRST
+     page counts when the pages after it are statements. */
+  const coverOf = pages.length && pages[0].kind === "unknown" && pages.some((p) => /^fs-/.test(p.kind)) ? pages[0].page : null;
+  for (const pi of pages) {
+    if (!/^(fs-|ato-)/.test(pi.kind) && pi.page !== coverOf) continue;
+    const head = pageText(doc, pi.page, "head");
+    for (const m of head.matchAll(/\b(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})\s*(?:-|\u2013|\u2014|to|through|t\/m)\s*(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})\b/gi)) {
+      const r = numericRange(m.slice(1, 7).map(Number));
+      if (!r) continue;
+      if (year && Number(r.end.slice(-4)) !== year) continue;
+      return r;
+    }
+  }
   return { start: null, end: detectStatementPeriodEnd(doc, pages, year) };
+}
+
+/** [a, b, y1, c, d, y2] of "a/b/y1 - c/d/y2" as MM/DD/YYYY start and end. */
+export function numericRange(p: number[]): { start: string; end: string } | null {
+  const [a, b, y1, c, d, y2] = p;
+  const dmy = a > 12 || c > 12, mdy = b > 12 || d > 12;
+  if (dmy === mdy) return null;                     // both or neither: cannot order
+  const mk = (day: number, mon: number, y: number) => {
+    const dt = new Date(Date.UTC(y, mon - 1, day));
+    if (y < 2000 || y > 2035 || dt.getUTCMonth() + 1 !== mon || dt.getUTCDate() !== day) return null;
+    return `${String(mon).padStart(2, "0")}/${String(day).padStart(2, "0")}/${y}`;
+  };
+  const start = dmy ? mk(a, b, y1) : mk(b, a, y1), end = dmy ? mk(c, d, y2) : mk(d, c, y2);
+  return start && end && start.slice(-4) + start.slice(0, 5) <= end.slice(-4) + end.slice(0, 5) ? { start, end } : null;
 }
 
 export function detectStatementPeriodEnd(doc: PdfDoc, pages: PageInfo[], year: number | null): string | null {
@@ -768,6 +897,10 @@ function findCompanyNames(doc: PdfDoc, pages: number[]): string[] {
     if (/statement|report|schedule|form\b/i.test(t) || NAME_ROW_NOISE.test(t)) return;
     const cleaned = t
       .replace(/^name of (company|entity|corporation)\s*/i, "")
+      /* A covering letter's address block: "To the directors of Collaborate
+         and Eight B.V." names the company after a salutation that is not
+         part of its name. */
+      .replace(/^(?:to\s+the\s+(?:directors|board(?:\s+of\s+directors)?|shareholders|management|members)\s+of\s+|for\s+the\s+attention\s+of\s+|attn\.?:?\s+|reference:?\s+|re:\s+|aan\s+de\s+directie\s+van\s+)/i, "")
       /* A form prints the tax identifier and the name on one line. The number
          is not part of the name, and left on it no two documents about the
          same company ever look alike. */
@@ -1050,6 +1183,34 @@ function looksLikeLedger(parsed: ParsedDoc, fileName: string): boolean {
   return false;
 }
 
+const GRID_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+/** The period end a statement grid prints over its newest year column:
+    "December 31," above "2024", or "December 31, 2024" in one cell. */
+export function gridPeriodEnd(grid: string[][] | null): string | null {
+  if (!grid) return null;
+  const years = detectGridYearHeader(grid);
+  if (!years) return null;
+  let col = -1, year = 0;
+  years.forEach((y, i) => { if (typeof y === "number" && y > year) { year = y; col = i; } });
+  if (col < 0) return null;
+  const md = (t: string) => {
+    const x = String(t || "").trim().toLowerCase().replace(/[,.]/g, " ").replace(/\s+/g, " ").trim();
+    let m = /^([a-z]{3})[a-z]*\s+(\d{1,2})(?:\s+(\d{4}))?$/.exec(x);
+    if (m && GRID_MONTHS.includes(m[1])) return { mo: GRID_MONTHS.indexOf(m[1]) + 1, d: +m[2], y: m[3] ? +m[3] : null };
+    m = /^(\d{1,2})\s+([a-z]{3})[a-z]*(?:\s+(\d{4}))?$/.exec(x);
+    if (m && GRID_MONTHS.includes(m[2])) return { mo: GRID_MONTHS.indexOf(m[2]) + 1, d: +m[1], y: m[3] ? +m[3] : null };
+    return null;
+  };
+  for (let r = 0; r < Math.min(grid.length, 12); r++) {
+    const cell = grid[r] ? String(grid[r][col] ?? "").trim() : "";
+    const hit = md(cell);
+    if (!hit || hit.d < 1 || hit.d > 31) continue;
+    if (hit.y !== null && hit.y !== year) continue;
+    return `${String(hit.mo).padStart(2, "0")}/${String(hit.d).padStart(2, "0")}/${year}`;
+  }
+  return null;
+}
+
 export function classifyParsedDoc(fileId: string, fileName: string, parsed: ParsedDoc, caseYear?: number | null): DocClass {
   const notes: DocNote[] = [];
 
@@ -1070,6 +1231,9 @@ export function classifyParsedDoc(fileId: string, fileName: string, parsed: Pars
       textChars: parsed.grid.reduce((n, r) => n + r.reduce((m, c) => m + String(c || "").length, 0), 0),
       amountRows: parsed.grid.filter((r) => r.some((c) => numeric(String(c || "")) !== null)).length,
       statementYear: null,
+      /* A statement grid heads its columns "December 31," over "2024": that
+         is the period it reports, though a grid never votes the year. */
+      statementPeriodEnd: gridPeriodEnd(parsed.grid),
       entityName: null,
       foreignCorpName: null,
       entityIds: [],
@@ -1263,7 +1427,7 @@ export function markDuplicates(classes: DocClass[], parsedByFile: Map<string, Pa
   }
 }
 
-export function deriveCaseYears(classes: DocClass[]): { cy: number | null; py: number | null; dissent: number[] } {
+export function deriveCaseYears(classes: DocClass[]): { cy: number | null; py: number | null; dissent: number[]; afterPrior?: number } {
   const votes = new Map<number, number>();
   for (const c of classes) {
     if ((c.kind === "cfc-financial-statements" || c.kind === "cfc-tax-return") && !c.duplicateOf && c.statementYear) {
@@ -1275,6 +1439,31 @@ export function deriveCaseYears(classes: DocClass[]): { cy: number | null; py: n
   // outvote the current file. Dissenting years are surfaced for review.
   const years = [...votes.keys()].sort((a, b) => b - a);
   const cy = years[0] ?? null;
+  /* A prior-year return names the year BEFORE the work paper. Statements
+     that also carry a later year (2022 | 2023 | 2024 beside a 2022 return)
+     are prepared for the year after that return, not for their newest
+     column: the later year is reference only until the preparer says so. */
+  /* Calendar years only: a fiscal year is labelled by the year it ENDS in
+     on the statements (FY2025 to March 2025) but filed as the year it began
+     in, so "prior + 1" would point at the wrong column there. */
+  const prior = classes
+    .filter((c) => c.kind === "prior-year-us-return" && !c.duplicateOf && c.statementYear
+      && /^12\/31\//.test(String(c.statementPeriodEnd || "")))
+    .map((c) => c.statementYear as number).sort((a, b) => b - a)[0];
+  if (prior && cy && cy >= prior + 2) {
+    return { cy: prior + 1, py: prior, dissent: years.filter((y) => y !== prior + 1), afterPrior: prior };
+  }
+  /* No statement states a year: the prior-year return still says which year
+     this work paper is for. */
+  /* When nothing else states a year, a prior return whose period end has not
+     been read yet (it is taken from the return's face later in the run) is
+     still the best evidence there is — unless it states a non-calendar end. */
+  if (!cy) {
+    const any = prior ?? classes
+      .filter((c) => c.kind === "prior-year-us-return" && !c.duplicateOf && c.statementYear && !c.statementPeriodEnd)
+      .map((c) => c.statementYear as number).sort((a, b) => b - a)[0];
+    if (any) return { cy: any + 1, py: any, dissent: [], afterPrior: any };
+  }
   return { cy, py: cy ? cy - 1 : null, dissent: years.slice(1) };
 }
 
@@ -1295,6 +1484,9 @@ export function feedsForPage(cls: DocClass, pageKind: PageKind): Set<FeedTarget>
     return new Set<FeedTarget>([own ? "unassigned" : "none"]);
   }
   if (pageKind === "questionnaire") return new Set<FeedTarget>(["profile"]);
+  /* Read for identification, never booked, whatever the document is. */
+  if (pageKind === "non-financial") return new Set<FeedTarget>(["none"]);
+  if (pageKind === "fs-cashflow") return new Set<FeedTarget>(["profile"]);
   /* A boxed form's figures are not on its rows — they are rebuilt from its
      geometry, so it feeds from the rebuilt pairs and never from the page. */
   if (pageKind === "tax-form") return new Set<FeedTarget>(["boxed-form", "profile"]);

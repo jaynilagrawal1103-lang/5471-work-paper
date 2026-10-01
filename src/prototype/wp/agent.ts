@@ -56,6 +56,9 @@ export type AgentRow = {
   /** Whether a keyword rule claims the caption. The agent uses it to tell an
       item that will simply be mapped from one that will fall through. */
   ruleMatched?: boolean;
+  /** The rule catalogue itself files this caption as a total (SKIP), so
+      it names itself one even without the word "total". */
+  namedTotal?: boolean;
   english?: string;                  // the translation stage's output, when there is one
   values: Array<number | null>;
   years: Array<number | null>;
@@ -218,6 +221,9 @@ export type CaseContext = {
   entityName?: string | null;
   /** Whether the tool is allowed to create an entity without being asked. */
   mayCreateEntity?: boolean;
+  /** Other names this same company prints its papers under (books or
+      trading name). A document under one of them is not another company's. */
+  aliases?: string[];
 };
 
 /** Everything the understanding phase produced, kept on the entity so the
@@ -579,7 +585,9 @@ const yearCheck = (state: AgentState) => {
       }
       return {
         ...d, role: "prior-year-input", supportsYear: required,
-        match: d.statementYear === null ? "unclear" : ok ? "match" : "mismatch",
+        /* With no work paper year there is nothing to mismatch: the return
+           is waiting on the year, not contradicting it. */
+        match: d.statementYear === null || required === null ? "unclear" : ok ? "match" : "mismatch",
       };
     }
     if (d.statementYear === null) {
@@ -648,7 +656,10 @@ const spotlight = (state: AgentState) => {
     if (row.dropped) {
       /* Dropped by the arithmetic, not by its name. A real subtotal says so;
          this one only happened to equal the rows above it. */
-      if (!TOTAL_LIKE.test(row.label)) {
+      /* A caption the catalogue files as a subtotal ("Profit on ordinary
+         activities before taxation") names itself one, and a whole page
+         set aside as a movement schedule was not dropped by arithmetic. */
+      if (!TOTAL_LIKE.test(row.label) && !row.namedTotal && !/reconciles one account's movements/.test(String(row.dropped))) {
         add(row, "dropped-as-structure",
           `dropped before mapping as ${row.dropped}, although the caption does not name itself a total`);
       }
@@ -789,7 +800,12 @@ const reconcile = (state: AgentState) => {
   const cite = (row: AgentRow) => evidenceOf(row);
 
   /* ---- the period the work paper is filed for ---- */
-  if (f.cyEnd && /assumed/i.test(f.cyEndSource || "")) {
+  /* A statement column headed "December 31, 2024" confirms the period end,
+     however Basic Information came by it: nothing to say. */
+  const periodConfirmed = !!(f.cyEnd && f.statementPeriodEnd
+    && f.statementPeriodEnd.slice(0, 5) === f.cyEnd.slice(0, 5) && f.statementPeriodEnd.slice(-2) === f.cyEnd.slice(-2));
+  if (periodConfirmed) { /* confirmed by this year's accounts */ }
+  else if (f.cyEnd && /assumed/i.test(f.cyEndSource || "")) {
     findings.push({
       kind: "period",
       message: `The period end ${f.cyEnd} was assumed, not read: no document in this entity states one. The year end picks the exchange-rate tables and dates Schedules E and J, so a fiscal entity dated 31 December is wrong throughout. Check Basic Information B1 and B2 before generating.`,
@@ -938,6 +954,7 @@ const risks = (state: AgentState) => {
          and neither string contains the other. */
       if (other === own || other.includes(own) || own.includes(other)) continue;
       if (entitySimilarity(String(name), String(ctx?.entityName || "")) >= 0.5) continue;
+      if ((ctx?.aliases || []).some((a) => entitySimilarity(String(name), a) >= 0.5)) continue;
       out.push({
         id: `cross-entity-${d.docId}`,
         level: "critical",

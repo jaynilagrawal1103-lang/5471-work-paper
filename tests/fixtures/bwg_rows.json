@@ -1,0 +1,2550 @@
+{
+"pl": [
+{
+"page": 1,
+"y": 788,
+"cells": [
+{
+"text": "Blue Water Grill Ltd",
+"x0": 228.0
+}
+]
+},
+{
+"page": 1,
+"y": 776,
+"cells": [
+{
+"text": "Profit and Loss",
+"x0": 258.0
+}
+]
+},
+{
+"page": 1,
+"y": 764,
+"cells": [
+{
+"text": "January - December 2024",
+"x0": 240.0
+}
+]
+},
+{
+"page": 1,
+"y": 752,
+"cells": [
+{
+"text": "TOTAL",
+"x0": 539.0
+}
+]
+},
+{
+"page": 1,
+"y": 740,
+"cells": [
+{
+"text": "Income",
+"x0": 29.0
+}
+]
+},
+{
+"page": 1,
+"y": 728,
+"cells": [
+{
+"text": "Bar Sales",
+"x0": 35.0
+}
+]
+},
+{
+"page": 1,
+"y": 716,
+"cells": [
+{
+"text": "Assorted Bevs",
+"x0": 38.0
+},
+{
+"text": "188,090.90",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 704,
+"cells": [
+{
+"text": "Beer",
+"x0": 38.0
+},
+{
+"text": "137,094.28",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 692,
+"cells": [
+{
+"text": "Liquor",
+"x0": 38.0
+},
+{
+"text": "760,520.59",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 680,
+"cells": [
+{
+"text": "Wine",
+"x0": 38.0
+},
+{
+"text": "245,742.96",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 668,
+"cells": [
+{
+"text": "Total Bar Sales",
+"x0": 35.0
+},
+{
+"text": "1,331,448.73",
+"x0": 514.0
+}
+]
+},
+{
+"page": 1,
+"y": 656,
+"cells": [
+{
+"text": "Food Sales",
+"x0": 35.0
+}
+]
+},
+{
+"page": 1,
+"y": 644,
+"cells": [
+{
+"text": "Food",
+"x0": 38.0
+},
+{
+"text": "2,683,023.08",
+"x0": 514.0
+}
+]
+},
+{
+"page": 1,
+"y": 632,
+"cells": [
+{
+"text": "Merchandise Sales",
+"x0": 38.0
+},
+{
+"text": "43,760.69",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 620,
+"cells": [
+{
+"text": "Total Food Sales",
+"x0": 35.0
+},
+{
+"text": "2,726,783.77",
+"x0": 514.0
+}
+]
+},
+{
+"page": 1,
+"y": 608,
+"cells": [
+{
+"text": "Total Income",
+"x0": 29.0
+},
+{
+"text": "BZ$4,058,232.50",
+"x0": 497.0
+}
+]
+},
+{
+"page": 1,
+"y": 596,
+"cells": [
+{
+"text": "Cost of Sales",
+"x0": 29.0
+}
+]
+},
+{
+"page": 1,
+"y": 584,
+"cells": [
+{
+"text": "Food and Beverage Costs",
+"x0": 35.0
+}
+]
+},
+{
+"page": 1,
+"y": 572,
+"cells": [
+{
+"text": "Beverage Costs",
+"x0": 38.0
+}
+]
+},
+{
+"page": 1,
+"y": 560,
+"cells": [
+{
+"text": "Assorted Bevs",
+"x0": 41.0
+},
+{
+"text": "101,845.68",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 548,
+"cells": [
+{
+"text": "Bar Supplies",
+"x0": 41.0
+},
+{
+"text": "7,489.32",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 536,
+"cells": [
+{
+"text": "Beer",
+"x0": 41.0
+},
+{
+"text": "61,590.27",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 524,
+"cells": [
+{
+"text": "Liquor",
+"x0": 41.0
+},
+{
+"text": "190,369.62",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 512,
+"cells": [
+{
+"text": "Wine",
+"x0": 41.0
+},
+{
+"text": "130,753.76",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 500,
+"cells": [
+{
+"text": "Total Beverage Costs",
+"x0": 38.0
+},
+{
+"text": "492,048.65",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 488,
+"cells": [
+{
+"text": "Food costs",
+"x0": 38.0
+}
+]
+},
+{
+"page": 1,
+"y": 476,
+"cells": [
+{
+"text": "Dairy/Cheese",
+"x0": 41.0
+},
+{
+"text": "84,519.06",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 464,
+"cells": [
+{
+"text": "Dry Goods",
+"x0": 41.0
+},
+{
+"text": "262,631.56",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 452,
+"cells": [
+{
+"text": "Duty/customs",
+"x0": 41.0
+},
+{
+"text": "310.00",
+"x0": 539.0
+}
+]
+},
+{
+"page": 1,
+"y": 440,
+"cells": [
+{
+"text": "Fish/Seafood",
+"x0": 41.0
+},
+{
+"text": "618,111.62",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 428,
+"cells": [
+{
+"text": "Fresh Produce",
+"x0": 41.0
+},
+{
+"text": "310,270.98",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 416,
+"cells": [
+{
+"text": "Meats",
+"x0": 41.0
+},
+{
+"text": "187,493.13",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 404,
+"cells": [
+{
+"text": "Sushi Items Costs",
+"x0": 41.0
+},
+{
+"text": "2,768.64",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 392,
+"cells": [
+{
+"text": "Total Food costs",
+"x0": 38.0
+},
+{
+"text": "1,466,104.99",
+"x0": 514.0
+}
+]
+},
+{
+"page": 1,
+"y": 380,
+"cells": [
+{
+"text": "Total Food and Beverage Costs",
+"x0": 35.0
+},
+{
+"text": "1,958,153.64",
+"x0": 514.0
+}
+]
+},
+{
+"page": 1,
+"y": 368,
+"cells": [
+{
+"text": "Freight and delivery - COS",
+"x0": 35.0
+},
+{
+"text": "19,591.10",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 356,
+"cells": [
+{
+"text": "Staff costs",
+"x0": 35.0
+}
+]
+},
+{
+"page": 1,
+"y": 344,
+"cells": [
+{
+"text": "Bonus",
+"x0": 38.0
+},
+{
+"text": "14,300.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 332,
+"cells": [
+{
+"text": "Casual Labour",
+"x0": 38.0
+},
+{
+"text": "5,439.96",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 320,
+"cells": [
+{
+"text": "Holiday Pay",
+"x0": 38.0
+},
+{
+"text": "14,289.77",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 308,
+"cells": [
+{
+"text": "Overtime",
+"x0": 38.0
+},
+{
+"text": "87,146.95",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 296,
+"cells": [
+{
+"text": "Payroll",
+"x0": 38.0
+},
+{
+"text": "722,488.99",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 284,
+"cells": [
+{
+"text": "Social Security",
+"x0": 38.0
+},
+{
+"text": "39,108.41",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 272,
+"cells": [
+{
+"text": "Tips Paid Payable",
+"x0": 38.0
+},
+{
+"text": "0.00",
+"x0": 549.0
+}
+]
+},
+{
+"page": 1,
+"y": 260,
+"cells": [
+{
+"text": "Vacation Pay",
+"x0": 38.0
+},
+{
+"text": "17,146.66",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 248,
+"cells": [
+{
+"text": "Total Staff costs",
+"x0": 35.0
+},
+{
+"text": "899,920.74",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 236,
+"cells": [
+{
+"text": "Total Cost of Sales",
+"x0": 29.0
+},
+{
+"text": "BZ$2,877,665.48",
+"x0": 497.0
+}
+]
+},
+{
+"page": 1,
+"y": 224,
+"cells": [
+{
+"text": "GROSS PROFIT",
+"x0": 29.0
+},
+{
+"text": "BZ$1,180,567.02",
+"x0": 497.0
+}
+]
+},
+{
+"page": 1,
+"y": 212,
+"cells": [
+{
+"text": "1/3",
+"x0": 554.0
+}
+]
+},
+{
+"page": 1,
+"y": 200,
+"cells": [
+{
+"text": "Accrual Basis Tuesday, 25 February 2025 11:19 AM GMT-06:00",
+"x0": 154.0
+}
+]
+},
+{
+"page": 2,
+"y": 788,
+"cells": [
+{
+"text": "Blue Water Grill Ltd",
+"x0": 228.0
+}
+]
+},
+{
+"page": 2,
+"y": 776,
+"cells": [
+{
+"text": "Profit and Loss",
+"x0": 258.0
+}
+]
+},
+{
+"page": 2,
+"y": 764,
+"cells": [
+{
+"text": "January - December 2024",
+"x0": 240.0
+}
+]
+},
+{
+"page": 2,
+"y": 752,
+"cells": [
+{
+"text": "TOTAL",
+"x0": 539.0
+}
+]
+},
+{
+"page": 2,
+"y": 740,
+"cells": [
+{
+"text": "Expenses",
+"x0": 29.0
+}
+]
+},
+{
+"page": 2,
+"y": 728,
+"cells": [
+{
+"text": "Advertising",
+"x0": 35.0
+},
+{
+"text": "13,805.05",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 716,
+"cells": [
+{
+"text": "Bank and merchant account charges",
+"x0": 35.0
+},
+{
+"text": "92,930.58",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 704,
+"cells": [
+{
+"text": "Business tax",
+"x0": 35.0
+},
+{
+"text": "71,019.07",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 692,
+"cells": [
+{
+"text": "Commission",
+"x0": 35.0
+},
+{
+"text": "22,886.60",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 680,
+"cells": [
+{
+"text": "Decor",
+"x0": 35.0
+},
+{
+"text": "6,711.48",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 668,
+"cells": [
+{
+"text": "Donations",
+"x0": 35.0
+},
+{
+"text": "1,419.16",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 656,
+"cells": [
+{
+"text": "Equipment rental",
+"x0": 35.0
+},
+{
+"text": "123.00",
+"x0": 539.0
+}
+]
+},
+{
+"page": 2,
+"y": 644,
+"cells": [
+{
+"text": "Firewood",
+"x0": 35.0
+},
+{
+"text": "18,250.85",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 632,
+"cells": [
+{
+"text": "Gasoline",
+"x0": 35.0
+},
+{
+"text": "2,812.97",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 620,
+"cells": [
+{
+"text": "Glasses and Dishes",
+"x0": 35.0
+},
+{
+"text": "969.92",
+"x0": 539.0
+}
+]
+},
+{
+"page": 2,
+"y": 608,
+"cells": [
+{
+"text": "Insurance - General",
+"x0": 35.0
+},
+{
+"text": "2,800.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 596,
+"cells": [
+{
+"text": "Kitchen Supplies",
+"x0": 35.0
+},
+{
+"text": "98,783.60",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 584,
+"cells": [
+{
+"text": "Laundry",
+"x0": 35.0
+},
+{
+"text": "14,775.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 572,
+"cells": [
+{
+"text": "Legal and professional fees",
+"x0": 35.0
+}
+]
+},
+{
+"page": 2,
+"y": 560,
+"cells": [
+{
+"text": "Accounting Services",
+"x0": 38.0
+},
+{
+"text": "32,950.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 548,
+"cells": [
+{
+"text": "Legal and professional fees - Other",
+"x0": 38.0
+},
+{
+"text": "1,004.44",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 536,
+"cells": [
+{
+"text": "Total Legal and professional fees",
+"x0": 35.0
+},
+{
+"text": "33,954.44",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 524,
+"cells": [
+{
+"text": "License and Permits",
+"x0": 35.0
+},
+{
+"text": "2,810.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 512,
+"cells": [
+{
+"text": "Medical",
+"x0": 35.0
+},
+{
+"text": "482.42",
+"x0": 539.0
+}
+]
+},
+{
+"page": 2,
+"y": 500,
+"cells": [
+{
+"text": "Merchandise Costs",
+"x0": 35.0
+},
+{
+"text": "33,339.02",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 488,
+"cells": [
+{
+"text": "Miscellaneous Expense",
+"x0": 35.0
+},
+{
+"text": "7,024.08",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 476,
+"cells": [
+{
+"text": "Music and entertainment",
+"x0": 35.0
+},
+{
+"text": "60,300.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 464,
+"cells": [
+{
+"text": "Office expenses",
+"x0": 35.0
+},
+{
+"text": "15,066.34",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 452,
+"cells": [
+{
+"text": "Rent or lease payments",
+"x0": 35.0
+},
+{
+"text": "129,031.12",
+"x0": 521.0
+}
+]
+},
+{
+"page": 2,
+"y": 440,
+"cells": [
+{
+"text": "Repairs and Maintenance",
+"x0": 35.0
+}
+]
+},
+{
+"page": 2,
+"y": 428,
+"cells": [
+{
+"text": "Furniture and Fixtures",
+"x0": 38.0
+},
+{
+"text": "10,234.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 416,
+"cells": [
+{
+"text": "Golf Cart Repairs",
+"x0": 38.0
+},
+{
+"text": "10,443.02",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 404,
+"cells": [
+{
+"text": "Grounds/ Property",
+"x0": 38.0
+},
+{
+"text": "1,391.02",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 392,
+"cells": [
+{
+"text": "Repair and maintenance",
+"x0": 38.0
+},
+{
+"text": "23,378.87",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 380,
+"cells": [
+{
+"text": "Total Repairs and Maintenance",
+"x0": 35.0
+},
+{
+"text": "45,446.91",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 368,
+"cells": [
+{
+"text": "Security",
+"x0": 35.0
+},
+{
+"text": "17,725.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 356,
+"cells": [
+{
+"text": "Staff Lunch",
+"x0": 35.0
+},
+{
+"text": "2,383.40",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 344,
+"cells": [
+{
+"text": "Staff Party",
+"x0": 35.0
+},
+{
+"text": "3,916.49",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 332,
+"cells": [
+{
+"text": "Subscriptions and online fees",
+"x0": 35.0
+},
+{
+"text": "583.20",
+"x0": 539.0
+}
+]
+},
+{
+"page": 2,
+"y": 320,
+"cells": [
+{
+"text": "Supplies/Cleaning",
+"x0": 35.0
+},
+{
+"text": "42,582.20",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 308,
+"cells": [
+{
+"text": "Training",
+"x0": 35.0
+},
+{
+"text": "2,000.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 296,
+"cells": [
+{
+"text": "Travel/Transportation",
+"x0": 35.0
+},
+{
+"text": "29,285.56",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 284,
+"cells": [
+{
+"text": "Uniforms",
+"x0": 35.0
+},
+{
+"text": "2,250.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 272,
+"cells": [
+{
+"text": "Utilities",
+"x0": 35.0
+}
+]
+},
+{
+"page": 2,
+"y": 260,
+"cells": [
+{
+"text": "Butane",
+"x0": 38.0
+},
+{
+"text": "45,418.35",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 248,
+"cells": [
+{
+"text": "Electricity",
+"x0": 38.0
+},
+{
+"text": "44,570.35",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 236,
+"cells": [
+{
+"text": "Garbage",
+"x0": 38.0
+},
+{
+"text": "2,025.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 224,
+"cells": [
+{
+"text": "Internet",
+"x0": 38.0
+},
+{
+"text": "5,631.90",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 212,
+"cells": [
+{
+"text": "2/3",
+"x0": 554.0
+}
+]
+},
+{
+"page": 2,
+"y": 200,
+"cells": [
+{
+"text": "Accrual Basis Tuesday, 25 February 2025 11:19 AM GMT-06:00",
+"x0": 154.0
+}
+]
+},
+{
+"page": 3,
+"y": 788,
+"cells": [
+{
+"text": "Blue Water Grill Ltd",
+"x0": 228.0
+}
+]
+},
+{
+"page": 3,
+"y": 776,
+"cells": [
+{
+"text": "Profit and Loss",
+"x0": 258.0
+}
+]
+},
+{
+"page": 3,
+"y": 764,
+"cells": [
+{
+"text": "January - December 2024",
+"x0": 240.0
+}
+]
+},
+{
+"page": 3,
+"y": 752,
+"cells": [
+{
+"text": "TOTAL",
+"x0": 539.0
+}
+]
+},
+{
+"page": 3,
+"y": 740,
+"cells": [
+{
+"text": "Water",
+"x0": 38.0
+},
+{
+"text": "28,258.95",
+"x0": 526.0
+}
+]
+},
+{
+"page": 3,
+"y": 728,
+"cells": [
+{
+"text": "Total Utilities",
+"x0": 35.0
+},
+{
+"text": "125,904.55",
+"x0": 521.0
+}
+]
+},
+{
+"page": 3,
+"y": 716,
+"cells": [
+{
+"text": "Total Expenses",
+"x0": 29.0
+},
+{
+"text": "BZ$901,372.01",
+"x0": 505.0
+}
+]
+},
+{
+"page": 3,
+"y": 704,
+"cells": [
+{
+"text": "Other Expenses",
+"x0": 29.0
+}
+]
+},
+{
+"page": 3,
+"y": 692,
+"cells": [
+{
+"text": "Fixed Assets Replacement",
+"x0": 35.0
+},
+{
+"text": "10,684.44",
+"x0": 526.0
+}
+]
+},
+{
+"page": 3,
+"y": 680,
+"cells": [
+{
+"text": "Other Expenses",
+"x0": 35.0
+},
+{
+"text": "5,987.52",
+"x0": 531.0
+}
+]
+},
+{
+"page": 3,
+"y": 668,
+"cells": [
+{
+"text": "Renovations",
+"x0": 35.0
+},
+{
+"text": "23,823.35",
+"x0": 526.0
+}
+]
+},
+{
+"page": 3,
+"y": 656,
+"cells": [
+{
+"text": "Total Other Expenses",
+"x0": 29.0
+},
+{
+"text": "BZ$40,495.31",
+"x0": 510.0
+}
+]
+},
+{
+"page": 3,
+"y": 644,
+"cells": [
+{
+"text": "NET EARNINGS",
+"x0": 29.0
+},
+{
+"text": "BZ$238,699.70",
+"x0": 505.0
+}
+]
+},
+{
+"page": 3,
+"y": 632,
+"cells": [
+{
+"text": "3/3",
+"x0": 554.0
+}
+]
+},
+{
+"page": 3,
+"y": 620,
+"cells": [
+{
+"text": "Accrual Basis Tuesday, 25 February 2025 11:19 AM GMT-06:00",
+"x0": 154.0
+}
+]
+}
+],
+"bs": [
+{
+"page": 1,
+"y": 788,
+"cells": [
+{
+"text": "Blue Water Grill Ltd",
+"x0": 228.0
+}
+]
+},
+{
+"page": 1,
+"y": 776,
+"cells": [
+{
+"text": "Balance Sheet",
+"x0": 259.0
+}
+]
+},
+{
+"page": 1,
+"y": 764,
+"cells": [
+{
+"text": "As of December 31, 2024",
+"x0": 241.0
+}
+]
+},
+{
+"page": 1,
+"y": 752,
+"cells": [
+{
+"text": "TOTAL",
+"x0": 539.0
+}
+]
+},
+{
+"page": 1,
+"y": 740,
+"cells": [
+{
+"text": "Assets",
+"x0": 29.0
+}
+]
+},
+{
+"page": 1,
+"y": 728,
+"cells": [
+{
+"text": "Current Assets",
+"x0": 35.0
+}
+]
+},
+{
+"page": 1,
+"y": 716,
+"cells": [
+{
+"text": "1002 \u00b7 Belize Bank Checking",
+"x0": 38.0
+},
+{
+"text": "86,518.98",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 704,
+"cells": [
+{
+"text": "1006 \u00b7 Cash On Hand",
+"x0": 38.0
+},
+{
+"text": "33,710.28",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 692,
+"cells": [
+{
+"text": "1010 \u00b7 Change Float",
+"x0": 38.0
+},
+{
+"text": "0.00",
+"x0": 549.0
+}
+]
+},
+{
+"page": 1,
+"y": 680,
+"cells": [
+{
+"text": "Atlantic Bank Checking",
+"x0": 38.0
+},
+{
+"text": "19,647.97",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 668,
+"cells": [
+{
+"text": "1401 \u00b7 Prepayments",
+"x0": 38.0
+},
+{
+"text": "13,811.18",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 656,
+"cells": [
+{
+"text": "1403 \u00b7 Staff Loans",
+"x0": 38.0
+},
+{
+"text": "1,900.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 644,
+"cells": [
+{
+"text": "1405 \u00b7 Deposit",
+"x0": 38.0
+},
+{
+"text": "0.00",
+"x0": 549.0
+}
+]
+},
+{
+"page": 1,
+"y": 632,
+"cells": [
+{
+"text": "Due From Phoenix",
+"x0": 38.0
+},
+{
+"text": "0.00",
+"x0": 549.0
+}
+]
+},
+{
+"page": 1,
+"y": 620,
+"cells": [
+{
+"text": "Due From SunBreeze",
+"x0": 38.0
+},
+{
+"text": "34,628.76",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 608,
+"cells": [
+{
+"text": "Inventory and Supplies",
+"x0": 38.0
+}
+]
+},
+{
+"page": 1,
+"y": 596,
+"cells": [
+{
+"text": "1301 \u00b7 Bar Stock",
+"x0": 41.0
+}
+]
+},
+{
+"page": 1,
+"y": 584,
+"cells": [
+{
+"text": "1302 \u00b7 Assorted Beverages",
+"x0": 44.0
+},
+{
+"text": "3,358.03",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 572,
+"cells": [
+{
+"text": "1303 \u00b7 Beer",
+"x0": 44.0
+},
+{
+"text": "4,114.34",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 560,
+"cells": [
+{
+"text": "1304 \u00b7 Condiments/Supplies",
+"x0": 44.0
+},
+{
+"text": "1,446.81",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 548,
+"cells": [
+{
+"text": "1305 \u00b7 Liquor",
+"x0": 44.0
+},
+{
+"text": "14,188.92",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 536,
+"cells": [
+{
+"text": "1307 \u00b7 Wine",
+"x0": 44.0
+},
+{
+"text": "10,478.73",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 524,
+"cells": [
+{
+"text": "Total 1301 \u00b7 Bar Stock",
+"x0": 41.0
+},
+{
+"text": "33,586.83",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 512,
+"cells": [
+{
+"text": "1350 \u00b7 Restaurant Stock",
+"x0": 41.0
+}
+]
+},
+{
+"page": 1,
+"y": 500,
+"cells": [
+{
+"text": "1351 \u00b7 Dairy/Cheese",
+"x0": 44.0
+},
+{
+"text": "4,174.20",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 488,
+"cells": [
+{
+"text": "1352 \u00b7 Dry Good",
+"x0": 44.0
+},
+{
+"text": "11,095.15",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 476,
+"cells": [
+{
+"text": "1354 \u00b7 Fresh Produce",
+"x0": 44.0
+},
+{
+"text": "3,114.42",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 464,
+"cells": [
+{
+"text": "1356 Meat and SeaFood",
+"x0": 44.0
+},
+{
+"text": "3,637.56",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 452,
+"cells": [
+{
+"text": "1357 Sushi Items",
+"x0": 44.0
+},
+{
+"text": "6,567.36",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 440,
+"cells": [
+{
+"text": "1360 \u00b7 Supply/Cleaning",
+"x0": 44.0
+},
+{
+"text": "848.06",
+"x0": 539.0
+}
+]
+},
+{
+"page": 1,
+"y": 428,
+"cells": [
+{
+"text": "1361 \u00b7 Merchandise",
+"x0": 44.0
+},
+{
+"text": "0.00",
+"x0": 549.0
+}
+]
+},
+{
+"page": 1,
+"y": 416,
+"cells": [
+{
+"text": "1362 Fish and Seafood",
+"x0": 44.0
+},
+{
+"text": "12,468.20",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 404,
+"cells": [
+{
+"text": "Total 1350 \u00b7 Restaurant Stock",
+"x0": 41.0
+},
+{
+"text": "41,904.95",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 392,
+"cells": [
+{
+"text": "Fuel",
+"x0": 41.0
+},
+{
+"text": "1,134.45",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 380,
+"cells": [
+{
+"text": "Total Inventory and Supplies",
+"x0": 38.0
+},
+{
+"text": "76,626.23",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 368,
+"cells": [
+{
+"text": "Total Current Assets",
+"x0": 35.0
+},
+{
+"text": "BZ$266,843.40",
+"x0": 505.0
+}
+]
+},
+{
+"page": 1,
+"y": 356,
+"cells": [
+{
+"text": "Long-term assets",
+"x0": 35.0
+}
+]
+},
+{
+"page": 1,
+"y": 344,
+"cells": [
+{
+"text": "Fixed Assets",
+"x0": 38.0
+}
+]
+},
+{
+"page": 1,
+"y": 332,
+"cells": [
+{
+"text": "1501 \u00b7 Bar Equipment",
+"x0": 41.0
+},
+{
+"text": "2,750.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 320,
+"cells": [
+{
+"text": "1503 \u00b7 Motor Vehicles",
+"x0": 41.0
+},
+{
+"text": "22,500.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 308,
+"cells": [
+{
+"text": "1505 \u00b7 Kitchen Equipment",
+"x0": 41.0
+},
+{
+"text": "8,640.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 296,
+"cells": [
+{
+"text": "Total Fixed Assets",
+"x0": 38.0
+},
+{
+"text": "33,890.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 284,
+"cells": [
+{
+"text": "Furniture and Equipment",
+"x0": 38.0
+},
+{
+"text": "130,916.00",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 272,
+"cells": [
+{
+"text": "Golf Cart C",
+"x0": 38.0
+},
+{
+"text": "3,667.00",
+"x0": 531.0
+}
+]
+},
+{
+"page": 1,
+"y": 260,
+"cells": [
+{
+"text": "Leasehold Improvements",
+"x0": 38.0
+},
+{
+"text": "48,049.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 1,
+"y": 248,
+"cells": [
+{
+"text": "Total long-term assets",
+"x0": 35.0
+},
+{
+"text": "216,522.00",
+"x0": 521.0
+}
+]
+},
+{
+"page": 1,
+"y": 236,
+"cells": [
+{
+"text": "Total Assets",
+"x0": 29.0
+},
+{
+"text": "BZ$483,365.40",
+"x0": 505.0
+}
+]
+},
+{
+"page": 1,
+"y": 224,
+"cells": [
+{
+"text": "1/2",
+"x0": 554.0
+}
+]
+},
+{
+"page": 1,
+"y": 212,
+"cells": [
+{
+"text": "Accrual Basis Tuesday, 25 February 2025 11:16 AM GMT-06:00",
+"x0": 154.0
+}
+]
+},
+{
+"page": 2,
+"y": 788,
+"cells": [
+{
+"text": "Blue Water Grill Ltd",
+"x0": 228.0
+}
+]
+},
+{
+"page": 2,
+"y": 776,
+"cells": [
+{
+"text": "Balance Sheet",
+"x0": 259.0
+}
+]
+},
+{
+"page": 2,
+"y": 764,
+"cells": [
+{
+"text": "As of December 31, 2024",
+"x0": 241.0
+}
+]
+},
+{
+"page": 2,
+"y": 752,
+"cells": [
+{
+"text": "TOTAL",
+"x0": 539.0
+}
+]
+},
+{
+"page": 2,
+"y": 740,
+"cells": [
+{
+"text": "Liabilities and shareholder's equity",
+"x0": 29.0
+}
+]
+},
+{
+"page": 2,
+"y": 728,
+"cells": [
+{
+"text": "Current liabilities:",
+"x0": 35.0
+}
+]
+},
+{
+"page": 2,
+"y": 716,
+"cells": [
+{
+"text": "Accounts payable",
+"x0": 38.0
+}
+]
+},
+{
+"page": 2,
+"y": 704,
+"cells": [
+{
+"text": "2001 \u00b7 Payables",
+"x0": 41.0
+},
+{
+"text": "16,736.77",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 692,
+"cells": [
+{
+"text": "Total Accounts payable",
+"x0": 38.0
+},
+{
+"text": "BZ$16,736.77",
+"x0": 510.0
+}
+]
+},
+{
+"page": 2,
+"y": 680,
+"cells": [
+{
+"text": "Accrued liabilities",
+"x0": 38.0
+},
+{
+"text": "0.00",
+"x0": 549.0
+}
+]
+},
+{
+"page": 2,
+"y": 668,
+"cells": [
+{
+"text": "Business Tax Payable",
+"x0": 38.0
+},
+{
+"text": "6,561.26",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 656,
+"cells": [
+{
+"text": "General Sales Tax",
+"x0": 38.0
+}
+]
+},
+{
+"page": 2,
+"y": 644,
+"cells": [
+{
+"text": "GST Input (Paid)",
+"x0": 41.0
+},
+{
+"text": "-10,840.31",
+"x0": 523.0
+}
+]
+},
+{
+"page": 2,
+"y": 632,
+"cells": [
+{
+"text": "GST Output (Collect)",
+"x0": 41.0
+},
+{
+"text": "48,079.13",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 620,
+"cells": [
+{
+"text": "Total General Sales Tax",
+"x0": 38.0
+},
+{
+"text": "37,238.82",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 608,
+"cells": [
+{
+"text": "Savings Account",
+"x0": 38.0
+},
+{
+"text": "16,135.00",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 596,
+"cells": [
+{
+"text": "Statutory Deductions Payable",
+"x0": 38.0
+}
+]
+},
+{
+"page": 2,
+"y": 584,
+"cells": [
+{
+"text": "Income Tax Witholding",
+"x0": 41.0
+},
+{
+"text": "7,314.84",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 572,
+"cells": [
+{
+"text": "Social Security",
+"x0": 41.0
+},
+{
+"text": "7,312.03",
+"x0": 531.0
+}
+]
+},
+{
+"page": 2,
+"y": 560,
+"cells": [
+{
+"text": "Total Statutory Deductions Payable",
+"x0": 38.0
+},
+{
+"text": "14,626.87",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 548,
+"cells": [
+{
+"text": "Withholding Tax Payabe",
+"x0": 38.0
+},
+{
+"text": "0.00",
+"x0": 549.0
+}
+]
+},
+{
+"page": 2,
+"y": 536,
+"cells": [
+{
+"text": "Total current liabilities",
+"x0": 35.0
+},
+{
+"text": "BZ$91,298.72",
+"x0": 510.0
+}
+]
+},
+{
+"page": 2,
+"y": 524,
+"cells": [
+{
+"text": "Non-current liabilities:",
+"x0": 35.0
+}
+]
+},
+{
+"page": 2,
+"y": 512,
+"cells": [
+{
+"text": "Due to Shareholders",
+"x0": 38.0
+},
+{
+"text": "57,226.88",
+"x0": 526.0
+}
+]
+},
+{
+"page": 2,
+"y": 500,
+"cells": [
+{
+"text": "Total non-current liabilities",
+"x0": 35.0
+},
+{
+"text": "BZ$57,226.88",
+"x0": 510.0
+}
+]
+},
+{
+"page": 2,
+"y": 488,
+"cells": [
+{
+"text": "Shareholders' equity:",
+"x0": 35.0
+}
+]
+},
+{
+"page": 2,
+"y": 476,
+"cells": [
+{
+"text": "Net Income",
+"x0": 38.0
+},
+{
+"text": "238,699.70",
+"x0": 521.0
+}
+]
+},
+{
+"page": 2,
+"y": 464,
+"cells": [
+{
+"text": "Dividends",
+"x0": 38.0
+},
+{
+"text": "-728,941.18",
+"x0": 518.0
+}
+]
+},
+{
+"page": 2,
+"y": 452,
+"cells": [
+{
+"text": "Retained Earnings",
+"x0": 38.0
+},
+{
+"text": "824,781.28",
+"x0": 521.0
+}
+]
+},
+{
+"page": 2,
+"y": 440,
+"cells": [
+{
+"text": "Share capital",
+"x0": 38.0
+},
+{
+"text": "300.00",
+"x0": 539.0
+}
+]
+},
+{
+"page": 2,
+"y": 428,
+"cells": [
+{
+"text": "Total shareholders' equity",
+"x0": 35.0
+},
+{
+"text": "BZ$334,839.80",
+"x0": 505.0
+}
+]
+},
+{
+"page": 2,
+"y": 416,
+"cells": [
+{
+"text": "Total liabilities and equity",
+"x0": 29.0
+},
+{
+"text": "BZ$483,365.40",
+"x0": 505.0
+}
+]
+},
+{
+"page": 2,
+"y": 404,
+"cells": [
+{
+"text": "2/2",
+"x0": 554.0
+}
+]
+},
+{
+"page": 2,
+"y": 392,
+"cells": [
+{
+"text": "Accrual Basis Tuesday, 25 February 2025 11:16 AM GMT-06:00",
+"x0": 154.0
+}
+]
+}
+]
+}

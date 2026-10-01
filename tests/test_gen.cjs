@@ -10,6 +10,17 @@ const a = (c, m) => { if (!c) { console.error("FAIL:", m); fails++; } else conso
 // corruption vectors
 a(!dist.includes('n.charAt(0)==="="?`<c r="${t}"${s}><f>'),
   "a8 no longer turns leading-= strings into live formulas");
+/* One exception, a constant in code: Basic Information B4 (the header every
+   sheet's title reads) follows Legal Name of Entity as =B11, so the name is
+   entered once. Only that exact same-sheet reference is emitted as <f>; no
+   other string, and nothing with a function or another sheet, can be. */
+{
+  const i = dist.indexOf("function a8(");
+  const body = dist.slice(i, dist.indexOf("var A8=", i));
+  const fs_ = body.match(/<f>/g) || [];
+  a(fs_.length === 1 && body.includes('/*EN9CELLREF*/if(n==="=B11")return`<c r="${t}"${s}><f>B11</f></c>`;'),
+    "a8 emits <f> only for the one constant =B11 (Basic Information header follows the legal name)");
+}
 a(dist.includes('if(!EN9ok&&A[2]!=="/>"&&/<f[ >]/.test(A[2]))return A8=!0,t;') &&
   !dist.includes('!(typeof i=="string"&&i.charAt(0)==="=")&&A[2]!=="/>"'),
   "_J protects existing template formulas (= bypass still removed)");

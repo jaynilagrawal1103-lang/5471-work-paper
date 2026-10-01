@@ -95,8 +95,8 @@ const MATCHERS: Matcher[] = [
   { key: "entityShort", labels: ["entity name", "short name", "trading name"] },
   { key: "clientName", labels: ["client name", "client", "group name", "parent name", "shareholder name"] },
   { key: "addr1", labels: ["entity address", "address", "registered address", "registered office", "address line 1", "street", "adresse", "domicilio"] },
-  { key: "addr2", labels: ["address line 2", "city", "town", "ville", "ciudad"] },
-  { key: "addr3", labels: ["address line 3", "postal code", "post code", "zip", "region", "province"] },
+  { key: "addr2", labels: ["address line 2", "city", "town", "ville", "ciudad", "comuna"] },
+  { key: "addr3", labels: ["address line 3", "postal code", "post code", "zip", "region", "regi\u00f3n", "province"], clean: cleanRegion },
   { key: "formed", labels: ["date of formation", "date of incorporation", "formation date", "incorporation date", "date formed", "incorporated on", "date de création"], clean: cleanDate },
   { key: "countryInc", labels: ["country of incorporation", "country of incorportion", "country of organization", "jurisdiction", "country", "pays", "país"] },
   { key: "booksPerson", labels: ["person in charge", "books and records", "custodian of records", "records keeper", "responsible officer"] },
@@ -175,6 +175,47 @@ function valueBelow(
   return null;
 }
 
+/* A row of captions with the values on the row beneath — a boxed form whose
+   boxes carry no printed number ("Regi\u00f3n | Capital Efectivo" over
+   "53 | 5 | 102 | 2.455.002.379"). Nothing on such a row is a value: the
+   cell right of a caption is the NEXT caption. It is recognised by the row
+   below carrying at least as many figures as this row carries captions. */
+function isCaptionRow(row: string[], below: string[] | undefined): boolean {
+  const cells = row.map((c) => String(c ?? "").trim()).filter(Boolean);
+  if (cells.length < 2 || !below) return false;
+  if (!cells.every((c) => /\p{L}/u.test(c) && !/\d/.test(c.replace(/^\d{1,3}\s+/, "")))) return false;
+  const figures = below.map((c) => String(c ?? "").trim()).filter((c) => /\d/.test(c) && !/\p{L}/u.test(c));
+  return figures.length >= Math.max(2, cells.length);
+}
+
+/* The value for caption i of a caption row: when the row below holds a code
+   and a value per box it is the second of each pair; when it holds one value
+   per caption it is the one in the same position. */
+function valueUnderCaption(row: string[], below: string[] | undefined, col: number): string | null {
+  if (!below) return null;
+  const caps = row.map((c, i) => ({ t: String(c ?? "").trim(), i })).filter((x) => x.t);
+  const vals = below.map((c) => String(c ?? "").trim()).filter(Boolean);
+  const k = caps.findIndex((x) => x.i === col);
+  if (k < 0) return null;
+  if (vals.length === 2 * caps.length) return vals[2 * k + 1];
+  if (vals.length === caps.length) return vals[k];
+  return null;
+}
+
+/* Chile numbers its regions; a return prints the number. */
+const CL_REGIONS: Record<string, string> = {
+  "1": "Tarapac\u00e1", "2": "Antofagasta", "3": "Atacama", "4": "Coquimbo", "5": "Valpara\u00edso",
+  "6": "O'Higgins", "7": "Maule", "8": "Biob\u00edo", "9": "La Araucan\u00eda", "10": "Los Lagos",
+  "11": "Ays\u00e9n", "12": "Magallanes", "13": "Metropolitana de Santiago", "14": "Los R\u00edos",
+  "15": "Arica y Parinacota", "16": "\u00d1uble",
+};
+function cleanRegion(raw: string): string | null {
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (/^\d{1,2}$/.test(s)) return CL_REGIONS[String(Number(s))] ? `Regi\u00f3n ${CL_REGIONS[String(Number(s))]}` : null;
+  return s;
+}
+
 /** First non-empty cell to the right of the caption. */
 function valueAfter(row: string[], labelCol: number): { value: string; col: number } | null {
   for (let i = labelCol + 1; i < row.length; i++) {
@@ -219,6 +260,7 @@ export function detectProfile(rows: string[][] | null, meta?: { doc?: string }):
     if (!row || row.length < 2) continue;
     const boxed = isBoxedRow(row);
     const below = rows[r + 1];
+    const captionRow = !boxed && isCaptionRow(row, below);
 
     for (let c = 0; c < row.length; c++) {
       const cell = row[c];
@@ -250,13 +292,15 @@ export function detectProfile(rows: string[][] | null, meta?: { doc?: string }):
             return String(c2);
           };
 
-          const v = valueAfter(row, c);
+          const v = captionRow ? null : valueAfter(row, c);
           /* On a boxed form the cell to the right is the NEXT BOX'S CAPTION,
              not this box's value — the value is printed on the line below.
              Reading across gave "01 Apellido Paterno o raz\u00f3n social" the
              entity name of "02 Apellido Materno". */
           const across = v && !(boxed && BOX_CAPTION.test(v.value)) ? accept(v.value) : null;
+          const under = captionRow ? valueUnderCaption(row, below, c) : null;
           const cleaned = across !== null ? across
+            : captionRow ? (under !== null ? accept(under) : null)
             : boxed
               // A name or an activity is words; the activity CODE printed in
               // the same column is not, and must not win the field.
@@ -290,7 +334,7 @@ export function detectProfile(rows: string[][] | null, meta?: { doc?: string }):
          or more and contain a letter, so column codes and row numbers do not
          qualify. And no more than 40 from one grid — past that it is a data
          table, not a questionnaire. */
-      if (!claimedProfile && !claimedOwnership && unmatched.length < 40) {
+      if (!claimedProfile && !claimedOwnership && !captionRow && !boxed && unmatched.length < 40) {
         const v = valueAfter(row, c);
         const value = v ? String(v.value).trim() : "";
         if (
@@ -318,6 +362,9 @@ export function detectProfile(rows: string[][] | null, meta?: { doc?: string }):
  */
 const SYMBOL_CURRENCY: Array<[RegExp, string]> = [
   [/£/, "GBP"], [/€/, "EUR"], [/¥/, "JPY"], [/₹/, "INR"], [/₩/, "KRW"], [/₪/, "ILS"], [/₺/, "TRY"],
+  /* Dollar signs carrying their country's letters ("BZ$4,058,232.50"). The
+     bare "$" says nothing and is never read as a currency. */
+  [/(?:^|[^A-Za-z])BZ\$/, "BZD"], [/(?:^|[^A-Za-z])CI\$/, "KYD"], [/(?:^|[^A-Za-z])EC\$/, "XCD"], [/(?:^|[^A-Za-z])NZ\$/, "NZD"], [/(?:^|[^A-Za-z])HK\$/, "HKD"], [/(?:^|[^A-Za-z])TT\$/, "TTD"], [/(?:^|[^A-Za-z])NT\$/, "TWD"], [/(?:^|[^A-Za-z])AU\$/, "AUD"], [/(?:^|[^A-Za-z])A\$/, "AUD"], [/(?:^|[^A-Za-z])CA\$/, "CAD"], [/(?:^|[^A-Za-z])S\$/, "SGD"], [/(?:^|[^A-Za-z])J\$/, "JMD"], [/(?:^|[^A-Za-z])Bds\$/, "BBD"], [/(?:^|[^A-Za-z])N\$/, "NAD"], [/(?:^|[^A-Za-z])R\$/, "BRL"],
 ];
 
 export function sniffCurrency(rows: string[][] | null): DetectedField | null {

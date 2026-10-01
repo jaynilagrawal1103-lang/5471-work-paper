@@ -75,8 +75,13 @@ t("cost of sales: carriage is line 2, not an other deduction", () => {
   assert.ok(near(v(P, "IS:12", "amount"), 11481.77), String(v(P, "IS:12", "amount")));
 });
 
+/* 253,361.06 since catalogue v15: "Equipment rental" (800) is rent paid,
+   Schedule C line 12a, as the Blue Water Grill reviewer books it — not an
+   other deduction. */
 t("other deductions: the real captions and nothing else", () => {
-  assert.ok(near(sum(P, OD, "amount"), 254161.06), String(sum(P, OD, "amount")));
+  assert.ok(near(sum(P, OD, "amount"), 253361.06), String(sum(P, OD, "amount")));
+  assert.ok((P.contributions && P.contributions["IS:27"] || []).some((c) => /equipment rental/i.test(c.label) && near(c.value, 800))
+    || near(v(P, "IS:27", "amount") || 0, 800) || (v(P, "IS:27", "amount") || 0) >= 800, "equipment rental is on line 12a");
 });
 
 t('"Net earnings" is the closing line, not a deduction', () => {

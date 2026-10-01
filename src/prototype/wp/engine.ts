@@ -34,6 +34,11 @@ export const PROFILE_FIELDS: FieldSpec[] = [
   { key: "pyEnd", cell: "B2", label: "Prior year end", placeholder: "12/31/24" },
   { key: "clientName", cell: "B3", label: "Client name" },
   { key: "entityShort", cell: "B4", label: "Entity name (header)" },
+  // Reference ID and principal place of business are Form 5471 page-1 items
+  // (1b(2), 1e). The template had no box for either, so both were read from
+  // the prior return and then dropped; rows 5 and 29 were empty and nothing
+  // references them.
+  { key: "refId", cell: "B5", label: "Reference ID" },
   { key: "legalName", cell: "B11", label: "Legal name of entity" },
   { key: "addr1", cell: "B13", label: "Address line 1" },
   { key: "addr2", cell: "B14", label: "Address line 2" },
@@ -44,6 +49,7 @@ export const PROFILE_FIELDS: FieldSpec[] = [
   { key: "booksAddr1", cell: "B22", label: "Books custodian address 1" },
   { key: "booksAddr2", cell: "B23", label: "Books custodian address 2" },
   { key: "activity", cell: "B25", label: "Principal business activity" },
+  { key: "principalPlace", cell: "B29", label: "Principal place of business" },
   // Placeholder must read as an EXAMPLE — an analyst took a bare "GBP" for a
   // detected value on the Thompson (KYD) case.
   { key: "currency", cell: "B27", label: "Functional currency", placeholder: "e.g. KYD" },
@@ -345,6 +351,23 @@ export const DEFAULT_RULES: MappingRule[] = [
     "b\u00e9n\u00e9fice de l'exercice", "benefice de l'exercice",
     "total du passif", "total de l'actif", "total des produits", "total des charges",
     "total des capitaux propres", "total des capitaux \u00e9trangers",
+    /* How UK (Companies Act) accounts caption the same subtotals. Left
+       unlisted, "Profit for the financial year after taxation" was booked as
+       a second revenue line and again as a deduction, and "Net current
+       assets" reached the balance sheet as a line of its own. */
+    "profit for the financial year", "loss for the financial year",
+    "profit on ordinary activities after taxation", "loss on ordinary activities after taxation",
+    "profit on ordinary activities before taxation", "loss on ordinary activities before taxation",
+    "profit after taxation", "loss after taxation", "total comprehensive income",
+    "net current assets", "net current liabilities", "net current assets/(liabilities)",
+    "total assets less current liabilities",
+    /* v16: Dutch-style statements in English — "Result before/after
+       taxation", "Operating result" and the financial-result subtotal are
+       the statement's own totals, not accounts. "Result after taxation" hit
+       the bare "taxation" keyword and was booked as income tax. */
+    "result before taxation", "result after taxation", "result before tax", "result after tax", "operating result", "gross operating result", "financial income and expenditure", "total financial income and expenditure", "result on ordinary activities", "net result",
+    /* v17: Colombian (PUC) result subtotals. */
+    "resultado bruto", "resultado operacional", "resultado antes de", "result. antes de", "resultado antes de impto", "resultado antes de corr",
   ], t: "SKIP" },
   { kw: ["gross receipt", "turnover", "revenue", "sales", "chiffre d'affaires", "ingresos", "ingresos operacionales", "ventas netas", "receita", "营业收入"], t: "IS:7" },
   { kw: ["service income", "services income", "consulting fees", "consultancy fees", "fees earned"], t: "IS:7" },
@@ -379,17 +402,32 @@ export const DEFAULT_RULES: MappingRule[] = [
      kind of cost and now lands beside them. */
   { kw: [...PROCESSOR_FEE_KW], t: "IS:OD" },
   { kw: ["dividend income", "dividends received"], t: "IS:14" },
-  { kw: ["interest income", "interest received", "produits financiers"], t: "IS:15" },
+  { kw: ["interest income", "interest received", "produits financiers",
+         // UK accounts: "Other interest receivable and similar income".
+         "interest receivable"], t: "IS:15" },
   { kw: ["rental income", "gross rent"], t: "IS:16" },
   { kw: ["royalt", "licence fee", "license fee"], t: "IS:17" },
   { kw: ["gain on sale", "loss on sale", "disposal of asset"], t: "IS:18" },
-  { kw: ["unrealised exchange", "unrealized exchange"], t: "IS:19" },
-  { kw: ["realised exchange", "realized exchange", "exchange gain", "exchange loss"], t: "IS:20" },
-  { kw: ["management fees earned", "management fee income", "management fees", "reimbursement", "recharge income", "sundry income", "other income", "other revenue", "other revenues", "otros ingresos", "outras receitas"], t: "IS:OI" },
+  /* Line 8a unless the caption itself says the gain was realised. A plain
+     "Exchange gain or loss" is the section 988 figure the template keeps out
+     of tested income (Schedule I-1 subtracts line 8a), and the section
+     route below already sent "FX losses" to 8a — the rule sent the same
+     money to 8b, so two clients' identical captions landed on two lines. */
+  { kw: ["unrealised exchange", "unrealized exchange", "exchange gain", "exchange loss"], t: "IS:19" },
+  { kw: ["realised exchange", "realized exchange"], t: "IS:20" },
+  { kw: ["management fees earned", "management fee income", "management fees", "reimbursement", "recharge income", "sundry income", "other income", "other revenue", "other revenues", "otros ingresos", "outras receitas",
+         // UK statutory P&L heading for grants, rent received and the like.
+         "other operating income"], t: "IS:OI" },
   { kw: ["salaries", "salary", "compensation", "personnel", "staff cost", "charges de personnel", "wages", "superannuation", "pension contribution", "gastos del personal", "gasto de personal", "gastos de personal", "sueldos", "salarios", "nomina", "n\u00f3mina", "remuneracion", "remunera\u00e7", "cesantias", "cesant\u00edas", "vacaciones consolid", "primas consolid", "despesas com pessoal"], t: "IS:26" },
   { kw: ["rent expense", "rent", "loyer", "premises rent", "arriendo"], t: "IS:27" },
+  /* v15: equipment hired in is rent too (line 12a), not an other deduction.
+     "rent" is a short stem that must match exactly, so "Equipment rental"
+     never reached it. */
+  { kw: ["equipment rental", "equipment hire", "equipment lease", "rental expense", "lease payment", "lease expense"], t: "IS:27" },
   { kw: ["royalty expense"], t: "IS:28" },
-  { kw: ["interest expense", "finance cost", "charges financi", "gastos financieros", "intereses"], t: "IS:29" },
+  { kw: ["interest expense", "finance cost", "charges financi", "gastos financieros", "intereses",
+         // UK accounts: "Interest payable and similar charges".
+         "interest payable"], t: "IS:29" },
   { kw: ["depreciation", "amortisation expense", "amortization expense", "dotations aux amortissements", "depreciaciones", "amortizaciones", "depreciacion", "depreciaci\u00f3n"], t: "IS:30" },
   { kw: ["depletion"], t: "IS:31" },
   { kw: ["taxes other than income", "business rates", "property tax", "impots et taxes",
@@ -397,6 +435,31 @@ export const DEFAULT_RULES: MappingRule[] = [
          "licenses and permits", "licences and permits", "business license",
          "business licence"], t: "IS:32" },
   { kw: ["accountancy", "accounting fees", "audit fee", "bookkeeping"], t: "IS:OD" },
+  /* v15: a gift is an other deduction on the books, and never deductible for
+     E&P — the booking loop also records it for the Schedule H add-back. */
+  { kw: ["donation", "charitable contribution", "charitable donation", "charity"], t: "IS:OD" },
+  /* v15: "Business tax" is a tax on the business that the caption does not
+     say is (or is not) the income tax. Line 16 until the preparer answers the
+     must-answer question the booking loop raises; in some countries (Belize)
+     it IS the income tax and belongs on line 21a. */
+  { kw: ["business tax"], t: "IS:32" },
+  /* v17: Colombian (PUC) balance-sheet advances and payroll liabilities, and
+     the income-tax charge as a PUC P&L names it. */
+  { kw: ["antic. a trabajadores", "anticipo a trabajadores", "anticipos a trabajadores", "antic. imptos", "anticipo de impuestos", "anticipos de impuestos", "anticipo impuestos", "saldo a favor de impuestos"], t: "BS:OCA" },
+  { kw: ["anticipo de clientes", "anticipos de clientes", "ingresos recibidos para terceros", "cesantias consolidadas", "cesant\u00edas consolidadas", "intereses sobre cesantias", "ints sobre cesantias", "vacaciones consolidadas", "vacaciones consolidas", "primas consolidadas", "ret. y aportes de nomina", "aportes de nomina", "retencion en la fuente", "retenci\u00f3n en la fuente", "retenciones ica"], t: "BS:OCL" },
+  { kw: ["impto de renta", "impuesto de renta y complementarios", "impuesto de renta"], t: "IS:62" },
+  /* v16: annual accounts drawn up the Dutch way (Collaborate and Eight):
+     housing is rent, "interest and similar expenditure" is interest, currency
+     and payment differences are exchange results, debts to participants are
+     loans from the shareholders (line 18, and Schedule M), and the current
+     liabilities a Dutch balance sheet names. */
+  { kw: ["housing costs", "housing expenses", "accommodation costs", "huisvestingskosten"], t: "IS:27" },
+  { kw: ["interest and similar expenditure", "interest and similar expenses", "interest and similar charges", "rentelasten"], t: "IS:29" },
+  { kw: ["interest and similar income", "rentebaten"], t: "IS:15" },
+  { kw: ["currency differences", "exchange differences", "exchange rate differences", "payment differences", "koersverschillen", "betalingsverschillen"], t: "IS:19" },
+  { kw: ["selling costs", "office costs", "general costs", "general expenses", "car costs", "vehicle costs", "verkoopkosten", "kantoorkosten", "algemene kosten"], t: "IS:OD" },
+  { kw: ["debts to participants", "debts to shareholders", "amounts owed to participants", "payable to shareholders", "shareholder loan", "current account shareholder", "schulden aan participanten"], t: "BS:52" },
+  { kw: ["debts to credit institutions", "amounts owed to credit institutions", "accrued liabilities", "accruals and deferred income", "taxes and premiums social insurance", "social security premiums", "schulden aan kredietinstellingen", "overlopende passiva"], t: "BS:OCL" },
   { kw: ["subscription", "membership fee"], t: "IS:OD" },
   { kw: ["telecommunication", "telephone", "internet"], t: "IS:OD" },
   { kw: ["filing fee", "registration fee", "licence cost", "permits"], t: "IS:OD" },
@@ -413,11 +476,33 @@ export const DEFAULT_RULES: MappingRule[] = [
          // box names the income it is deducted from, and that lone word
          // "ingresos" was enough to book the expense as revenue.
          "de los ingresos"], t: "IS:OD" },
-  { kw: ["income tax - current", "current tax", "corporation tax", "tax on profit", "tax on ordinary activities", "income tax revenue", "income tax expense", "impot sur les societes"], t: "IS:62" },
+  { kw: ["income tax - current", "current tax", "corporation tax", "tax on profit", "tax on ordinary activities", "income tax revenue", "income tax expense", "impot sur les societes",
+         /* A UK P&L closes with a bare "Taxation" line — the tax charge on the
+            profit. The balance sheet's "taxation" (a creditor) is the BS:OCL
+            rule's; the sheet-scoped scan keeps the two apart. */
+         "taxation"], t: "IS:62" },
+  /* UK statutory P&L headings. Each is the whole of an expense group when
+     the summary P&L is the statement being booked. */
+  { kw: ["distribution costs", "selling and distribution costs", "selling expenses",
+         "administrative expenses", "administration expenses"], t: "IS:OD" },
+  /* A statement's own catch-all expense line ("Other expenses 58,326"). The
+     value-less heading of the same name is a banner and is never booked. */
+  { kw: ["other expenses", "other operating expenses"], t: "IS:OD" },
   { kw: ["deferred tax"], t: "IS:63" },
   { kw: ["cash", "bank account", "cash at bank", "banque", "tr\u00e9sorerie", "caja general", "bancos nacionales", "cuentas de ahorro", "caixa", "bancos", "efectivo", "disponibilidades", "caja y bancos", "货币资金", "merchant account", "undeposited funds", "petty cash", "checking account", "savings account",
          /* Xero/MYOB ship these names in the Commonwealth chart of accounts. */
          "cheque account", "cheque acct", "everyday account", "business bank account", "transaction account"], t: "BS:10" },
+  /* v15: a bank account named after the bank ("Belize Bank Checking",
+     "Atlantic Bank Checking") carries no "account" word for the rule above.
+     Only ever on the assets side: the banner veto refuses it elsewhere. */
+  { kw: ["checking", "bank checking", "cash on hand"], t: "BS:10" },
+  /* v15: money owed to the company by its staff, or by a company the
+     statement merely names ("Due From SunBreeze"), is an other current
+     asset. A balance due from a shareholder or director stays line 6; a
+     "due from" that names a known group company is re-routed there by the
+     related-party check, and the rest are flagged to confirm. */
+  { kw: ["staff loan", "employee loan", "staff advance", "employee advance", "loan to staff", "loans to staff", "due from"], t: "BS:OCA" },
+  { kw: ["due from shareholder", "due from director", "due from owner", "due from member"], t: "BS:19" },
   { kw: ["trade receivable", "accounts receivable", "debtor", "trade debtor", "cr\u00e9ances clients", "deudores", "cuentas por cobrar", "contas a receber", "应收账款"], t: "BS:11" },
   { kw: ["allowance for bad debt", "provision for doubtful"], t: "BS:12" },
 
@@ -466,7 +551,9 @@ export const DEFAULT_RULES: MappingRule[] = [
      not be dragged into the P&L by the "stock" fragment. */
   { kw: ["opening stock", "opening finished goods", "opening work in progress", "opening raw materials"], t: "IS:12" },
   { kw: ["closing stock", "closing finished goods", "closing work in progress", "closing raw materials"], t: "IS:12" },
-  { kw: ["stock on hand"], t: "BS:14" },
+  { kw: ["stock on hand",
+         // UK balance sheets call inventories "Stocks".
+         "stocks"], t: "BS:14" },
 
   { kw: ["inventor", "存货"], t: "BS:14" },
   { kw: ["prepaid", "prepayment", "charges constatées", "accrued management fee", "accrued income", "accrued revenue"], t: "BS:OCA" },
@@ -486,6 +573,8 @@ export const DEFAULT_RULES: MappingRule[] = [
     "computer equipment", "office equipment", "furniture and fixtures", "furniture and fittings",
     "furniture & fixtures", "furniture & fittings", "fixtures and fittings", "leasehold improvement",
     "plant and machinery", "motor vehicle", "machinery"], t: "BS:28" },
+  // v15: the package's own name for furniture held with equipment.
+  { kw: ["furniture and equipment", "furniture & equipment"], t: "BS:28" },
   { kw: ["accumulated depreciation", "amortissements cumul\u00e9s", "depr. acumulada", "depreciacion acumulada", "depreciaci\u00f3n acumulada", "deprec. acumulada"], t: "BS:29" },
   { kw: ["land"], t: "BS:32" },
   { kw: ["goodwill", "fonds de commerce"], t: "BS:34" },
@@ -497,6 +586,18 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["loan from shareholder", "director loan", "amounts owed to"], t: "BS:52" },
   { kw: ["bank loan", "borrowing", "emprunt", "garant\u00eda", "garantia", "other accounts payable", "cuentas por pagar diversas"], t: "BS:OL" },
   { kw: ["obligations under finance lease", "finance lease", "hire purchase"], t: "BS:OL" },
+  /* Debt named by its term. Borrowings of either term are Schedule F line 19,
+     like "bank loan" and "borrowing" above: the filed return that prompted
+     this carried its short-term debt there (line 16 blank, line 19 = the
+     debt), and the reviewed paper kept it there. Taxes owed stay other
+     current liabilities. */
+  { kw: ["taxes payable", "tax payable"], t: "BS:OCL" },
+  { kw: ["long-term debt", "long term debt", "long-term loans", "long-term loan", "long-term borrowings",
+         "short-term debt", "short term debt", "short-term loans", "short-term loan", "short-term borrowings"], t: "BS:OL" },
+  /* Sundry debtors are not customers: "deudores diversos" is the Mexican
+     chart's other-receivables account, and the bare "deudores" above would
+     otherwise call it trade receivables. Longer keyword wins. */
+  { kw: ["deudores diversos", "deudores varios", "otros deudores", "sundry debtors"], t: "BS:OCA" },
   { kw: ["preferred stock", "preference share"], t: "BS:58" },
   { kw: ["common stock", "share capital", "called up share", "capital social", "capital suscrito", "capital pagado", "capital", "实收资本"], t: "BS:59" },
   { kw: ["paid-in", "share premium", "capital surplus", "prime d'émission", "fondo de capital", "capital fund"], t: "BS:60" },
@@ -609,7 +710,7 @@ export function matchRuleScoped(label: string, rules: MappingRule[], sheet: "IS"
      fit the column; matched with the ellipsis attached, the visible stem
      could not end a keyword and the account went unmapped. The original text
      is what is stored, shown and cited — only the scan sees the stem. */
-  const l = String(label).toLowerCase().replace(/\s*(?:\.{2,}|\u2026)\s*$/, "").trim();
+  const l = deglue(String(label)).toLowerCase().replace(/\s*(?:\.{2,}|\u2026)\s*$/, "").trim();
   /* "Total for Current Liabilities", "Total for Assets", "Subtotal of …":
      a total is a total whatever it totals, and the keyword list cannot
      enumerate every section name a report engine might put after "for".
@@ -745,15 +846,113 @@ export function detectLineNoColumnByStats(rows: string[][]): number | null {
    suffixes like "1,234 CR" must still count as numbers. Exported: the
    carry-forward form reader must never book a digit residue of prose like
    "(combine lines 7 through 13)" as a money value. */
+/** A figure that is complete on its own: thousands-grouped ("6,124,500",
+    "1.234.567,89") or carrying cents ("5125.00"). Two of them side by side
+    are two columns, never one number. */
+export const COMPLETE_AMOUNT = /^[-\u2212(]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+[.,]\d{2})\)?-?$/;
+
+const CURRENCY_PREFIX = /^(?:AED|USD|EUR|GBP|CHF|CAD|AUD|NZD|SAR|INR|JPY|CNY|RMB|HKD|SGD|MXN|CLP|BRL|ZAR|SEK|NOK|DKK|PLN|CZK|HUF|RON|TRY|ILS|QAR|KWD|BHD|OMR|EGP|NGN|KES|MYR|THB|IDR|PHP|VND|KRW|TWD|COP|PEN|ARS)\s?(?=[-(]?\s*\d)/;
+
+/* OCR reads a thousands comma as a dot now and then ("-5.691" on a page of
+   "10,400" and "-2,894"). On a page whose amounts are whole numbers grouped
+   with commas, and which prints no decimal amount at all, a lone
+   "d.ddd" is that slip, not five point six nine one. */
+export function commaSlipPage(pageText: string): boolean {
+  const grouped = (pageText.match(/(?:^|\s)\(?-?\d{1,3}(?:,\d{3})+\)?(?=\s|$)/g) || []).length;
+  if (grouped < 3) return false;
+  return !/(?:^|\s)\(?-?\d[\d,]*[.,]\d{2}\)?(?=\s|$)/.test(pageText);
+}
+
+/** Several whole figures in one cell ("0 -87,246,795.13"), as opposed to
+    one figure grouped with spaces ("1 234 567"). */
+export function multiNumericTokens(text: string): boolean {
+  const toks = String(text).trim().split(/\s+/);
+  if (toks.length < 2 || !toks.every((t) => /^[-\u2212(]?[\d.,]+\)?-?$/.test(t) && /\d/.test(t))) return false;
+  return !toks.slice(1).every((t) => /^\d{3}(?:[.,]\d+)?\)?$/.test(t));
+}
+
+/** The figures of a run-together cell, each placed where it sits in it. */
+export function numericTokenCells(c: PdfCell): PdfCell[] {
+  const text = c.text;
+  const out: PdfCell[] = [];
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const span = Math.max(1, text.length);
+    out.push({ ...c, text: m[0], x0: c.x0 + (c.x1 - c.x0) * (m.index / span), x1: c.x0 + (c.x1 - c.x0) * ((m.index + m[0].length) / span) });
+  }
+  return out;
+}
+
+/* A column of amounts in cents on a statement that prints whole numbers
+   everywhere else is not part of the statement: an export left a second,
+   unheaded column of ledger balances ("ACREEDORES VARIOS 173,832,374
+   -87,246,795.13"). Its figures are in none of the printed totals, and
+   read as data they made every row they touched ambiguous or booked a
+   stray balance as an account. Recognised by shape only: at least three
+   such cells share a left edge, and at least eight other figures on the
+   page are nearly all whole numbers. */
+const STRAY_CENTS = /^\(?-?\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\)?$/;
+const strayCache = new WeakMap<PdfDoc, Map<number, number[]>>();
+export function strayCentsColumns(doc: PdfDoc, page: number): number[] {
+  let byPage = strayCache.get(doc);
+  if (!byPage) { byPage = new Map(); strayCache.set(doc, byPage); }
+  const hit = byPage.get(page);
+  if (hit) return hit;
+  const cents: number[] = [];
+  let whole = 0, other = 0;
+  for (const r of doc.rows) {
+    if (r.page !== page) continue;
+    for (const c of r.cells.flatMap((x) => (multiNumericTokens(x.text) ? numericTokenCells(x) : [x]))) {
+      const t = c.text.trim();
+      if (numericCell(t) === null) continue;
+      if (STRAY_CENTS.test(t)) cents.push(c.x0);
+      else if (/^\(?-?[\d.,]+\)?$/.test(t) && !/[.,]\d{1,2}\)?$/.test(t)) whole++;
+      else other++;
+    }
+  }
+  const out: number[] = [];
+  cents.sort((a, b) => a - b);
+  for (let i = 0; i < cents.length;) {
+    let j = i;
+    while (j + 1 < cents.length && cents[j + 1] - cents[i] <= 4) j++;
+    if (j - i + 1 >= 3) out.push(cents[i]);
+    i = j + 1;
+  }
+  const kept = out.length && whole >= 8 && whole >= 9 * other ? out : [];
+  byPage.set(page, kept);
+  return kept;
+}
+
 export const numericCell = (cell: string, opts?: { dotThousands?: boolean }): number | null => {
   const s = String(cell).trim();
   if (!s) return null;
+  /* "[12]" is a note reference — the statement's pointer to note 12 — not
+     an amount. Square brackets never mark a negative (parentheses do). */
+  if (/^\[\s*\d{1,3}[a-z]?\s*\]$/i.test(s)) return null;
+  /* "6,124,500 5,483,000 4,971,200" is three year columns that a reader ran
+     together, not the number 612,450,054,830,005,000,000. Refused, so it can
+     never be booked; the readers split such runs before they get here. */
+  if (/\s/.test(s) && s.split(/\s+/).filter((t) => COMPLETE_AMOUNT.test(t)).length >= 2) return null;
+  /* "0 21,170,247.42" is two figures the reader ran together, not
+     21,170,247.42: removing the space made a zero and the next column's
+     balance one number. Space-grouped thousands ("1 234 567") still read. */
+  if (multiNumericTokens(s)) return null;
   /* A slash or colon between digits is a page count ("1/1"), a fraction, a
      date or a clock time — never an amount. numeric() strips punctuation, so
      without this "1/1" read as eleven and "09:58" as 958, and a report footer
      became a line item worth 11. */
   if (/\d\s*[/:]\s*\d/.test(s)) return null;
   if (/^\(?\s*-?[\d.,\s ']+\s*\)?\s*(?:CR|DR)?\s*\/?\s*$/i.test(s) && /\d/.test(s)) return numeric(s, opts);
+  /* "AED2,424,658.93", "AED -47,183.90": QuickBooks prints its totals and
+     its bottom line with the currency code in front. Read as text, the P&L's
+     own result was lost. Only a known ISO code, and only a grouped or
+     decimal amount after it ("USD 5" stays text). */
+  const cc = CURRENCY_PREFIX.exec(s);
+  if (cc) {
+    const rest = s.slice(cc[0].length).trim();
+    if (/^\(?\s*-?[\d.,\s ']+\s*\)?$/.test(rest) && /\d[.,]\d/.test(rest)) return numeric(rest, opts);
+  }
   const textual = /[A-Za-z\u00C0-\u024F\u0600-\u06FF\u4E00-\u9FFF]/.test(s);
   const n = numeric(s, opts);
   return n !== null && !textual ? n : null;
@@ -838,8 +1037,11 @@ export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
      CONTPAQ i statement shortens a long account name to "Depreciación
      acumulada de Eq. de Se..", and the full stop after "Eq" read as the end
      of a sentence, so the whole row was discarded before anything could map
-     it. A stop after a token of three letters or fewer is an abbreviation. */
-  const prose = label.replace(/\b([A-Za-z]{1,3})\.(?=\s)/g, "$1");
+     it. A stop after a token of three letters or fewer is an abbreviation,
+     and so is one after a capitalised short word or an all-capitals word
+     ("ANTIC. A TRABAJADORES", "(-) Depr. Acumulada", "RESULT. ANTES DE"):
+     a sentence ends on a lower-case word. */
+  const prose = label.replace(/\b([A-Za-z]{1,3}|[A-Z][A-Za-z]{0,5}|[A-Z]{2,8})\.(?=\s)/g, "$1");
   if (/[.!?]\s+\S/.test(prose) || /\n/.test(label)) return null;
   if (label.split(/\s+/).length > 9) return null;
   /* Unmatched brackets mean the caption is the tail (or head) of a sentence
@@ -862,7 +1064,7 @@ export function applyRowHygiene(row: ExtractedRow): ExtractedRow | null {
    so it holds for every language that writes numbers this way. */
 export const dotThousandsDocument = (text: string): boolean => /\d{1,3}(?:\.\d{3}){2,}/.test(text);
 
-export function extractRows(rows: string[][] | null): ExtractedRow[] {
+export function extractRows(rows: string[][] | null, opts?: { banners?: boolean }): ExtractedRow[] {
   const out: ExtractedRow[] = [];
   if (!rows) return out;
   const gridText = rows.map((r) => (r || []).join(" ")).join(" ");
@@ -893,6 +1095,13 @@ export function extractRows(rows: string[][] | null): ExtractedRow[] {
     if (!label) continue;
     // A number to the left of the caption is an account code, not a balance.
     let kept = nums.filter((x) => x.col > labelCol);
+    /* A group heading with no figure ("Revenues:", "Current liabilities:")
+       is the section the rows beneath it belong to. Kept only when the
+       caller reads sections (the statement grid), never as a line. */
+    if (!kept.length && opts?.banners && label.length <= 60 && isBannerLabel(label)) {
+      out.push({ label, values: [], years: undefined, isBanner: true });
+      continue;
+    }
     let period: string | undefined;
     if (roles.ytdCol !== undefined) {
       // The YTD column is the authoritative period figure. A row without one
@@ -904,7 +1113,11 @@ export function extractRows(rows: string[][] | null): ExtractedRow[] {
       // followed by real money, is a line number.
       const first = kept[0];
       const restMoney = kept.slice(1).some((x) => Math.abs(x.v) >= 1000 || !Number.isInteger(x.v));
-      if (first.col === labelCol + 1 && Number.isInteger(first.v) && first.v >= 1 && first.v <= 999 && restMoney) {
+      /* Never under a year heading: a column headed "2022" is money, and a
+         small first-year balance (payables 97 beside 5,079 and 9,990) was
+         thrown away as a line number. */
+      const yearCol = !!colYears && colYears[first.col] !== undefined && colYears[first.col] !== null;
+      if (!yearCol && first.col === labelCol + 1 && Number.isInteger(first.v) && first.v >= 1 && first.v <= 999 && restMoney) {
         kept = kept.slice(1);
       }
     }
@@ -1025,7 +1238,7 @@ declare const JSZip: any;
 
 import { pdfToDoc } from "./pdfText";
 import { sanitize } from "./hygiene";
-import { isBannerLabel } from "./sectionBanners";
+import { deglue, isBannerLabel } from "./sectionBanners";
 import { FX_META } from "./fxRates";
 import type { PdfDoc, PdfRow, PdfCell } from "./pdfText";
 
@@ -1152,7 +1365,18 @@ export function splitSidePanels(doc: PdfDoc): PdfDoc {
 
 /* ---------- positional extraction: column rulers and year snapping ---------- */
 
-export type ColumnRuler = { page: number; y: number; cols: { year: number; x0: number; x1: number }[] };
+export type ColumnRuler = { page: number; y: number; cols: { year: number; x0: number; x1: number }[];
+  /** Where a "Notes" column sits, when the header prints one. The small
+      integers under it are note references, not money. */
+  notes?: { x0: number; x1: number } };
+
+/* Cells a UK balance-sheet header prints beside its years, none of which is a
+   caption: the "Notes" column heading, and the company registration number
+   the Companies Act requires on that page ("Company No. SC240721"). */
+const NOTES_HEAD = /^(?:notes?|notas?)$/i;
+const REG_NO_LABEL = /^(?:company|registered|registration)\s*(?:no\.?|number|nr\.?)\s*:?$/i;
+const REG_NO = /^(?:(?:company|registered|registration)\s*(?:no\.?|number|nr\.?)\s*:?\s*)?[A-Z]{0,2}\d{6,8}$/i;
+const REG_NO_NAMED = /^(?:company|registered|registration)\s*(?:no\.?|number|nr\.?)/i;
 
 /** A printed header row that names its columns' years rules the rows below it.
     "2024   2023" and "31 MAR 2025   31 MAR 2024" are both read; so are
@@ -1167,7 +1391,13 @@ export function detectRulers(doc: PdfDoc): ColumnRuler[] {
     const years: Array<{ year: number; x0: number; x1: number; bare: boolean }> = [];
     const worded: Array<{ year: number; x0: number; x1: number }> = [];
     const rest: PdfCell[] = [];
+    let notes: { x0: number; x1: number } | undefined;
+    // A registration number is only recognised on a line that names it.
+    const named = r.cells.some((c) => REG_NO_NAMED.test(c.text.trim()));
     for (const c of r.cells) {
+      const t = c.text.trim();
+      if (NOTES_HEAD.test(t)) { notes = { x0: c.x0, x1: c.x1 }; continue; }
+      if (named && (REG_NO_LABEL.test(t) || REG_NO.test(t))) continue;
       const bare = /^(19|20)\d{2}$/.test(c.text);
       const y = bare ? parseInt(c.text, 10) : headerYear(c.text);
       if (bare) years.push({ year: y as number, x0: c.x0, x1: c.x1, bare: true });
@@ -1180,7 +1410,7 @@ export function detectRulers(doc: PdfDoc): ColumnRuler[] {
     const quiet = !(rest.length > 1 || rest.some((c) => c.text.length > 14 || numericCell(c.text) !== null));
     if (years.length >= 1 && years.length <= 4 && !worded.length && quiet &&
         (years.every((x) => x.bare) || years.length >= 2)) {
-      out.push({ page: r.page, y: r.y, cols: years.map((x) => ({ year: x.year, x0: x.x0, x1: x.x1 })) });
+      out.push({ page: r.page, y: r.y, cols: years.map((x) => ({ year: x.year, x0: x.x0, x1: x.x1 })), ...(notes ? { notes } : {}) });
     } else if (!years.length && worded.length === 2 &&
                worded.some((x) => x.year === -1) && worded.some((x) => x.year === -2) && quiet) {
       out.push({ page: r.page, y: r.y, cols: worded.map((x) => ({ year: x.year, x0: x.x0, x1: x.x1 })) });
@@ -1338,9 +1568,22 @@ export function extractPositionedRows(
     const chileanStyle = dotThousandsDocument(statementText)
       || (/\b(balance|estado de resultados|ingresos|gastos|activos|pasivos|patrimonio)\b/.test(statementText)
         && /\b\d{1,3}\.\d{3}\b/.test(statementText));
+    const slip = !chileanStyle && commaSlipPage(statementText);
+    const stray = strayCentsColumns(doc, row.page);
     for (let i = 0; i < row.cells.length; i++) {
       const c = row.cells[i];
-      const n = numericCell(c.text, { dotThousands: chileanStyle });
+      if (stray.length && STRAY_CENTS.test(c.text.trim()) && stray.some((x) => Math.abs(x - c.x0) <= 4)) continue;
+      if (multiNumericTokens(c.text)) {
+        for (const tc of numericTokenCells(c)) {
+          if (stray.length && STRAY_CENTS.test(tc.text) && stray.some((x) => Math.abs(x - tc.x0) <= 4)) continue;
+          const v = numericCell(tc.text, { dotThousands: chileanStyle });
+          if (v !== null) nums.push({ v, x0: tc.x0, x1: tc.x1, idx: i });
+        }
+        continue;
+      }
+      const n = slip && /^\(?-?\d{1,3}\.\d{3}\)?$/.test(c.text.trim())
+        ? numericCell(c.text.trim().replace(".", ","))
+        : numericCell(c.text, { dotThousands: chileanStyle });
       if (n !== null) nums.push({ v: n, x0: c.x0, x1: c.x1, idx: i });
       else if (label === null && textualCell(c.text) && c.text.trim().length > 2) {
         label = c.text.trim();
@@ -1378,6 +1621,17 @@ export function extractPositionedRows(
     if (kept.length >= 2 && kept.every((x) => /^(19|20)\d{2}$/.test(row.cells[x.idx].text.trim()))) continue;
 
     const ruler = rulerFor(row.page, row.y);
+    /* A note reference printed in the header's "Notes" column ("Tangible
+       assets  4  843,254  632,129") is not a figure. Left in, the row carried
+       three numbers for two years. Only a small whole number sitting under
+       the Notes heading, and never the row's only number, is set aside. */
+    if (ruler && ruler.notes && kept.length > 1) {
+      const nc = ruler.notes;
+      const under = (k: { x0: number; x1: number }) => k.x1 >= nc.x0 - 6 && k.x0 <= nc.x1 + 6;
+      const refs = kept.filter((k) => under(k) && Number.isInteger(k.v) && k.v > 0 && k.v < 100
+        && /^\d{1,2}$/.test(row.cells[k.idx].text.trim()));
+      if (refs.length && refs.length < kept.length) kept = kept.filter((k) => !refs.includes(k));
+    }
     let years: (number | null)[] | undefined;
     if (ruler) {
       const edges = ruler.cols.map((c) => (doc.approxWidths ? c.x0 : c.x1)).sort((a, b) => a - b);
@@ -1404,6 +1658,9 @@ export function extractPositionedRows(
       });
     }
 
+    /* "Taxes and premiums social insurance [10]": the note reference is the
+       statement's pointer, not part of the account's name. */
+    label = label.replace(/\s*\[\s*\d{1,3}[a-z]?\s*\]\s*$/i, "").trim() || label;
     const candidate: ExtractedRow = {
       label, values: kept.map((x) => x.v), years, page: row.page, x0,
       ...(periodHeading ? { period: periodHeading } : {}),
@@ -1522,6 +1779,81 @@ export function fixedAssetSplit(
     if (!noteTies([cost[c], -accumDep[c]], note.total[c])) return null;
   }
   return { cost, accumDep, net: note.total.slice() };
+}
+
+/* UK accounts print the fixed-asset note as a MOVEMENT schedule: the asset
+   classes run across the page (Land and buildings | Plant | Motor vehicles |
+   Total) and the movements run down it —
+
+     Cost or revaluation
+       At 1 December 2023          …     887,757
+       Additions                   …     251,524
+       At 30 November 2024         …   1,139,281
+     Depreciation
+       At 1 December 2023          …     255,628
+       Charge for the year         …      40,399
+       At 30 November 2024         …     296,027
+     Net book values
+       At 30 November 2024         …     843,254
+       At 30 November 2023         …     632,129
+
+   fixedAssetSplit reads the other layout (classes down, years across) and
+   finds nothing here, so Schedule F lines 9a and 9b stayed empty. The last
+   figure on each line is the Total column. Nothing is returned unless cost
+   less depreciation equals the note's own net book value in BOTH years. */
+const MOVE_COST = /^(?:cost|valuation|cost\s+or\s+(?:re)?valuation|cost\s*\/\s*valuation|at\s+cost)$/i;
+const MOVE_DEP = /^(?:(?:accumulated\s+)?depreciation(?:\s+and\s+impairment)?|depreciation\s+and\s+amorti[sz]ation)$/i;
+const MOVE_NBV = /^(?:net\s+book\s+values?|carrying\s+amounts?|net\s+book\s+amounts?)$/i;
+const MOVE_AT = /^(?:at|as\s+at|balance\s+at)\b/i;
+const MOVE_TITLE = /\b(?:tangible\s+(?:fixed\s+)?assets|fixed\s+assets|property,?\s+plant)/i;
+
+export function movementFixedAssetSplit(
+  doc: PdfDoc,
+  pages: Set<number>,
+): { cost: number[]; accumDep: number[]; net: number[] } | null {
+  const lines: { label: string; last: number | null }[] = [];
+  for (const r of doc.rows) {
+    if (!pages.has(r.page)) continue;
+    let label = "";
+    let last: number | null = null;
+    for (const c of r.cells) {
+      const t = c.text.trim();
+      const n = label ? numericCell(t) : null;
+      if (n !== null) last = n;
+      else if (!label && /[a-z]/i.test(t)) label = t;
+    }
+    lines.push({ label, last });
+  }
+  const find = (re: RegExp, from: number) => {
+    for (let i = from; i < lines.length; i++) if (re.test(lines[i].label)) return i;
+    return -1;
+  };
+  let from = 0;
+  while (from < lines.length) {
+    const c = find(MOVE_COST, from);
+    if (c < 0) return null;
+    from = c + 1;
+    // The note has to be the tangible one: look back a few lines for its title.
+    const title = lines.slice(Math.max(0, c - 10), c).map((l) => l.label).reverse()
+      .find((l) => MOVE_TITLE.test(l) || /intangible/i.test(l));
+    if (!title || /intangible/i.test(title)) continue;
+    const d = find(MOVE_DEP, c + 1);
+    const nb = d < 0 ? -1 : find(MOVE_NBV, d + 1);
+    if (d < 0 || nb < 0) continue;
+    const at = (a: number, b: number) =>
+      lines.slice(a, b).filter((l) => MOVE_AT.test(l.label) && l.last !== null).map((l) => l.last as number);
+    const cost = at(c + 1, d), dep = at(d + 1, nb).map((v) => Math.abs(v)), net = at(nb + 1, Math.min(lines.length, nb + 4));
+    if (cost.length < 2 || dep.length < 2 || net.length < 2) continue;
+    const costE = cost[cost.length - 1], costB = cost[0], depE = dep[dep.length - 1], depB = dep[0];
+    const tie = (a: number, b: number) => Math.abs(a - b) <= 1;
+    if (tie(costE - depE, net[0]) && tie(costB - depB, net[1])) {
+      return { cost: [costE, costB], accumDep: [depE, depB], net: [net[0], net[1]] };
+    }
+    if (tie(costE - depE, net[1]) && tie(costB - depB, net[0])) {
+      return { cost: [costE, costB], accumDep: [depE, depB], net: [net[1], net[0]] };
+    }
+  }
+  return null;
 }
 
 /** Notes that turn out to hold exactly ONE thing.
@@ -1799,6 +2131,137 @@ export function stackedCaptionRows(pdf: PdfDoc): string[][] {
     }
   }
   return out;
+}
+
+/* The same boxed layout read by BOX CODE instead of by caption.
+
+   A numbered-box return is defined by its codes, not by its wording: the
+   caption above a box wraps, is abbreviated, or sits two lines up, while the
+   code printed at the box's left edge is fixed by the tax authority. So each
+   value row is split into box spans (a code, then everything up to the next
+   code) and the amount inside each span belongs to that code. The caption is
+   kept only for display. A code with no amount in its span is not returned. */
+export type BoxedCode = { code: string; value: string; caption: string; page: number };
+
+export function boxedFormCodes(pdf: PdfDoc): BoxedCode[] {
+  const TEXTUAL = (t: string) => textualCell(t) && t.trim().length > 2;
+  const GROUPED = (t: string) => /\d[.,]\d\d\d/.test(t);
+  const byPage = new Map<number, PdfRow[]>();
+  for (const r of pdf.rows) {
+    const list = byPage.get(r.page);
+    if (list) list.push(r); else byPage.set(r.page, [r]);
+  }
+  const out: BoxedCode[] = [];
+  const seen = new Set<string>();
+  for (const [page, pageRows] of byPage) {
+    const anchors = valueColumnAnchors(pageRows);
+    if (!anchors.length) continue;
+    const onColumn = (x1: number) => anchors.some((a) => Math.abs(a - x1) <= 6);
+    const ordered = [...pageRows].sort((a, b) => b.y - a.y);
+    for (let i = 0; i < ordered.length; i++) {
+      const valRow = ordered[i];
+      const capRow = i > 0 && ordered[i - 1].y - valRow.y <= 12 ? ordered[i - 1] : null;
+      const caps = capRow && !capRow.cells.some((c) => numericCell(c.text) !== null)
+        ? capRow.cells.filter((c) => TEXTUAL(c.text)) : [];
+      const codes: Array<{ x0: number; code: string }> = [];
+      const vals: Array<{ x0: number; text: string }> = [];
+      const charX = (c: PdfCell, k: number) => c.x0 + (c.x1 - c.x0) * (k / Math.max(1, c.text.length));
+      for (const c of valRow.cells) {
+        const text = c.text.trim();
+        const glued = /^(\(?-?\d[\d.,]*\)?)\s+(\d{1,4})(?:\s|$)/.exec(text);
+        if (glued && numericCell(glued[1]) !== null) {
+          vals.push({ x0: c.x0, text: glued[1] });
+          codes.push({ x0: charX(c, text.indexOf(glued[2], glued[1].length)), code: glued[2] });
+          continue;
+        }
+        const leadCode = /^(\d{1,4})\s+\D/.exec(text);
+        if (leadCode) { codes.push({ x0: c.x0, code: leadCode[1] }); continue; }
+        const amt = leadingAmount(text);
+        if (amt === null) continue;
+        if (onColumn(c.x1) || GROUPED(amt)) vals.push({ x0: c.x0, text: amt });
+        else if (/^\d{1,4}$/.test(text)) codes.push({ x0: c.x0, code: text });
+      }
+      if (!codes.length || !vals.length) continue;
+      codes.sort((a, b) => a.x0 - b.x0);
+      // A boxed row opens with its own code; a row that opens with an amount
+      // is a table, not a box.
+      if (vals.some((v) => v.x0 < codes[0].x0)) continue;
+      for (let k = 0; k < codes.length; k++) {
+        const from = codes[k].x0;
+        const to = k + 1 < codes.length ? codes[k + 1].x0 : Infinity;
+        const val = vals.find((v) => v.x0 >= from && v.x0 < to);
+        if (!val || seen.has(codes[k].code)) continue;
+        seen.add(codes[k].code);
+        const cap = caps.find((c) => c.x0 + 30 >= from && c.x0 < to);
+        out.push({ code: codes[k].code, value: val.text, caption: cap ? cap.text.trim() : "", page });
+      }
+    }
+  }
+  return out;
+}
+
+/* Box-code tables for the returns the tool recognises. A code in `book` is
+   booked to its line whatever its caption says. A code in `balance` is a
+   balance-sheet figure the return states as a total. Every other code — tax
+   registers, credits, carry-forwards, identification boxes — is never booked
+   and never offered to the AI: it is listed for the preparer instead, because
+   a tax-register balance is not an income or expense of the year.
+
+   `result` names how the return states the year's result, so the booked
+   profit can be checked against the filing before a work paper is produced. */
+export type BoxedFormSpec = {
+  id: string;
+  name: string;
+  detect: RegExp;
+  book: Record<string, string>;
+  balance: { totalAssets: string[]; totalLiabilities: string[]; cash: string[]; fixedAssets: string[]; capital: string[]; equity: string[] };
+  distributions: string[];
+  /* Each alternative: codes added, codes subtracted. The first alternative
+     whose codes are all present is used. */
+  result: Array<{ add: string[]; sub: string[] }>;
+  taxBasis: string;
+};
+
+export const BOXED_FORMS: BoxedFormSpec[] = [
+  {
+    id: "cl-f22",
+    name: "Chilean SII Form 22",
+    detect: /SERVICIO\s+DE\s+IMPUESTOS[\s\S]{0,400}FORM\.?\s*22|FORMULARIO\s+(N\S*\s*)?22\b/i,
+    book: {
+      "1400": "IS:7", "1657": "IS:7",
+      "1660": "IS:OI", "1588": "IS:OI",
+      "1409": "IS:11", "1661": "IS:11",
+      "1411": "IS:26", "1662": "IS:26",
+      "1140": "IS:27",
+      "1419": "IS:29", "1664": "IS:29",
+      "1663": "IS:30",
+      "1412": "IS:OD", "1424": "IS:OD", "1671": "IS:OD",
+      "1113": "IS:62",
+    },
+    balance: {
+      totalAssets: ["122"], totalLiabilities: ["123"], cash: ["784"],
+      fixedAssets: ["647"], capital: ["844", "1494"], equity: ["843"],
+    },
+    distributions: ["1182", "1699"],
+    result: [{ add: ["1672"], sub: [] }, { add: ["1410", "1426"], sub: ["1430"] }],
+    taxBasis: "The Form 22 states taxable income on the tax basis (cash/tax accounting), not GAAP book income.",
+  },
+];
+
+export function boxedFormSpec(pageText: string): BoxedFormSpec | null {
+  return BOXED_FORMS.find((f) => f.detect.test(pageText)) || null;
+}
+
+/* A tax-register balance (Chile: RAI, REX, SAC, STUT, CPT, RLI, PPM, prior
+   year tax losses) tracks tax attributes, not the year's income, expenses or
+   book balances. Such a caption is never booked from a guess: the AI and the
+   agent are refused, and the preparer places it if it belongs anywhere. The
+   acronyms are matched case-sensitively so "rai" inside a word never hits. */
+const TAX_REGISTER_ACRONYM = /(^|[^A-Za-zÀ-ɏ])(RAI|REX|SAC|STUTS?|CPTS?|RLI|PPM|INR)(?=$|[^A-Za-zÀ-ɏ])/;
+const TAX_REGISTER_WORDS = /p[eé]rdidas?\s+tributarias?|renta\s+l[ií]quida\s+imponible|base\s+imponible|capital\s+propio\s+tributario|remanente\s+(del\s+)?ejercicio|registro\s+de\s+rentas|incentivo\s+al\s+ahorro/i;
+export function isTaxRegisterCaption(label: string): boolean {
+  const s = String(label || "");
+  return TAX_REGISTER_ACRONYM.test(s) || TAX_REGISTER_WORDS.test(s);
 }
 
 /* SheetJS is loaded from a <script> tag by the build, not imported, because it

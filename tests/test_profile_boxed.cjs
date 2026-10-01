@@ -187,6 +187,8 @@ t("the shipped detectProfile reads a boxed form the same way src does", () => {
   assert.deepStrictEqual(got, want);
   assert.deepStrictEqual(got, [
     ["legalName", "EJEMPLO SOCIEDAD LIMITADA", "medium"],
+    // "18 Comuna" is the city (round 20: Comuna -> city, Region -> state).
+    ["addr2", "VALPARAISO", "medium"],
     ["activity", "ENSENANZA PREESCOLAR PRIVADA", "medium"],
   ]);
 });

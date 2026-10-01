@@ -97,6 +97,26 @@ t("French and German statement titles are recognised", () => {
   }
 });
 
+t("the SHIPPED classifier's statement-band P&L title test carries the same French and German titles", () => {
+  // The source classifier had them; the shipped page's band test did not, so a
+  // French "COMPTE DE PROFITS ET PERTES" page fell through to the shape tests,
+  // came out a balance sheet, and every P&L line was booked to BS:50.
+  const dist = require("fs").readFileSync(require("path").join(__dirname, "..", "dist", "index.html"), "utf8");
+  const at = dist.indexOf("/*EN9PNLTITLE*/");
+  assert.ok(at > 0, "EN9PNLTITLE marker present");
+  const test = dist.slice(at, dist.indexOf('return A("fs-pnl",3)', at));
+  for (const w of ["compte de profits et pertes", "compte de r\\u00e9sultat", "erfolgsrechnung", "gewinn- und verlustrechnung"]) assert.ok(test.includes(w), w);
+});
+
+t("a French side heading read by OCR without its space is still that heading (src and dist)", () => {
+  const { SECTION_BANNERS } = require("./fixtures/harness_src.cjs").BANNERS();
+  const side = (label) => { for (const [re, sct] of SECTION_BANNERS) if (re.test(label)) return sct; return null; };
+  for (const [label, want] of [["CAPITAUX PROPRES", "equity"], ["CAPITAUXPROPRES", "equity"], ["CAPITAUXETRANGERS", "liabilities"],
+                               ["ACTIFIMMOBILISE", "assets"], ["ACTIF CIRCULANT", "assets"]]) assert.strictEqual(side(label), want, label);
+  const dist = require("fs").readFileSync(require("path").join(__dirname, "..", "dist", "index.html"), "utf8");
+  for (const re of ["[/^capitaux\\s*propres$/i", "[/^capitaux\\s*(?:é|e)trangers$/i", "[/^actif(?:\\s*(?:circulant|immobilis(?:é|e)))?$/i"]) assert.ok(dist.includes(re), re);
+});
+
 /* ---------- the currency label on the rate tables ---------- */
 
 t("the Swiss franc is CHF; CHE is a different currency entirely", () => {

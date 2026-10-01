@@ -571,6 +571,12 @@ async function pdfjsToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
             // Gaps are in points here: beyond ~1.2 em it is a column boundary.
             close();
             buf = it.text; x0 = it.x; end = it.x + it.w;
+          } else if (gap > it.h * 0.12 && TWO_FIGURES(buf, it.text)) {
+            /* Two complete figures a space apart are two columns, however
+               close: a three-year statement sets its columns tighter than
+               the 1.2 em rule above expects. */
+            close();
+            buf = it.text; x0 = it.x; end = it.x + it.w;
           } else {
             buf += (gap > it.h * 0.12 && !/\s$/.test(buf) ? " " : "") + it.text;
             end = Math.max(end, it.x + it.w);
@@ -595,6 +601,16 @@ async function pdfjsToDoc(buffer: ArrayBuffer): Promise<PdfDoc> {
   }
   return { pageCount, rows };
 }
+
+/** The last word of the running cell and the next item are both complete
+    figures (grouped thousands or cents). Mirrors engine.ts COMPLETE_AMOUNT;
+    kept local so this module keeps no import from the engine. */
+const FIGURE = /^[-\u2212(]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+[.,]\d{2})\)?-?$/;
+const TWO_FIGURES = (buf: string, next: string) => {
+  const last = buf.trim().split(/\s+/).pop() || "";
+  const first = next.trim().split(/\s+/)[0] || "";
+  return FIGURE.test(last) && FIGURE.test(first);
+};
 
 const finalizeDoc = (d: PdfDoc): PdfDoc => cleanDoc(mergeWrappedLabels(splitWideCellsPos(d)));
 

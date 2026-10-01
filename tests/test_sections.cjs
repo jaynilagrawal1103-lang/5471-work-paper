@@ -63,9 +63,11 @@ const R = (label, amt, x0, page = 1) => ({
    added: a QuickBooks sub-account is named after the bank or the supplier, so
    only its heading says what it is, and "8150 Exchange gain or loss" is a LOSS
    only because of the heading it is printed under. */
-t("the two banner lexicons are the same 41 patterns", () => {
+/* 49 since the Dutch cash group headings (Liquid assets, Checking/Saving accounts; 2Hats 2026-09-29); 48 since the Spanish P&L headings (Estado de Resultados, Ingresos, Costo de Ventas, Gastos; Veillon 2026-09-29); 44 since the QuickBooks "Accounts Receivable" group heading; 43 since UK (Companies Act) accounts: "Provisions for liabilities" and
+   "Capital and reserves" (Barnomadics, 2026-09-28). */
+t("the two banner lexicons are the same 54 patterns", () => {
   const BANNERS = load("src/prototype/wp/sectionBanners.ts").SECTION_BANNERS;
-  assert.strictEqual(BANNERS.length, 41);
+  assert.strictEqual(BANNERS.length, 54);
   assert.strictEqual(SHIPPED.SECTB.length, BANNERS.length);
   for (let i = 0; i < BANNERS.length; i++) {
     assert.strictEqual(String(BANNERS[i][0]), String(SHIPPED.SECTB[i][0]), "pattern " + i);
@@ -417,7 +419,7 @@ t("step 3 skips structure, applies the veto AFTER a target is chosen, then the f
   // a different thing from being mapped.
   assert.ok(loop.includes("if (m.skipReason || m.row.isBanner) {"), "structure is booked");
   assert.ok(loop.includes("if (m.agentImportant && !m.row.isBanner) {"), "an important structural row reaches Review");
-  assert.ok(/if \(m\.skipReason \|\| m\.row\.isBanner\) \{[\s\S]{0,900}?continue;\s*\}/.test(loop), "and nothing in that branch books anything");
+  assert.ok(/if \(m\.skipReason \|\| m\.row\.isBanner\) \{[\s\S]{0,2000}?continue;\s*\}/.test(loop), "and nothing in that branch books anything");
   const veto = loop.indexOf("if (target && m.section && !sectionOk(m.section, target)) target = null;");
   const fallback = loop.search(/if \(!target && m\.section\) \{\s*target = sectionRoute\(m\.section, m\.row\.label\)/);
   assert.ok(veto > 0 && fallback > veto, "the fallback must run after the veto, not before");

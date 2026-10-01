@@ -207,7 +207,10 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
               ) : null}
 
               <div className="field-grid">
-                {PROFILE_FIELDS.filter((f) => f.key !== "entityShort").map((f) => {
+                {/* refId and principalPlace have their own inputs (with the Schedule E
+                    and 5471-face hints) further down; listing them here too
+                    would give the same field two boxes. */}
+                {PROFILE_FIELDS.filter((f) => f.key !== "entityShort" && f.key !== "refId" && f.key !== "principalPlace").map((f) => {
                   const det = entity.detected[f.key];
                   return (
                     <label className={det ? "wp-field detected" : "wp-field"} key={f.key}>

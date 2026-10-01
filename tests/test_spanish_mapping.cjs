@@ -47,10 +47,14 @@ const ROWS = [
   ["EQUIPO DE OFICINA", 171982103, "BS:28"],
   ["EQUIPO DE COMPUTACION Y COMUNICACION", 34965942, "BS:28"],
   ["(-) Depr. Acumulada", 81142564, "BS:29"],
+  // Payroll obligations are other current liabilities (Schedule F line 17),
+  // not the year's payroll expense (round 21). Sundry creditors stay on
+  // accounts payable: the Wiener reviewers (and their filed prior returns)
+  // book "acreedores diversos" there; one Campbell reviewer used line 17.
   ["ACREEDORES VARIOS", 173832374, "BS:46"],
-  ["RET. Y APORTES DE NOMINA", 1319600, "IS:26"],
-  ["CESANTIAS CONSOLIDADAS", 4603200, "IS:26"],
-  ["VACACIONES CONSOLIDAS", 1951872, "IS:26"],
+  ["RET. Y APORTES DE NOMINA", 1319600, "BS:OCL"],
+  ["CESANTIAS CONSOLIDADAS", 4603200, "BS:OCL"],
+  ["VACACIONES CONSOLIDAS", 1951872, "BS:OCL"],
   ["CAPITAL SUSCRITO Y PAGADO", 100000000, "BS:59"],
   ["UTILIDADES O EXCEDENTES ACUMULADOS", 30010429, "BS:61"],
   ["GASTOS DEL PERSONAL", 81704489, "IS:26"],
@@ -117,7 +121,9 @@ t("a Chilean single-dot amount is read as a thousands group only in statement co
       { page: 1, y: 720, cells: [{ text: "Reajuste Art 72 LIR", x0: 10, x1: 170 }, { text: "-79.242", x0: 400, x1: 450 }] },
     ], pageCount: 1, approxWidths: false,
   };
-  const rows = ENG.extractPositionedRows(doc, [], { pages: new Set([1]) });
+  /* "ESTADO DE RESULTADOS" and "GASTOS" are P&L headings now, kept as
+     value-less banner rows ahead of the figure. */
+  const rows = ENG.extractPositionedRows(doc, [], { pages: new Set([1]) }).filter((r) => r.values.length);
   assert.strictEqual(rows[0].values[0], -79242);
   assert.strictEqual(ENG.numeric("79.242"), 79.242, "global decimal parsing must remain unchanged");
 });

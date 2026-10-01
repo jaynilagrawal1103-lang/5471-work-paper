@@ -97,7 +97,7 @@ t("M · Schedule R filed as NONE is read; a real distribution is not mistaken fo
 });
 
 t("M · with no distribution this year the same row is written, dated this year end", () => {
-  assert.ok(store.includes("if (!divAmount && cf?.schRNone && !ent.dividends.length) {"));
+  assert.ok(store.includes("if ((!divAmount || fromEqLine) && cf?.schRNone && (fromEqLine || !ent.dividends.length)) {"));
   assert.ok(store.includes('w({ sheet: SHEET.schR, ref: "B10", value: "NONE", source: src, reviewId: "sch-r-none" });'));
   assert.ok(store.includes('w({ sheet: SHEET.schR, ref: "G10", value: 0, source: src });'));
   assert.ok(store.includes('id: "sch-r-none", level: "info"'));
