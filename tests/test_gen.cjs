@@ -18,8 +18,15 @@ a(!dist.includes('n.charAt(0)==="="?`<c r="${t}"${s}><f>'),
   const i = dist.indexOf("function a8(");
   const body = dist.slice(i, dist.indexOf("var A8=", i));
   const fs_ = body.match(/<f>/g) || [];
-  a(fs_.length === 1 && body.includes('/*EN9CELLREF*/if(n==="=B11")return`<c r="${t}"${s}><f>B11</f></c>`;'),
-    "a8 emits <f> only for the one constant =B11 (Basic Information header follows the legal name)");
+  /* A second constant (v20): the mapping policy "line 23a = net income per
+     books" writes Income Statement F65 as =F64, a same-sheet reference fixed
+     in code. Still no user string reaches <f>. */
+  a(fs_.length === 2 && body.includes('/*EN9CELLREF*/if(n==="=B11")return`<c r="${t}"${s}><f>B11</f></c>`;')
+    && body.includes('/*EN9POLOCIF*/if(n==="=F64")return`<c r="${t}"${s}><f>F64</f></c>`;'),
+    "a8 emits <f> only for the two code constants =B11 (Basic Information header) and =F64 (policy line 23a)");
+  const a8 = new Function("iF", body + ";return a8;")((x) => x);
+  a(a8("A1", "=SUM(B1)", null).includes("inlineStr") && a8("A1", "=F64+1", null).includes("inlineStr"),
+    "any other leading-= string stays text");
 }
 a(dist.includes('if(!EN9ok&&A[2]!=="/>"&&/<f[ >]/.test(A[2]))return A8=!0,t;') &&
   !dist.includes('!(typeof i=="string"&&i.charAt(0)==="=")&&A[2]!=="/>"'),

@@ -2514,8 +2514,22 @@ reference only). What was wrong was the agent's reporting:
 ### 2026-10-02 (25) — mapping and UI audit recommendations implemented (both trees, uncommitted)
 
 Owner: "do all these changes … recheck the whole tool … fix the UI gaps".
-Measured results are in the published report "Mapping & UI Results";
-numbers below are the measured ones, not the audit's projections.
+Measured results are in the published report "Mapping and UI Results"
+(built by `$SP/res/build_results.py`); measured, not the audit's projections.
+
+Measured (11 clients, reviewer FX preset, `scoreT.sh`; Z15 = before):
+- Default settings (F20): 181/376 48.1% → 196/376 52.1%. IS 84/135 (same);
+  BS closing 62 → 65/124; BS opening 35 → 47/117 (DFRNT 0 → 11/11 from the
+  opening-rate order; Ana 6 → 7). No line worse than Z15 in any client.
+- Each client's policy profile (F20pol, `uimap/policies.json`): 230/355
+  64.8% (IS 103/128, closing 75/115, opening 52/112). The count drops because
+  the tool stops writing lines the reviewer left empty.
+- Projection was 60.6% / 84.8%: wrong. Most opening gaps are reviewers' own
+  prior-year local-currency papers (Parnasa, Cecilia, Charlie), not rounding.
+- Captions: blind 98 → 162/185 (87.6%); audit set 132 → 185/185.
+- UI (Cecilia + Heather crawl, `uicrawl3.mjs`): clean screens 7/32 → 32/32;
+  labelled inputs 380/474 → 476/476; bilingual 16/22 → 22/22; review items
+  actionable 47/226 → 230/230 (8/8 screens); clickable non-buttons 10 → 0.
 
 Mapping safety (store loop; dist sentinels in brackets)
 - A preparer's assignment outranks a total keyword (`EN9OVSKIP`) and the
@@ -2602,5 +2616,5 @@ UI (layer `layer-src/enhance.js` + css; React patches in dist)
 - `scripts/inject-layer.mjs` uses a function replacer (a "$&" in the layer
   was expanded into the page and broke it once).
 
-Tests: new `test:r25` (26). Version-pinned regexes in keltr18/mancusor19/
+Tests: new `test:r25` (30). test:all 81/81 suites pass on the final build. Version-pinned regexes in keltr18/mancusor19/
 multiyear/r17/r22/sections/p5/schedc/notes/layer updated to the new strings.
