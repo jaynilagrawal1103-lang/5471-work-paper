@@ -2549,9 +2549,14 @@ compiled by `$SP/rebuild_pol.py`)
   rules, never to a preparer's assignment; contributions carry `policy`,
   Provenance note says "Moved by the mapping policy: …".
 - Write-time switches: `wholeUnits` (buildWrites `EN9WHOLE`),
-  `ociEqualsNetIncome` (F65 = "=F64", `EN9POLOCI`), `detailedAccounts`
+  `ociEqualsNetIncome` (F65 = "=F64", `EN9POLOCI`; the dist cell writer only
+  emits whitelisted formulas, so `EN9POLOCIF` adds "=F64" — before it the
+  cell got the TEXT "=F64" and line 24 read 0), `detailedAccounts`
   (`supplementaryDetailPages(…, preferDetail)`, `EN9POLDETAIL`).
 - Actions `setMappingPolicy`, `setEntityMappingPolicy` (dist `EN9POLACT`).
+- `wholeUnits` did NOT reproduce the reviewers' rounding when measured
+  (Mancuso got four ±1 lines worse, HMC unchanged), so it is not in any
+  measured client profile; the ±1-5 differences remain open.
 - Not expressible as a policy (template rows the reviewers inserted, a
   reviewer's cash/AR swap, signs on 21a that the template's own formula
   reverses) — listed in the report as remaining.

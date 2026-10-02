@@ -220,6 +220,15 @@ t("the store applies the policy after the rules, never to an assignment, and say
   for (const s of ["/*EN9POLDECL*/", "/*EN9POLMAP*/", "/*EN9POLRET*/", "/*EN9POLNOTE*/", "/*EN9POLOCI*/", "/*EN9POLACT*/", "/*EN9POLDETAIL*/"]) assert.ok(DIST.includes(s), s);
   assert.ok(typeof STORE.actions.setMappingPolicy === "function" && typeof STORE.actions.setEntityMappingPolicy === "function");
 });
+t("line 23a reaches the workbook as a formula, not as the text \"=F64\"", () => {
+  // The shipped cell writer only turns whitelisted references into formulas.
+  const i = DIST.indexOf("/*EN9CELLREF*/"), fn = DIST.lastIndexOf("function a8(", i);
+  const body = DIST.slice(fn, DIST.indexOf("var A8=", i));
+  const a8 = new Function("iF", body + ";return a8;")((x) => x);
+  assert.strictEqual(a8("F65", "=F64", "7"), '<c r="F65" s="7"><f>F64</f></c>');
+  const XP = load("src/prototype/wp/xlsxPatch.ts");
+  assert.ok(XP.setCell('<worksheet><sheetData><row r="65"></row></sheetData></worksheet>', "F65", "=F64").includes("<f>F64</f>"));
+});
 t("the firm and entity policy are set from the store actions", () => {
   STORE.actions.setMappingPolicy({ fxLine: "realized" });
   assert.deepStrictEqual(STORE.getSnapshot().mappingPolicy, { fxLine: "realized" });
