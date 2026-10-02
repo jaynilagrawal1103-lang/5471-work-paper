@@ -95,10 +95,23 @@ t("the approved prior-year end rate outranks a prior return's printed rate", () 
   assert.ok(/approved prior year-end rate/.test(r.why));
 });
 
-t("the peg is next, ahead of the published prior year-end rate", () => {
+t("the approved rate also outranks the peg: Schedule F divides the opening column by it", () => {
   const r = STORE.openingRateFor("KYD", 0.82, undefined);
+  assert.strictEqual(r.rate, 0.82);
+  assert.ok(/approved prior year-end rate/.test(r.why));
+});
+
+t("the peg is used when no rate is approved and the prior return printed none", () => {
+  const r = STORE.openingRateFor("KYD", null, undefined);
   assert.strictEqual(r.rate, 0.833);
   assert.ok(/peg/i.test(r.why));
+});
+
+t("dist orders the opening rate the same way", () => {
+  const i = dist.indexOf("function EN9openingRate(");
+  const f = new Function("EN9peg", "return " + dist.slice(i, dist.indexOf("}", dist.indexOf("return null", i)) + 1))(STORE.peggedRate || ((c) => (String(c).toUpperCase() === "KYD" ? { rate: 0.833, note: "KYD peg" } : null)));
+  assert.strictEqual(f("KYD", 0.82, 0.833).rate, 0.82);
+  assert.strictEqual(f("KYD", null, null).rate, 0.833);
 });
 
 t("an unpegged currency with no stated rate uses the approved rate", () => {

@@ -58,8 +58,10 @@ a(dist.includes("eoy:EN9r2add(h.eoy,g)") && dist.includes("boy:EN9r2add(h.boy,g)
   "Schedule F opening and closing balances accumulate rounded");
 a(!dist.includes('(typeof h.amount=="number"?h.amount:0)+g'),
   "REGRESSION: the raw float accumulation is gone");
-a(dist.includes("(i[`F${a.row}`]=EN9r2(A.amount))"), "Schedule C is rounded again at workbook write");
-a(dist.includes("(s[`D${a.row}`]=EN9r2(A.boy))") && dist.includes("(s[`F${a.row}`]=EN9r2(A.eoy))"),
+/* v20: EN9amt rounds to the cent (EN9r2), or to whole units under the
+   mapping policy's wholeUnits switch. */
+a(dist.includes("EN9amt=function(v){return EN9wh?Math.round(v):EN9r2(v)}") && dist.includes("(i[`F${a.row}`]=EN9amt(A.amount))"), "Schedule C is rounded again at workbook write");
+a(dist.includes("(s[`D${a.row}`]=EN9amt(A.boy))") && dist.includes("(s[`F${a.row}`]=EN9amt(A.eoy))"),
   "Schedule F is rounded again at workbook write");
 a(dist.includes('EN9v=typeof a.value=="number"?(a.dp?EN9roundDp(a.value,a.dp):EN9r2(a.value)):typeof a.value=="string"?EN9sanitize(a.value):a.value'),
   "every other numeric cell written to the workbook is rounded (to 2 dp, or to the precision a rate declares), and strings are sanitised");

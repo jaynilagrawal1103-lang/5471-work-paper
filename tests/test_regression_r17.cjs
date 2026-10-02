@@ -63,7 +63,7 @@ t("a saved v12 catalogue moves short-term debt and gains sundry debtors; an olde
 });
 
 t("dist carries the same catalogue version and upgrade tables", () => {
-  assert.ok(/var EN9RULEVER=(1[3-9]);/.test(dist));
+  assert.ok(/var EN9RULEVER=(1[3-9]|[2-9]\d);/.test(dist));
   assert.ok(dist.includes('12:["deudores diversos"]'));
   assert.ok(dist.includes('12:[{kw:["short-term debt","short term debt","short-term loans","short-term loan","short-term borrowings"],from:"BS:OCL",to:"BS:OL"}]'));
 });

@@ -152,13 +152,15 @@ t("N · a section-heading placement is recorded as such, not as a keyword rule",
   assert.ok(store.includes('via: "rule" | "section" | "groq" | "manual"'));
   assert.ok(/const byBanner = sectionRoute\(m\.section, m\.row\.label\) \|\| null;[\s\S]{0,700}?else \{ target = byBanner; if \(target\) via = "section"; \}/.test(store));
   assert.ok(/target = collapsedRoute\(m\.row\.label, m\.collapsed\);\n\s+if \(target\) \{\n\s+via = "section";/.test(store));
-  assert.ok(/target = ov\.to;\n\s+via = "manual";/.test(store), "a standing override is the preparer's decision");
+  // An AI proposal kept from an earlier pass replays as the model's answer, not the preparer's.
+  assert.ok(/target = ov\.to;\n\s+via = ov\.by === "ai" \? "groq" : "manual";/.test(store), "a standing override is the preparer's decision");
   assert.ok(store.includes("year: r.year, via,"));
 });
 
 t("N · the Provenance sheet labels each kind honestly and leaves Confidence blank for non-AI rows", () => {
   assert.ok(store.includes('rule: "Keyword rule", section: "Section heading", groq: "AI mapping", manual: "Manual assignment"'));
-  assert.ok(store.includes('c.via === "groq" ? (flaggedLow ? "LOW — verify" : "model-reported ok") : ""'));
+  assert.ok(store.includes('c.via === "groq" ? (flaggedLow || ent.mapOverrides?.[norm(c.label || "")]?.confidence === "low" ? "LOW — verify"'));
+  assert.ok(/: "model-reported ok"\) : "",/.test(store), "non-AI rows leave Confidence blank");
   assert.ok(!store.includes('"booked by the AI model; remap on Mapping & adjustments if wrong"'), "the old one-size note is gone");
 });
 
@@ -177,7 +179,7 @@ t("dist · statement captions, Schedule R NONE, formation date, rate precision, 
   for (const pin of [
     "/*EN9CFSTMT*/", "/*EN9CFSCHR*/", "(per prior-year Form 5471, ", "/*EN9SCHRNONE*/", 'value:"NONE"',
     "EN9formedCell(", "EN9roundDp(", 'ref:"Q16",value:g,dp:6', 'ref:"D3",value:p,dp:4',
-    'EN9via="section"', 'EN9via="manual"', "via:EN9via", "Keyword rule", "Section heading",
+    'EN9via="section"', 'EN9via=/*EN9AIORIGIN*/j.by==="ai"?"groq":"manual"', "via:EN9via", "Keyword rule", "Section heading",
     "ACKNOWLEDGED BLOCKING EXCEPTIONS", "entity name re-cased from the statements' header",
   ]) assert.ok(dist.includes(pin), `dist lacks ${pin}`);
   assert.ok(!dist.includes('"booked by the AI model; remap on Mapping & adjustments if wrong"'));

@@ -27,7 +27,7 @@
  * subtotal printed to the nearest thousand still IS the subtotal.
  */
 
-import { BS_LINES } from "./engine";
+import { BS_LINES, foldAccents } from "./engine";
 import type { ExtractedRow } from "./engine";
 import { CASH_GROUP, SECTION_BANNERS, SECTION_RESETS, deglue, isBannerLabel, SELF_SECTION_ROWS, TITLE_NOT_BANNER_WITH_FIGURES, bannerKey, type Section } from "./sectionBanners";
 
@@ -998,7 +998,9 @@ export function sectionOk(section: Section | null | undefined, target: string | 
  * figure in a place no one can find. The other three sides do have a
  * catch-all, because each has a genuine "other" line built for exactly this. */
 export function sectionRoute(section: Section | null | undefined, label: string): string | null {
-  const s = String(label || "").toLowerCase();
+  /* Accent-folded (v20): the routes below are written once for every
+     language, unaccented ("korperschaftsteuer", "deprecia"). */
+  const s = foldAccents(String(label || "").toLowerCase());
   /* These two DO have a catch-all, for the same reason collapsedRoute does:
      the banner already said what the figure is. Everything under a bank-
      accounts heading is cash; everything under a cost-of-sales heading is a
@@ -1009,12 +1011,12 @@ export function sectionRoute(section: Section | null | undefined, label: string)
      The catch-all is the depreciable pool, because that is what a fixed-asset
      register is mostly made of and it is where the form expects them. */
   if (section === "fixedAssets") {
-    if (/\b(depreciat|amorti[sz])/.test(s)) return "BS:29";
-    if (/\bland\b/.test(s)) return "BS:32";
-    if (/goodwill/.test(s)) return "BS:34";
-    if (/\b(patent|trademark|trade mark|licence|license|software|intangible|website|domain)\b/.test(s)) return "BS:36";
-    if (/\b(investment|shares in|interest in)\b/.test(s)) return "BS:OI";
-    if (/\b(bond|deposit|security deposit|retention)\b/.test(s)) return "BS:39";
+    if (/\b(depreciat|amorti[sz])/.test(s) || DEPRECIATION_WORDS.test(s)) return "BS:29";
+    if (/\bland\b/.test(s) || LAND_WORDS.test(s)) return "BS:32";
+    if (/goodwill|fonds de commerce|firmenwert|geschaftswert|avviamento|liikearvo/.test(s)) return "BS:34";
+    if (/\b(patent|trademark|trade mark|licence|license|software|intangible|website|domain)\b/.test(s) || INTANGIBLE_WORDS.test(s)) return "BS:36";
+    if (/\b(investment|shares in|interest in)\b/.test(s) || INVESTMENT_WORDS.test(s)) return "BS:OI";
+    if (/\b(bond|deposit|security deposit|retention)\b/.test(s) || /\b(deposito|garantia|caution|kaution|waarborg|cauzion|vakuus)/.test(s)) return "BS:39";
     return "BS:28";
   }
   /* Equity. Drawings and current-year earnings are movements ON retained
@@ -1023,9 +1025,10 @@ export function sectionRoute(section: Section | null | undefined, label: string)
      in one owner's name is proprietor capital (line 21), not stock issued to
      the public (line 20b). */
   if (section === "equity") {
-    if (/treasury|own shares/.test(s)) return "BS:62";
+    if (/treasury|own shares|acciones propias|actions propres|eigene anteile|eigen aandelen|azioni proprie|acoes em tesouraria|omat osakkeet/.test(s)) return "BS:62";
     if (/preferen(?:ce|red)/.test(s)) return "BS:58";
-    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
+    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s) || SHARE_CAPITAL_WORDS.test(s)) return "BS:59";
+    if (/kapitalrucklage|agio|sovrapprezzo|prime d.emission|prima de emision|premium|surplus/.test(s)) return "BS:60";
     if (/\b(capital|contribution|surplus|premium)\b/.test(s)) return "BS:60";
     return "BS:61";
   }
@@ -1037,73 +1040,128 @@ export function sectionRoute(section: Section | null | undefined, label: string)
        borrowing, and borrowings are line 19 (Macroroots printed "Short-term
        debt" under "Non-current liabilities" and its filed return carried it on
        line 19 with line 16 blank). */
-    if (/\bcurrent portion\b/.test(s)) return "BS:OCL";
+    if (/\bcurrent portion\b|porcion corriente|parte corriente/.test(s)) return "BS:OCL";
     // The equity tests first, and in the same order as the liabilities branch
     // below: the banner is sticky and equity prints underneath it.
-    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
+    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s) || SHARE_CAPITAL_WORDS.test(s)) return "BS:59";
     if (/reserve|retained earning|accumulated (profit|loss|deficit)|distributable/.test(s)) return "BS:61";
     if (/current account/.test(s) && !/vat|tax/.test(s)) return "BS:52";
-    if (/shareholder|director|related part/.test(s)) return "BS:52";
+    if (/shareholder|director|related part/.test(s) || SHAREHOLDER_WORDS.test(s)) return "BS:52";
     return "BS:OL";
   }
   if (section === "otherIncome") {
-    if (/\b(dividend)/.test(s)) return "IS:14";
-    if (/\b(interest)/.test(s)) return "IS:15";
-    if (/\b(rent)/.test(s)) return "IS:16";
-    if (/\b(royalt|licence fee|license fee)/.test(s)) return "IS:17";
+    if (/\b(dividend)/.test(s) || DIVIDEND_WORDS.test(s)) return "IS:14";
+    if (/\b(interest)/.test(s) || INTEREST_WORDS.test(s)) return "IS:15";
+    if (/\b(rent)/.test(s) || RENT_WORDS.test(s)) return "IS:16";
+    if (/\b(royalt|licence fee|license fee)/.test(s) || /regalia|redevance|lizenzgebuhr|royalty/.test(s)) return "IS:17";
     if (/\b(gain|loss)\b.*\b(sale|disposal)|\b(sale|disposal)\b.*\b(asset)/.test(s)) return "IS:18";
+    if (FX_WORDS.test(s)) return /\b(realised|realized|realizad|realise|realisiert|gerealiseerd|realizzat)/.test(s) && !/\bun-?reali/.test(s) ? "IS:20" : "IS:19";
     return "IS:OI";
   }
   if (section === "cogs") {
-    if (/\b(labour|labor|wage|salar|payroll|subcontract|sub-contract)/.test(s)) return "IS:10";
-    if (/\b(purchase|goods|material|stock|inventor|supplier)/.test(s)) return "IS:11";
+    if (/\b(labour|labor|wage|salar|payroll|subcontract|sub-contract)/.test(s) || /mano de obra|main.d.oeuvre|lohn|lonen|mao de obra|manodopera|palkat/.test(s)) return "IS:10";
+    if (/\b(purchase|goods|material|stock|inventor|supplier)/.test(s) || /\b(compra|achat|einkauf|wareneinsatz|inkoop|acquist|osto|mercader|marchandise|materia|mercadoria|estoque|existencia|vorrat|voorraad|rimanenz)/.test(s)) return "IS:11";
     return "IS:12";
   }
   if (section === "assets") {
-    if (/\b(depreciat|amorti[sz])/.test(s)) return "BS:29";
-    if (/\b(receivable|debtor)/.test(s)) return "BS:11";
+    if (/\b(depreciat|amorti[sz])/.test(s) || DEPRECIATION_WORDS.test(s)) return "BS:29";
+    if (ALLOWANCE_WORDS.test(s)) return "BS:12";
+    if (/\b(receivable|debtor)/.test(s) || RECEIVABLE_WORDS.test(s)) {
+      /* A balance owed by a shareholder or a related company is a loan to a
+         related person (line 6), whatever it is called. */
+      if (SHAREHOLDER_WORDS.test(s) || /related part|relacionad/.test(s)) return "BS:19";
+      return "BS:11";
+    }
+    if (INVENTORY_WORDS.test(s)) return "BS:14";
     /* The mirror of the liabilities branch below. A shareholder current
        account swings between the two sides year to year, and the balance
        sheet says which side it is on THIS year by where it prints it. */
     if (/current account|\bloan\b/.test(s) && !/vat|tax/.test(s)) return "BS:19";
-    if (/\b(vat|tax|gst|prepaid|deposit|accrued income)/.test(s)) return "BS:OCA";
+    if (LOAN_WORDS.test(s) && SHAREHOLDER_WORDS.test(s)) return "BS:19";
+    if (/\b(vat|tax|gst|prepaid|deposit|accrued income)/.test(s) || PREPAID_WORDS.test(s)) return "BS:OCA";
     /* A bank account named only by its bank ("WAIO Bank 285,588.12") is cash
        — never a loan, an overdraft or a card, which are not assets here. */
-    if (/\b(bank|banco|banque)\b/.test(s) && !/\b(loan|overdraft|credit card|charges?|fees?)\b/.test(s)) return "BS:10";
+    if ((/\b(bank|banco|banque)\b/.test(s) || CASH_WORDS.test(s)) && !/\b(loan|overdraft|credit card|charges?|fees?)\b/.test(s) && !LOAN_WORDS.test(s)) return "BS:10";
     return null;
   }
   if (section === "liabilities") {
-    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s)) return "BS:59";
+    if (/share capital|common stock|ordinary shares|issued capital|aandelenkapitaal/.test(s) || SHARE_CAPITAL_WORDS.test(s)) return "BS:59";
     if (/reserve|retained earning|accumulated (profit|loss|deficit)|distributable/.test(s)) return "BS:61";
     if (/\b(unearned|deferred)\s+(income|revenue)|invoices? to be received|accrued/.test(s)) return "BS:OCL";
     /* A loan from a bank or other lender is borrowing, not a shareholder's
        money: "Loans from financial institutions" is an other current
        liability, never line 18. */
-    if (/\bloans?\b/.test(s) && /\b(banks?|financial institutions?|credit institutions?|lenders?|bank loans?)\b/.test(s)) return "BS:OCL";
-    if (/current account|loan/.test(s) && !/vat|tax/.test(s)) return "BS:52";
+    if ((/\bloans?\b/.test(s) || LOAN_WORDS.test(s)) && (/\b(banks?|financial institutions?|credit institutions?|lenders?|bank loans?)\b/.test(s) || /\b(banco|bancari|banque|kreditinstitut|kredietinstelling|banca|banche|rahoituslaitos)/.test(s))) return "BS:OCL";
+    /* Line 18 is money owed to a SHAREHOLDER or a related person, and only
+       the caption can say so. A loan or current account the caption does not
+       place with one is an ordinary borrowing (line 19) — v20; before, every
+       "loan" under a liabilities banner was booked to line 18. A current
+       account keeps line 18: a company's current account on its own books is
+       the director's or shareholder's account. */
+    if ((/current account/.test(s) || /\bloans?\b/.test(s) || LOAN_WORDS.test(s)) && !/vat|tax/.test(s)) {
+      if (/current account/.test(s) || SHAREHOLDER_WORDS.test(s) || /shareholder|director|related part|member|owner|partner/.test(s)) return "BS:52";
+      return "BS:OL";
+    }
     /* A participation account ("cuenta en participación", a joint venture's
        capital held for a partner) is a long-term obligation: line 19. */
     if (/\b(cta\.?|cuentas?)\s+(?:de\s+|en\s+)?particip/.test(s)) return "BS:OL";
     // A tax owed is an other current liability, not a trade payable.
-    if (/\btax/.test(s)) return "BS:OCL";
-    if (/\b(creditor|payable)/.test(s)) return "BS:46";
+    if (/\btax/.test(s) || TAX_WORDS.test(s)) return "BS:OCL";
+    if (/\b(wage|salar|payroll|accrued)/.test(s) || /\b(sueldo|remunerac|salaire|lohn|gehalt|loon|salaris|salario|stipend|palkka|personal|personeel)/.test(s)) return "BS:OCL";
+    if (/\b(sonstige|overige|otras|otros|autres|altri|outras|muut|diversos|varios|divers)\b/.test(s)) return "BS:OCL";
+    if (/\b(creditor|payable)/.test(s) || PAYABLE_WORDS.test(s)) return "BS:46";
     return "BS:OCL";
   }
   if (section === "income") {
     if (/referral fee|commission|sundry income|other income|royalt/.test(s)) return "IS:OI";
+    /* Interest, dividends, rent and exchange differences printed inside the
+       revenue block are not gross receipts: they have their own Schedule C
+       lines (v20; before, the catch-all put them on line 1a). */
+    if (/\b(dividend)/.test(s) || DIVIDEND_WORDS.test(s)) return "IS:14";
+    if (/\b(interest)/.test(s) || INTEREST_WORDS.test(s)) return "IS:15";
+    if (/\b(rental income|rent received|rents received)/.test(s)) return "IS:16";
+    if (FX_WORDS.test(s)) return "IS:19";
+    if (/\b(returns?|refunds?|discounts?|devoluc|descuento|rebaja|rabais|remise|ristourne|retour|erlosschmal|korting|devoluc|abatimento|resi|sconti|alennu|hyvity)/.test(s) && !/\b(fees?|income|revenue|sales of)\b/.test(s)) return "IS:8";
     return "IS:7";
   }
   if (section === "costs") {
-    if (/salar|wage|personnel|remuneration|directors? and managers|wkr/.test(s)) return "IS:26";
-    if (/\b(depreciat|amorti[sz])/.test(s)) return "IS:30";
-    if (/interest/.test(s)) return "IS:29";
-    if (/\bfx\b|exchange (gain|loss)|currency (gain|loss)/.test(s)) return "IS:19";
-    if (/\b(income tax|corporat\w* tax|profit tax|vennootschapsbelasting|körperschaftsteuer)/.test(s)) return "IS:62";
+    if (/salar|wage|personnel|remuneration|directors? and managers|wkr/.test(s) || STAFF_WORDS.test(s)) return "IS:26";
+    if (/\b(depreciat|amorti[sz])/.test(s) || DEPRECIATION_WORDS.test(s)) return "IS:30";
+    if (/interest/.test(s) || INTEREST_WORDS.test(s)) return "IS:29";
+    if (/\bfx\b|exchange (gain|loss)|currency (gain|loss)/.test(s) || FX_WORDS.test(s)) return "IS:19";
+    if (/\b(income tax|corporat\w* tax|profit tax|vennootschapsbelasting|korperschaftsteuer)/.test(s) || INCOME_TAX_WORDS.test(s)) return "IS:62";
+    /* A tax that is not on income is Schedule C line 16 (v20; before, the
+       other-deductions pool). Fees for preparing or advising on tax, and
+       penalties, stay with the other deductions. */
+    if ((/\b(tax|belasting)/.test(s) || TAX_WORDS.test(s)) && !/\b(fees?|preparation|advis|consult|penalt|honorar|asesor|conseil|berat|advies|multa|amende|strafe|boete|sancion)/.test(s)) return "IS:32";
     if (/\b(tax|belasting)/.test(s)) return "IS:OD";
+    if (RENT_WORDS.test(s) || /\brent\b/.test(s)) return "IS:27";
     return "IS:OD";
   }
   return null;
 }
+
+/* ---- v20 word lists for the routes above (accent-folded, lower case) ---- */
+const DEPRECIATION_WORDS = /\b(deprecia|amortiza|abschreib|afschrijv|amortiss|ammortament|poisto)/;
+const LAND_WORDS = /\b(terreno|terrain|grundstuck|terrein|terreni|maa-alue)/;
+const INTANGIBLE_WORDS = /\b(intangib|immateri|incorporel|marcas|marques|marken|merken|marchi|licencia|lizenz)/;
+const INVESTMENT_WORDS = /\b(inversion|participac|beteiligung|deelneming|partecipaz|investiment|sijoitu)/;
+const SHARE_CAPITAL_WORDS = /\b(capital social|capital suscrito|capital pagado|capital emitido|gezeichnetes kapital|stammkapital|grundkapital|gestort|geplaatst|osakepaaoma|capitale sociale|capital subscrito)/;
+const SHAREHOLDER_WORDS = /\b(shareholder|stockholder|director|socio|socios|accionista|associe|gesellschafter|aandeelhouder|participant|acionista|soci|osakas|osakkai|relacionad|verbundene|groepsmaatschappij|controllat)/;
+const DIVIDEND_WORDS = /\b(dividend|beteiligungsertr|osinko|proventi da partecipazioni|produits de participations)/;
+const INTEREST_WORDS = /\b(interes|interet|juros|zins|rente\b|rentebaten|renteopbrengst|rentelasten|rentekosten|interessi|korko)/;
+const RENT_WORDS = /\b(alquiler|arriend|arrendamiento|loyer|miete|mieten|huur|alugu|affitt|locazion|vuokra)/;
+const FX_WORDS = /\b(exchange|diferencia(s)? (en|de) cambio|diferencia cambiaria|cambio|cambial|cambiais|change\b|ecarts? de change|kursdifferenz|kursgewinn|kursverlust|koersverschil|valuta|cambi\b|kurssi)/;
+const STAFF_WORDS = /\b(sueldo|salario|remunerac|personal|salaire|traitement|lohn|lohne|gehalt|gehalter|personal|loon|lonen|salaris|personeel|pessoal|stipend|personale|henkilosto|palkat|palkka|sociale lasten|charges sociales|soziale abgaben|cargas sociales|encargos sociais|oneri sociali|pension)/;
+const INCOME_TAX_WORDS = /\b(impuesto (sobre|a) la renta|impuesto a las (ganancias|utilidades)|impuesto de (renta|sociedades)|impot sur les (societes|benefices)|steuern vom einkommen|ertragsteuer|korperschaftsteuer|belasting(en)? (naar|over) de winst|imposto de renda|imposte sul reddito|tulovero|valittomat verot)/;
+const TAX_WORDS = /\b(impuesto|impot|steuer|imposto|impost|belasting|tributo|tribut|verot|vero\b|tasa|taxe|abgabe)/;
+const ALLOWANCE_WORDS = /\b(allowance|provision for (bad|doubtful)|doubtful|incobrable|estimacion|wertberichtig|depreciation des creances|dubieuze|svalutazione|duvidoso|epavarma)/;
+const RECEIVABLE_WORDS = /\b(cobrar|client|deudor|debiteur|forderung|receber|crediti|creance|saamis|vordering)/;
+const INVENTORY_WORDS = /\b(inventor|inventario|existencia|stock|vorrat|vorrate|voorraad|voorraden|estoque|rimanenz|varasto|vaihto-omaisuus|mercader|marchandise|mercadoria)/;
+const LOAN_WORDS = /\b(prestamo|pret\b|prets\b|emprunt|darlehen|lening|emprestimo|prestito|finanziament|laina)/;
+const PREPAID_WORDS = /\b(impuesto|iva|impot|tva|steuer|btw|imposto|icms|imposte|anticip|prepag|avance|vorauszahl|vooruitbetaald|antecipad|risconti|charges constatees|verosaamis|siirtosaamis)/;
+const CASH_WORDS = /\b(caja|caisse|kasse|kas|caixa|cassa|kassa|disponib|liquid|tesorer|efectivo|bankguthaben|banktegoed)/;
+const PAYABLE_WORDS = /\b(proveedor|acreedor|por pagar|fournisseur|lieferant|leverancier|crediteur|fornecedor|fornitor|debiti verso|ostovel)/;
 
 /** Rows whose banner puts them on the other side of the statement from the
     page they were read on. Returns the two feeds with those rows exchanged,
@@ -1194,7 +1252,7 @@ const GROUP_RESULT = /\b(gross|operating|trading|net)\s+(profit|loss|margin|inco
 
 const REVENUE_CAPTION = /\b(turnover|revenue|sales|income from (?:sales|services))\b/i;
 
-export function supplementaryDetailPages<T extends MapRow>(rows: T[], detailPages: Set<number>): { rows: T[]; dropped: number; abridged?: boolean } {
+export function supplementaryDetailPages<T extends MapRow>(rows: T[], detailPages: Set<number>, preferDetail = false): { rows: T[]; dropped: number; abridged?: boolean } {
   if (!detailPages.size) return { rows, dropped: 0 };
   const valued = (m: MapRow) => !m.row.isBanner && !!(m.row.values && m.row.values.length);
   const detail = rows.filter((m) => detailPages.has(m.row.page ?? -1) && valued(m));
@@ -1248,7 +1306,9 @@ export function supplementaryDetailPages<T extends MapRow>(rows: T[], detailPage
      face carries no turnover line and the detail does, the detail is booked
      and the face rows it restates are set aside instead. */
   const revenue = (m: MapRow) => m.section === "income" || REVENUE_CAPTION.test(String(m.row.label || ""));
-  if (!face.some(revenue) && detail.some(revenue)) {
+  /* The firm's policy can ask for the detailed account itself (policy.ts,
+     detailedAccounts): the same restated face rows are set aside instead. */
+  if ((!face.some(revenue) && detail.some(revenue)) || preferDetail) {
     /* The detail prints "-" for a year with nothing in it, so such a row
        carries one figure and the positional sums above skip it. Summed by the
        year each figure sits under, the group still restates the face line. */
@@ -1276,7 +1336,7 @@ export function supplementaryDetailPages<T extends MapRow>(rows: T[], detailPage
       const restated = detail.some((d) => same(m.row.values, d.row.values)) || groupSums.some((g) => same(m.row.values, g)) || yearRestated(m);
       if (!restated) return m;
       dropped++;
-      return { ...m, skipReason: "restated by the detailed account, which the abridged face statement summarises" };
+      return { ...m, skipReason: preferDetail && face.some(revenue) ? "restated by the detailed account, which the mapping policy books instead of the face statement" : "restated by the detailed account, which the abridged face statement summarises" };
     });
     return { rows: out, dropped, abridged: true };
   }

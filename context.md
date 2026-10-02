@@ -42,8 +42,8 @@ All of that work, and the 2026-09-14 OCR rebuild, is merged. `main` is at
   server, `start.sh`, `start.cmd`, `README.txt`. `dist-bundle/` is gitignored.
 - `npm run build` — intentionally a no-op that keeps the reviewed `dist/`. Use
   `build:full-DESTRUCTIVE` only after porting fixes to `src/`.
-- `npm run test:all` — the full test chain (57 suites). `test:peg` is the one
-  known failure; see Open issues.
+- `npm run test:all` — the full test chain (see the latest dated section for
+  the current suite count).
   Needs `npm i` first, and `npm run build:server` once (test:aikey reads
   `dist-server/server.cjs`).
 - `npm run start:ocr` (or `python -m ocr_service` inside `ocr-service/`) —
@@ -1627,10 +1627,8 @@ filter; the agent node list gained `risks`; the banner lexicon is 41 patterns.
 
 ## Open issues
 
-- `test:peg` fails at "the approved prior-year end rate outranks a prior
-  return's printed rate" (0.833 vs 0.82). PRE-EXISTING: it fails identically at
-  985ce6b, before the 2026-09-17 work. Which rate should win is a business-rule
-  decision for the owner, so it was left alone rather than silently changed.
+- `test:peg` RESOLVED 2026-10-02 (25): the approved prior year-end rate now
+  comes first in `openingRateFor` (the sheet divides the opening column by it).
 - OCR: a figure corrupted to `1:100.000)` (bracketed negative on a grainy
   Spanish scan) gets no flag - `validate.py looks_numeric` rejects any token
   with a colon before the grammar checks - and the app's `numericCell` then
@@ -2512,3 +2510,92 @@ reference only). What was wrong was the agent's reporting:
   `EN9PRIORDIAG`).
 - Lines unchanged on every client; only those Review/log messages change.
   `test:r22` 40.
+
+### 2026-10-02 (25) — mapping and UI audit recommendations implemented (both trees, uncommitted)
+
+Owner: "do all these changes … recheck the whole tool … fix the UI gaps".
+Measured results are in the published report "Mapping & UI Results";
+numbers below are the measured ones, not the audit's projections.
+
+Mapping safety (store loop; dist sentinels in brackets)
+- A preparer's assignment outranks a total keyword (`EN9OVSKIP`) and the
+  banner veto (`ov === undefined && !sectionOk`, `EN9MANUALNOVETO`).
+- Figures read as totals are listed per document: info `skipped-totals-<doc>`
+  (`EN9SKIPLIST/EN9SKIPRV`).
+- AI answers kept as overrides store `{by:"ai",confidence}` and replay as
+  `via:"groq"`; Provenance shows the confidence (`EN9AIORIGIN`).
+- Translation precedence: a ≤9-char raw keyword hit loses to a translation
+  phrase ≥4 chars longer that names another line (`matchRuleStrength`,
+  `EN9TRPREC`).
+
+Lexicon v20 (catalogue 20; `RULES_ADDED_SINCE[19]`; dist P1 = Z15's P1 +
+appended groups after `/*EN9RULEV20A*/`, so old marker comments survive —
+regenerate with `$SP/regenP1b.cjs <Z15.html>`, NOT a full rewrite)
+- `foldAccents` in `matchRuleScoped` (dist `EN9fold`, `EN9FOLD-BEGIN/END`).
+- 37 groups: DE/FR/NL/IT/PT/FI/ES statutory captions + everyday English.
+- `sectionRoute` rewritten multilingual (dist `EN9ROUTE20-BEGIN/END`, compiled
+  from src by `$SP/rebuild_route.py`; old route markers re-inserted). Income
+  banner routes interest/dividends/rent/FX/returns before 1a; costs: non-income
+  tax → IS:32 (line 16; not fees/penalties); liabilities: "loan" → 52 only with
+  shareholder words, else BS:OL.
+- Captions: dev set 71.4% → 100% (tests/fixtures/captions_dev.json, test pins
+  ≥95%); blind set written by a separate agent 53.0% → 87.6%; my own held-out
+  set 62.2% → 98.4% but it is NOT independent (written by me before the rules).
+
+Policy profile (`policy.ts`, dist `EN9POLICY-BEGIN/END` global `EN9POL`,
+compiled by `$SP/rebuild_pol.py`)
+- `state.mappingPolicy` (firm, Settings ▸ Policies) + `Entity.mappingPolicy`
+  (Mapping & adjustments). 17 switches, first choice = rules. Applied after the
+  rules, never to a preparer's assignment; contributions carry `policy`,
+  Provenance note says "Moved by the mapping policy: …".
+- Write-time switches: `wholeUnits` (buildWrites `EN9WHOLE`),
+  `ociEqualsNetIncome` (F65 = "=F64", `EN9POLOCI`), `detailedAccounts`
+  (`supplementaryDetailPages(…, preferDetail)`, `EN9POLDETAIL`).
+- Actions `setMappingPolicy`, `setEntityMappingPolicy` (dist `EN9POLACT`).
+- Not expressible as a policy (template rows the reviewers inserted, a
+  reviewer's cash/AR swap, signs on 21a that the template's own formula
+  reverses) — listed in the report as remaining.
+
+Notes and rates
+- `noteBreakdown.ts` (dist `EN9NOTEBREAK`, call `EN9NBCALL`): a creditors face
+  row is replaced by its note components when they add up to it in every
+  printed year (heading row, or the page names the caption); components take
+  the face row's years. Debtors are left whole. The breakdown returns the
+  side (`section`: "within one year" → liabilities, "after more than one
+  year"/non-current → termLiabilities); parts carry it, because a notes page
+  has no banner (without it Ana's lease went long-term and taxes/accruals
+  found no line). Never splits a single tax balance or a run containing a
+  movement row (opening balance, paid, brought forward): HMC's "Income Tax
+  Payable" note is a movement and was split wrongly in the first recheck.
+- A finance lease / hire purchase under a current-liabilities banner → BS:OCL
+  (`EN9LEASECUR`).
+- `openingRateFor`: approved prior-year rate → printed rate → peg
+  (`EN9OPENRATE20`). `test:peg` now passes.
+
+UI (layer `layer-src/enhance.js` + css; React patches in dist)
+- Generate buttons on Overview/Workspace/Preview go to Review & sign-off
+  (`EN9GENGATE1-3`); app exposes `window.__WPNAV`/`__WPVIEW` (`EN9WPNAV`).
+- Every `window.confirm` from a click becomes an in-page dialog; snapshot +
+  Undo bar (`takeSnapshot`/`undoSnapshot`, dist `EN9UNDO`); re-process and
+  forced OCR snapshot first.
+- Remap/assign selects: pick, then Move/Assign/Cancel; "remember for every
+  client" checkbox — `assignUnmatched(…, {remember})` learns a global rule only
+  when ticked (`EN9ASSIGNSCOPE`); data attrs `data-en9from/label/idx/eid`.
+- Review items on every surface get "Open in Exception center" (scroll +
+  highlight). Issue lists are never folded under "Show processing log".
+- Mapping rows: "Why this line" (rule / heading / AI + confidence / English /
+  policy) with "Open p.N".
+- Subtotals from state (income · COGS · deductions; assets/liabilities by D/F).
+- A11y: aria-labels for every unnamed control, roles for pointer rows, tablist
+  roles, empty th text, focus to the view heading, contrast overrides
+  (`--en9-muted` #4f5b6b), reduced motion.
+- English meaning beside every original caption (`enhanceBilingual`).
+- Restore reverts staged lines and removes writes its sign-off created
+  (`stagedLine`, `createdWrites`; `EN9RESTOREALL/EN9RESTOREW`).
+- OCR flag sign-off button says "Sign off (figure unchanged)"; force-OCR text
+  says the copy replaces the document.
+- `scripts/inject-layer.mjs` uses a function replacer (a "$&" in the layer
+  was expanded into the page and broke it once).
+
+Tests: new `test:r25` (26). Version-pinned regexes in keltr18/mancusor19/
+multiyear/r17/r22/sections/p5/schedc/notes/layer updated to the new strings.

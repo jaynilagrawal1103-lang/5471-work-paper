@@ -47,7 +47,7 @@ t("exchange gain or loss is line 8a; a realised one is 8b", () => {
   const up = S.upgradeRules(v13, 13);
   assert.strictEqual(ENG.matchRuleScoped("8150 Exchange gain or loss", up, "IS"), "IS:19");
   assert.strictEqual(ENG.matchRuleScoped("Realized exchange gain", up, "IS"), "IS:20");
-  assert.ok(/var EN9RULEVER=1[4-9];/.test(dist) && dist.includes('13:[{kw:["exchange gain","exchange loss"],from:"IS:20",to:"IS:19"}]'));
+  assert.ok(/var EN9RULEVER=(1[4-9]|[2-9]\d);/.test(dist) && dist.includes('13:[{kw:["exchange gain","exchange loss"],from:"IS:20",to:"IS:19"}]'));
 });
 
 /* The real SHORI row geometry, through both trees' grouping pass. */
@@ -95,7 +95,7 @@ t("a group shares one pool row and takes the group's caption from its second acc
   const c = S.resolvePool(pools, "BS:OCL", "2150 Deferred Revenue", "Other Current Liabilities");
   assert.deepStrictEqual(c, { target: "BS:49", relabel: "2150 Deferred Revenue" });
   assert.ok(src.includes("if (!isOverride && POOLS[target] && routed.every((r) => !r.value)) continue;"), "zero balances take no row");
-  assert.ok(dist.includes("/*EN9POOLZERO*/") && dist.includes("c_(S,J,F.row.label,F.EN9group)") && dist.includes("/*EN9GROUPCALL*/EN9tagGroups(a);"));
+  assert.ok(dist.includes("/*EN9POOLZERO*/") && dist.includes("c_(S,J,F.row.label,EN9polG||F.EN9group)") && dist.includes("/*EN9GROUPCALL*/EN9tagGroups(a);"));
 });
 
 t("the prior return's PTEP and (b)-(d) columns are read by column, amounts by their right edge", () => {

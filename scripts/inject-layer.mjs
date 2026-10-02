@@ -21,7 +21,9 @@ if (js.includes("</script>") || (theme + css).includes("</style>"))
 const put = (id, tag, body, where) => {
   const re = new RegExp(`<${tag} id="${id}">[\\s\\S]*?</${tag}>`);
   const block = `<${tag} id="${id}">${body}</${tag}>`;
-  if (re.test(s)) { s = s.replace(re, block); return; }
+  // A function replacer: the layer contains "$&" in regex code, which a
+  // string replacement would expand into the matched text.
+  if (re.test(s)) { s = s.replace(re, () => block); return; }
   if (where === "head") {
     // immediately after the app's stylesheet, still inside <head>
     const i = s.indexOf("</style>");

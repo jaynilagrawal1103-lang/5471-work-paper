@@ -10,6 +10,7 @@ import { resetProject } from "./localStore";
 import { safeDownload } from "./safeBrowser";
 import { sessionSnapshot, sessionSubscribe } from "../session";
 import { PROVIDERS } from "./providers";
+import { PolicyCard } from "./PolicyCard";
 
 type Tab = "methodology" | "technical" | "config" | "policies" | "ai" | "services" | "usage";
 
@@ -257,6 +258,7 @@ export function SettingsView() {
         </div>
       ) : null}
 
+      {tab === "policies" ? <PolicyCard scope="firm" /> : null}
       {tab === "policies" ? (
         <section className="panel">
           <div className="panel-heading">

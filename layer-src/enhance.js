@@ -160,8 +160,9 @@ function decorateRow(r, kind){
       sl.parentElement && sl.parentElement.insertBefore(pen, sl);
     }
   }
+  try{ en9WhyLine(r); }catch(e){}
   /* multi-source badge on template-line cell */
-  var srcCount = cap.querySelectorAll(":scope > div").length;
+  var srcCount = cap.querySelectorAll(":scope > div:not([data-en9])").length;
   var tl = r.cells[1];
   var oldB = tl.querySelector(".en9-multi-badge"); if(oldB) oldB.remove();
   r.classList.toggle("en9-multi", srcCount>1);
@@ -261,15 +262,21 @@ function rebuild(tb, kind){
       head.appendChild(td);
       (function(sch){ head.addEventListener("click",function(){ S.collapsed[sch]=!S.collapsed[sch]; schedule(); }); })(cur);
       body.insertBefore(head, groupRows[0]);
-      var sum=0, has=false;
-      for(var v=0;v<vis.length;v++){ var n=num(vis[v].querySelector("td.numeric") && vis[v].querySelector("td.numeric").textContent);
-        if(n!=null){ sum+=n; has=true; } }
+      /* U3/U52: totals come from state, one column and one side at a time.
+         The cell text "D: 1,000 · F: 2,000" used to be read as 10002000, and
+         income and deductions were added together. */
+      var tot={inc:0,cogs:0,ded:0,aD:0,aF:0,lD:0,lF:0}, has=false, est=ent();
+      for(var v=0;v<vis.length;v++){ var rk2=rowKey(vis[v]); if(!rk2||!est) continue;
+        var mm=/^(IS|BS):(\d+)$/.exec(rk2.key); if(!mm) continue; var lv=(est.lines||{})[rk2.key]||{}, rw=+mm[2];
+        if(mm[1]==="IS"&&typeof lv.amount==="number"){ has=true; if(rw===8) tot.inc-=lv.amount; else if(rw>=9&&rw<=12) tot.cogs+=lv.amount; else if(rw<=25) tot.inc+=lv.amount; else if(rw<=58) tot.ded+=lv.amount; }
+        if(mm[1]==="BS"){ var as=rw<=42; if(typeof lv.boy==="number"){ has=true; tot[as?"aD":"lD"]+=lv.boy; } if(typeof lv.eoy==="number"){ has=true; tot[as?"aF":"lF"]+=lv.eoy; } } }
       if(has && vis.length && !S.collapsed[cur]){
         var sub=el("tr","en9-x en9-subtotal");
-        var a=el("td"); a.colSpan=cols-2; a.textContent="Subtotal \u2014 "+groupName(cur)+(vis.length!==groupRows.length?" (filtered)":"");
-        var b=el("td","numeric", sum<0 ? "("+Math.abs(sum).toLocaleString("en-US")+")" : sum.toLocaleString("en-US"));
+        var a=el("td"); a.colSpan=cols-1; a.textContent="Subtotal \u2014 "+groupName(cur)+(vis.length!==groupRows.length?" (filtered)":"")+": "+
+          (cur==="Sch C" ? "income "+en9Fmt(tot.inc)+" \u00b7 cost of goods sold "+en9Fmt(tot.cogs)+" \u00b7 deductions "+en9Fmt(tot.ded)
+                         : "assets D "+en9Fmt(tot.aD)+" / F "+en9Fmt(tot.aF)+" \u00b7 liabilities & capital D "+en9Fmt(tot.lD)+" / F "+en9Fmt(tot.lF));
         var c2=el("td");
-        sub.appendChild(a); sub.appendChild(b); sub.appendChild(c2);
+        sub.appendChild(a); sub.appendChild(c2);
         var last=vis[vis.length-1];
         if(last.nextSibling) body.insertBefore(sub,last.nextSibling); else body.appendChild(sub);
       }
@@ -560,6 +567,7 @@ function enhanceLog(){
   var logs=document.querySelectorAll(".log-list");
   for(var i=0;i<logs.length;i++){
     var lg=logs[i];
+    if(en9IsIssueList(lg)){ lg.classList.remove("en9-clamp"); var pb=lg.previousElementSibling; if(pb&&pb.classList&&pb.classList.contains("en9-logbtn")) pb.remove(); continue; }
     lg.classList.add("en9-clamp");
     lg.classList.toggle("en9-open", !!S.logOpen);
     var prev=lg.previousElementSibling;
@@ -1628,6 +1636,8 @@ function EN9ocrStart(entityId, fileId, opts) {
       /* the engine's own failure, not a bare "no result": the row's Details
          must say what actually went wrong */
       if (!res || !res.file) throw new Error(job.error || EN9OCR.lastError || "no result");
+      /* the original document comes back with Undo (U7) */
+      try { if (window.__WPACT.takeSnapshot && opts.force) { window.__WPACT.takeSnapshot("OCR replaced “" + att.name + "”"); en9UndoBar("OCR replaced “" + att.name + "”"); } } catch (e) {}
       return Promise.resolve(window.__WPACT.EN9_replaceFile(entityId, fileId, res.file, res.sidecar)).then(function (newId) {
         if (!newId) throw new Error("the document is no longer attached");
         job.status = "done"; job.completedAt = Date.now(); job.newId = newId; job.engine = res.sidecar.backend || res.sidecar.engine;
@@ -2019,7 +2029,8 @@ function enhanceOcrPanel(){
   var pgl=el("label","en9-ocr-pages"); pgl.appendChild(document.createTextNode("Pages "));
   var pg=document.createElement("input"); pg.type="text"; pg.placeholder="auto (pages without text) · all · 2,4-6"; pg.setAttribute("data-en9",""); pgl.appendChild(pg);
   var fl=el("label","en9-ocr-force"); var fc=document.createElement("input"); fc.type="checkbox"; fc.setAttribute("data-en9","");
-  fl.appendChild(fc); fl.appendChild(document.createTextNode(" also OCR pages that already have text (readings kept for comparison, the text layer is not replaced)"));
+  /* U7: the OCR'd copy REPLACES the document in intake — say so. */
+  fl.appendChild(fc); fl.appendChild(document.createTextNode(" also OCR pages that already have text — the OCR copy replaces the document in intake, so its digital text is no longer used (Undo restores the original)"));
   var lg=el("label","en9-ocr-lang"); var cb=document.createElement("input"); cb.type="checkbox"; cb.checked=false; cb.setAttribute("data-en9","");
   lg.appendChild(cb); lg.appendChild(document.createTextNode(" also recognise Dutch (English and the entity’s country language are always on)"));
   var btn=el("button","button en9-ocr-btn","Run OCR now"); btn.type="button";
@@ -2671,6 +2682,325 @@ function enhanceOverviewButton(){
   if(old.previousElementSibling!==gen) gen.parentElement.insertBefore(old, gen.nextSibling);
 }
 
+/* ===================== v20 UI pass (2026-10-02) =====================
+   U1 every review surface acts · U2 generation through sign-off (React) ·
+   U3/U52 honest subtotals · U4 blockers never collapsed · U8 why this line ·
+   U9/U10 pick-then-apply with an explicit "remember" scope · U11/U14 in-page
+   confirmation with Undo · U12 open the source page · U38-U41 labels, names,
+   roles, focus · U63 the English meaning beside every original caption ·
+   the mapping policy profile in Settings and on the entity. */
+
+/* ---- in-page confirmation + Undo ----
+   window.confirm can be suppressed by an embedded browser, which made delete
+   buttons look dead. Every confirm() raised by a click is shown in the page
+   instead; on OK the click is replayed, a snapshot is taken first, and an
+   Undo bar restores it. A confirm() with no click behind it keeps the native
+   dialog. */
+var EN9CF={btn:null};
+document.addEventListener("click",function(ev){
+  var b=ev.target&&ev.target.closest&&ev.target.closest("button,[role=button],a,input[type=checkbox]");
+  /* only a confirm() raised while THIS click is being handled is the
+     click's: a run started later by code must keep the native dialog */
+  if(b&&!isOurs(b)){ EN9CF.btn=b; setTimeout(function(){ if(EN9CF.btn===b) EN9CF.btn=null; },0); }
+},true);
+var EN9natConfirm=window.confirm?window.confirm.bind(window):function(){return true;};
+window.confirm=function(msg){
+  var b=EN9CF.btn;
+  if(b&&b.getAttribute("data-en9-confirmed")==="1"){ b.removeAttribute("data-en9-confirmed"); return true; }
+  if(!b||!document.body.contains(b)) return EN9natConfirm(msg);
+  EN9CF.btn=null;
+  en9Dialog({title:"Please confirm",text:String(msg||"Are you sure?"),ok:"Confirm",cancel:"Cancel"},function(){
+    var label=String(msg||"change").replace(/\s+/g," ").slice(0,90);
+    try{ window.__WPACT&&window.__WPACT.takeSnapshot&&window.__WPACT.takeSnapshot(label); }catch(e){}
+    b.setAttribute("data-en9-confirmed","1"); EN9CF.btn=b; b.click();
+    en9UndoBar(label);
+  });
+  return false;
+};
+function en9Dialog(o,onOk){
+  var prior=document.querySelector(".en9-dlg"); if(prior) prior.remove();
+  var back=el("div","en9-signoff-dialog en9-dlg"); back.setAttribute("data-en9","");
+  var box=el("section","en9-signoff-box"); box.setAttribute("role","dialog"); box.setAttribute("aria-modal","true");
+  var h=el("strong",null,o.title); h.id="en9-dlg-t"; box.setAttribute("aria-labelledby","en9-dlg-t");
+  box.appendChild(h); box.appendChild(el("p",null,o.text));
+  var acts=el("div","en9-signoff-dialog-actions"), c=el("button","button",o.cancel||"Cancel"), k=el("button","button primary",o.ok||"OK");
+  c.type=k.type="button";
+  var prevFocus=document.activeElement;
+  function close(){ back.remove(); document.removeEventListener("keydown",key,true); try{ prevFocus&&prevFocus.focus&&prevFocus.focus(); }catch(e){} }
+  function key(ev){ if(ev.key==="Escape"){ ev.preventDefault(); close(); }
+    if(ev.key==="Tab"){ var f=[c,k]; var i=f.indexOf(document.activeElement); ev.preventDefault(); f[(i+(ev.shiftKey?-1:1)+f.length)%f.length].focus(); } }
+  c.addEventListener("click",close);
+  k.addEventListener("click",function(){ close(); onOk&&onOk(); });
+  acts.appendChild(c); acts.appendChild(k); box.appendChild(acts); back.appendChild(box); document.body.appendChild(back);
+  document.addEventListener("keydown",key,true); k.focus();
+}
+var EN9UB={t:null};
+function en9UndoBar(label){
+  var bar=document.querySelector(".en9-undobar");
+  if(!bar){ bar=el("div","en9-undobar"); bar.setAttribute("data-en9",""); bar.setAttribute("role","status"); bar.setAttribute("aria-live","polite"); document.body.appendChild(bar); }
+  bar.textContent="";
+  bar.appendChild(el("span",null,"Done: "+label));
+  var u=el("button","button","Undo"); u.type="button";
+  u.addEventListener("click",function(){ try{ window.__WPACT&&window.__WPACT.undoSnapshot&&window.__WPACT.undoSnapshot(); }catch(e){} bar.remove(); });
+  var x=el("button","button","Dismiss"); x.type="button"; x.addEventListener("click",function(){ bar.remove(); });
+  bar.appendChild(u); bar.appendChild(x);
+  clearTimeout(EN9UB.t); EN9UB.t=setTimeout(function(){ if(bar.parentNode) bar.remove(); },30000);
+}
+/* Re-processing overwrites hand edits (U14): snapshot first, offer Undo. */
+document.addEventListener("click",function(ev){
+  var b=ev.target&&ev.target.closest&&ev.target.closest("button"); if(!b||isOurs(b)) return;
+  var t=(b.textContent||"").trim();
+  if(!/^(re-?process|process entity|process all)/i.test(t)) return;
+  var e=ent(); var label=t+(e?" — "+e.name:"");
+  try{ if(e&&Object.keys(e.lines||{}).length&&window.__WPACT&&window.__WPACT.takeSnapshot){ window.__WPACT.takeSnapshot(label); en9UndoBar(label+" (Undo restores the work paper as it was)"); } }catch(x){}
+},true);
+
+/* ---- pick, then apply (U10), with the scope asked (U9) ---- */
+document.addEventListener("change",function(ev){
+  var sel=ev.target; if(!sel||sel.tagName!=="SELECT"||isOurs(sel)) return;
+  var remap=sel.hasAttribute("data-en9from"), assign=sel.hasAttribute("data-en9idx");
+  if(!remap&&!assign) return;
+  ev.stopImmediatePropagation(); ev.stopPropagation();
+  var host=sel.parentElement; if(!host) return;
+  var old=host.querySelector(".en9-apply"); if(old) old.remove();
+  var box=el("span","en9-apply"); box.setAttribute("data-en9","");
+  var label=sel.getAttribute("data-en9label")||"", eid=sel.getAttribute("data-en9eid")||"";
+  var to=sel.value, txt=sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].textContent:"";
+  var ok=el("button","button primary",remap?(to?"Move":"Unassign"):"Assign"); ok.type="button";
+  ok.title=(remap?(to?"Move “"+label+"” to ":"Send “"+label+"” back to the review queue"):"Book “"+label+"” to ")+(to?txt:"");
+  var cancel=el("button","button","Cancel"); cancel.type="button";
+  var rem=null;
+  if(assign){ var lab=el("label","en9-remember"); rem=document.createElement("input"); rem.type="checkbox"; rem.setAttribute("data-en9","");
+    lab.appendChild(rem); lab.appendChild(document.createTextNode(" remember for every client")); box.appendChild(lab); }
+  ok.addEventListener("click",function(){
+    var A=window.__WPACT; if(!A) return;
+    try{ A.takeSnapshot&&A.takeSnapshot((remap?"Remap ":"Assign ")+"“"+label+"”"); }catch(e){}
+    if(remap) A.remapCaption(eid,sel.getAttribute("data-en9from"),label,to||null);
+    else{ var e=(st()&&st().entities||[]).find(function(x){return x.id===eid;}); var idx=parseInt(sel.getAttribute("data-en9idx"),10);
+      if(e&&e.unmatched&&e.unmatched[idx]&&e.unmatched[idx].label!==label) idx=e.unmatched.findIndex(function(u){return u.label===label;});
+      if(idx>=0) A.assignUnmatched(eid,idx,to,{remember:!!(rem&&rem.checked)}); }
+    box.remove(); en9UndoBar((remap?"Remap ":"Assign ")+"“"+label+"”");
+  });
+  cancel.addEventListener("click",function(){ box.remove(); try{ sel.value=sel.getAttribute("data-en9from")||""; }catch(e){} });
+  box.appendChild(ok); box.appendChild(cancel);
+  host.insertBefore(box, sel.nextSibling);
+},true);
+/* The batch "Save" on Mapping's unassigned list learns a rule only when asked. */
+function enhanceRememberToggle(){
+  var btns=document.querySelectorAll(".view-stack button");
+  for(var i=0;i<btns.length;i++){ var b=btns[i]; if(isOurs(b)) continue;
+    if(!/^Save \d+ assignment/i.test((b.textContent||"").trim())) continue;
+    if(b.previousElementSibling&&b.previousElementSibling.classList&&b.previousElementSibling.classList.contains("en9-remember")) continue;
+    var lab=el("label","en9-remember"); lab.setAttribute("data-en9","");
+    var c=document.createElement("input"); c.type="checkbox"; c.checked=!!window.__EN9REMEMBER; c.setAttribute("data-en9","");
+    c.addEventListener("change",function(ev){ window.__EN9REMEMBER=!!ev.target.checked; });
+    lab.appendChild(c); lab.appendChild(document.createTextNode(" also remember as rules for every client"));
+    b.parentElement&&b.parentElement.insertBefore(lab,b);
+  }
+}
+
+/* ---- U1: every list of review items can act on its item ---- */
+function en9GoException(text){
+  window.__EN9EXQ=String(text||"").replace(/\s+/g," ").trim().slice(0,70);
+  if(window.__WPNAV) window.__WPNAV("exceptions");
+  else{ var n=document.querySelectorAll(".nav-item"); for(var i=0;i<n.length;i++) if(/exception/i.test(n[i].textContent||"")){ n[i].click(); break; } }
+}
+function en9IsExceptionView(){ var h=document.querySelector(".section-header h1"); return !!(h&&/exception center/i.test(h.textContent||"")); }
+function enhanceReviewActions(){
+  if(en9IsExceptionView()){
+    /* arriving from another surface: find the item, scroll to it, mark it */
+    var q=window.__EN9EXQ; if(!q) return;
+    var rows=document.querySelectorAll(".view-stack tbody tr, .view-stack .log-list > div");
+    var key=q.slice(0,50).toLowerCase();
+    for(var r=0;r<rows.length;r++){ if((rows[r].textContent||"").replace(/\s+/g," ").toLowerCase().indexOf(key)>-1){
+      rows[r].classList.add("en9-target"); rows[r].setAttribute("tabindex","-1");
+      try{ rows[r].scrollIntoView({block:"center"}); rows[r].focus({preventScroll:true}); }catch(e){}
+      window.__EN9EXQ=null; return; } }
+    /* the item may sit on another page of the table: use the table search */
+    var srch=document.querySelector(".en9-fb .en9-search");
+    if(srch&&!srch.value){ srch.value=q.slice(0,40); srch.dispatchEvent(new Event("input",{bubbles:true})); }
+    return;
+  }
+  var tags=document.querySelectorAll(".view-stack .actor-tag");
+  for(var i=0;i<tags.length;i++){
+    var tg=tags[i]; if(isOurs(tg)) continue;
+    if(!/^(block|warn|info)$/i.test((tg.textContent||"").trim())) continue;
+    var item=tg.closest("tr")||tg.parentElement; if(!item||item.querySelector(".en9-act")) continue;
+    var msg=(item.textContent||"").replace(/^\s*(block|warn|info)\s*/i,"");
+    var b=el("button","en9-act","Open in Exception center"); b.type="button"; b.setAttribute("data-en9","");
+    b.title="Resolve, sign off or edit this item where its actions are";
+    (function(m){ b.addEventListener("click",function(ev){ ev.stopPropagation(); en9GoException(m); }); })(msg);
+    var cell=item.tagName==="TR"?item.cells[item.cells.length-1]:item;
+    cell.appendChild(b);
+  }
+}
+
+/* ---- U4: a list of review items is never folded away ---- */
+function en9IsIssueList(lg){ var t=lg.querySelectorAll(".actor-tag"); for(var i=0;i<t.length;i++) if(/^(block|warn|info)$/i.test((t[i].textContent||"").trim())) return true; return false; }
+
+/* ---- U3/U52: subtotals from state, one column at a time ---- */
+function en9GroupTotals(sch){
+  var e=ent(); if(!e) return null; var L=e.lines||{}, out={inc:0,ded:0,aD:0,aF:0,lD:0,lF:0};
+  Object.keys(L).forEach(function(k){ var m=/^(IS|BS):(\d+)$/.exec(k); if(!m) return; var row=+m[2], v=L[k]||{};
+    if(m[1]==="IS"&&sch==="Sch C"&&typeof v.amount==="number"){ if(row<=25) out.inc+=v.amount; else if(row<=58) out.ded+=v.amount; }
+    if(m[1]==="BS"&&sch==="Sch F"){ var assets=row<=42; if(typeof v.boy==="number") out[assets?"aD":"lD"]+=v.boy; if(typeof v.eoy==="number") out[assets?"aF":"lF"]+=v.eoy; } });
+  return out;
+}
+function en9Fmt(n){ return n<0?"("+Math.abs(n).toLocaleString("en-US",{maximumFractionDigits:2})+")":n.toLocaleString("en-US",{maximumFractionDigits:2}); }
+
+/* ---- U8/U12: why this line, and the page it came from ---- */
+var EN9VIA={rule:"a keyword in the mapping catalogue",section:"the statement's own section heading (no keyword matched)",groq:"the AI model",manual:"your assignment"};
+function en9WhyLine(r){
+  var rk=rowKey(r), e=ent(); if(!rk||!e||!e.contributions) return;
+  var cap=r.cells[2]; if(!cap) return;
+  var cs=e.contributions[rk.key]||[]; if(!cs.length) return;
+  var sig=cs.map(function(c){return c.label+"|"+c.via+"|"+(c.policy||"");}).join(";");
+  var have=cap.querySelector(".en9-why");
+  if(have&&have.getAttribute("data-sig")===sig) return;
+  if(have) have.remove();
+  var box=el("div","en9-why"); box.setAttribute("data-en9",""); box.setAttribute("data-sig",sig);
+  var seen={};
+  cs.forEach(function(c){ var k=c.label+"|"+c.via; if(seen[k]) return; seen[k]=1;
+    var ov=(e.mapOverrides||{})[String(c.label||"").toLowerCase().replace(/\s+/g," ").trim()];
+    var why="Why this line: "+(EN9VIA[c.via]||c.via);
+    if(c.via==="groq"&&ov&&ov.confidence) why+=" (confidence "+ov.confidence+")";
+    var tr=(e.translations||{})[c.label]; if(tr&&tr!==c.label) why+=" · read in English as “"+tr+"”";
+    if(c.policy) why+=" · moved by the mapping policy: "+c.policy;
+    var line=el("div","en9-why-line",why);
+    if(c.docName&&c.page!=null){ var o=el("button","en9-openpage","Open p."+c.page); o.type="button"; o.title="Open "+c.docName+" at page "+c.page;
+      (function(d,p){ o.addEventListener("click",function(ev){ ev.stopPropagation(); if(typeof en9AgOpenSource==="function") en9AgOpenSource(d,p); }); })(c.docName,c.page);
+      line.appendChild(o); }
+    box.appendChild(line); });
+  cap.appendChild(box);
+}
+
+/* ---- U63: the English meaning beside every original caption ---- */
+var EN9BI={sig:"",re:null,map:null};
+function enhanceBilingual(){
+  var e=ent(); if(!e||!e.translations) return;
+  var tr=e.translations, keys=Object.keys(tr).filter(function(k){ var v=tr[k]; return k&&v&&v!==k&&k.length>=4&&!/^(error|translation failed)/i.test(v); });
+  if(!keys.length) return;
+  var sig=keys.length+"|"+keys.slice(0,5).join("|");
+  if(EN9BI.sig!==sig){ EN9BI.sig=sig; keys.sort(function(a,b){return b.length-a.length;});
+    EN9BI.re=new RegExp("(^|[^\\p{L}])("+keys.map(function(k){return k.replace(/[.*+?^${}()|[\]\\]/g,function(c){return "\\"+c;});}).join("|")+")(?=$|[^\\p{L}])","u");
+    EN9BI.map=tr; }
+  var main=document.querySelector("main")||document.body;
+  var walker=document.createTreeWalker(main,NodeFilter.SHOW_TEXT,null), n, hosts=[];
+  while((n=walker.nextNode())){ var t=n.nodeValue; if(!t||t.length<4) continue;
+    var p=n.parentElement; if(!p||isOurs(p)||p.closest("select,option,textarea,script,style,button,.en9-bi,input")) continue;
+    var m=EN9BI.re.exec(t); if(!m) continue;
+    hosts.push([p,m[2]]); }
+  hosts.forEach(function(h){
+    var p=h[0], orig=h[1], en=EN9BI.map[orig]; if(!en) return;
+    var blk=p.closest("tr")||p.closest("li,.log-list > div,.cap-main,p,div")||p;
+    if((blk.textContent||"").toLowerCase().indexOf(String(en).toLowerCase())>-1) return;
+    var done=(blk.getAttribute("data-en9bi")||"").split("\u0001");
+    if(done.indexOf(orig)>-1) return;
+    var span=el("span","en9-bi"," (English: "+en+")"); span.setAttribute("data-en9",""); span.setAttribute("lang","en");
+    p.appendChild(span);
+    blk.setAttribute("data-en9bi",done.concat([orig]).join("\u0001"));
+  });
+}
+
+/* ---- U38-U41: names, labels, roles, focus ---- */
+function en9OwnText(x){ var t=""; for(var i=0;i<x.childNodes.length;i++){ var c=x.childNodes[i];
+  if(c.nodeType===3) t+=c.nodeValue; else if(c.nodeType===1&&!/^(SELECT|OPTION|TEXTAREA|INPUT|BUTTON|SCRIPT|STYLE)$/.test(c.tagName)) t+=" "+en9OwnText(c); }
+  return t.replace(/\s+/g," ").trim(); }
+function en9NameFor(x){
+  if(x.getAttribute("aria-label")||x.getAttribute("aria-labelledby")) return null;
+  if(x.id){ try{ if(document.querySelector('label[for="'+(window.CSS&&CSS.escape?CSS.escape(x.id):x.id)+'"]')) return null; }catch(e){} }
+  if(x.closest("label")&&en9OwnText(x.closest("label"))) return null;
+  if(x.closest(".en9-pager")) return "Rows per page";
+  var td=x.closest("td,th");
+  if(td){ var tr=td.parentElement, tb=td.closest("table"), head=tb&&tb.tHead&&tb.tHead.rows[0];
+    var col=head&&head.cells[td.cellIndex]?(head.cells[td.cellIndex].textContent||"").replace(/\s+/g," ").trim():"";
+    var rn=""; for(var i=0;i<tr.cells.length;i++){ if(i===td.cellIndex) continue; var t=en9OwnText(tr.cells[i]); if(t){ rn=t.slice(0,60); break; } }
+    return (col||"Value")+(rn?" — "+rn:""); }
+  if(x.getAttribute("title")) return x.getAttribute("title").slice(0,90);
+  if(x.getAttribute("placeholder")) return x.getAttribute("placeholder");
+  var p=x.parentElement;
+  for(var k=0;k<3&&p;k++,p=p.parentElement){ var o=en9OwnText(p); if(o) return o.slice(0,70); }
+  if(x.tagName==="SELECT"&&x.options&&x.options.length) return "Choose: "+(x.options[0].textContent||"").trim();
+  return x.getAttribute("name")||x.type||"Field";
+}
+var EN9A11Y={view:null,t:0};
+function enhanceA11y(){
+  var ctrls=document.querySelectorAll("input:not([type=hidden]):not([type=file]),select,textarea");
+  for(var i=0;i<ctrls.length;i++){ var x=ctrls[i]; var nm=en9NameFor(x); if(nm) x.setAttribute("aria-label",nm); }
+  /* clickable rows and cards are buttons to the keyboard as well */
+  /* tab rows are tablists (U40) */
+  var trs=document.querySelectorAll(".tab-row");
+  for(var tr0=0;tr0<trs.length;tr0++){ var row0=trs[tr0]; row0.setAttribute("role","tablist");
+    var tbs=row0.querySelectorAll("button"); for(var tb0=0;tb0<tbs.length;tb0++){ tbs[tb0].setAttribute("role","tab"); tbs[tb0].setAttribute("aria-selected",tbs[tb0].classList.contains("active")?"true":"false"); } }
+  /* a header cell with no text names its column for assistive tech */
+  var ths=document.querySelectorAll("th");
+  for(var q=0;q<ths.length;q++){ var th=ths[q]; if((th.textContent||"").trim()||th.querySelector(".en9-sr")) continue;
+    var tb3=th.closest("table"), ix=th.cellIndex, chk=tb3&&tb3.tBodies[0]&&tb3.tBodies[0].rows[0]&&tb3.tBodies[0].rows[0].cells[ix]&&tb3.tBodies[0].rows[0].cells[ix].querySelector('input[type="checkbox"]');
+    var sr=el("span","en9-sr",chk?"Select":"Actions"); sr.setAttribute("data-en9",""); th.appendChild(sr); }
+  /* the pointer scan reads computed styles: at most every 1.5 s */
+  var now=Date.now(), scan=now-EN9A11Y.t>1500||(window.__WPVIEW||null)!==EN9A11Y.view;
+  var cands=scan?document.querySelectorAll("main tr, main li, main div[class], main span[class], main td, tr.en9-group, .view-stack div, .view-stack span"):[];
+  if(scan) EN9A11Y.t=now;
+  for(var j=0;j<cands.length;j++){ var c=cands[j]; if(c.hasAttribute("tabindex")||c.getAttribute("role")) continue;
+    if(c.closest("button,a,[role=button],label,summary,select")) continue;
+    var cs=getComputedStyle(c); if(cs.cursor!=="pointer") continue;
+    c.setAttribute("role","button"); c.setAttribute("tabindex","0"); }
+  /* focus moves to the new view's heading (U41) */
+  var v=window.__WPVIEW||null;
+  if(v&&v!==EN9A11Y.view){ var first=EN9A11Y.view===null; EN9A11Y.view=v;
+    var h=document.querySelector(".section-header h1");
+    if(h){ h.setAttribute("tabindex","-1"); if(!first) try{ h.focus({preventScroll:true}); }catch(e){} try{ document.title=(h.textContent||"").trim()+" — 5471 Work Paper"; }catch(e){} } }
+}
+document.addEventListener("keydown",function(ev){
+  if(ev.key!=="Enter"&&ev.key!==" ") return;
+  var t=ev.target; if(!t||t.getAttribute&&t.getAttribute("role")!=="button"||/^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+  ev.preventDefault(); t.click();
+},true);
+
+/* ---- the mapping policy profile: Settings (firm) and the entity ---- */
+function en9PolicyCard(scope){
+  var P=window.EN9POL; if(!P||!P.POLICY_SWITCHES) return null;
+  var s=st(); if(!s) return null; var e=ent();
+  var cur=scope==="firm"?(s.mappingPolicy||{}):((e&&e.mappingPolicy)||{});
+  var card=el("section","panel en9-policy"); card.setAttribute("data-en9",""); card.setAttribute("data-en9scope",scope);
+  var head=el("div","panel-heading"); var hd=el("div");
+  hd.appendChild(el("span","section-kicker",scope==="firm"?"Firm mapping policy":"This entity's mapping policy"));
+  hd.appendChild(el("h2",null,scope==="firm"?"Where your firm puts figures the rules could place either way":"Exceptions to the firm policy for "+(e?e.name:"this entity")));
+  head.appendChild(hd); card.appendChild(head);
+  card.appendChild(el("p","hint",scope==="firm"
+    ?"Every switch left on its first choice follows the mapping rules. A switch moves figures only on the next processing run, and each moved figure says so on the Provenance sheet. A preparer's own assignment is never moved."
+    :"Unset switches follow the firm policy. Re-process the entity after a change."));
+  var grid=el("div","en9-policy-grid");
+  P.POLICY_SWITCHES.forEach(function(sw){
+    var lab=el("label","en9-policy-row"); var sp=el("span",null,sw.label); lab.appendChild(sp);
+    var sel=document.createElement("select"); sel.setAttribute("data-en9",""); sel.setAttribute("aria-label",sw.label);
+    var o0=document.createElement("option"); o0.value=""; o0.textContent=scope==="firm"?"Rules (default): "+sw.choices[0][1]:"Follow the firm policy"; sel.appendChild(o0);
+    sw.choices.forEach(function(c,ix){ if(scope==="firm"&&ix===0) return; var o=document.createElement("option"); o.value=c[0]; o.textContent=c[1]; sel.appendChild(o); });
+    var v=cur[sw.key]; sel.value=v===undefined?"":String(v);
+    sel.addEventListener("change",function(){ var val=sel.value, patch={};
+      patch[sw.key]=val===""?undefined:(val==="true"?true:val==="false"?false:val);
+      var A=window.__WPACT; if(!A) return;
+      if(scope==="firm") A.setMappingPolicy(patch); else if(e) A.setEntityMappingPolicy(e.id,patch); });
+    lab.appendChild(sel); grid.appendChild(lab); });
+  card.appendChild(grid);
+  return card;
+}
+function enhancePolicyCards(){
+  var h=document.querySelector(".section-header h1"); var title=h?(h.textContent||"").trim():"";
+  var want=/^Settings$/i.test(title)?"firm":/^Mapping & adjustments$/i.test(title)?"entity":null;
+  var old=document.querySelector(".en9-policy");
+  if(!want){ if(old) old.remove(); return; }
+  if(old&&old.getAttribute("data-en9scope")===want&&!document.activeElement.closest(".en9-policy")){
+    /* refresh values only */ var s=st(), e=ent(), cur=want==="firm"?(s&&s.mappingPolicy||{}):(e&&e.mappingPolicy||{});
+    old.querySelectorAll("select").forEach(function(sel){ var k=(window.EN9POL.POLICY_SWITCHES.find(function(x){return x.label===sel.getAttribute("aria-label");})||{}).key; if(!k) return; var v=cur[k]; var nv=v===undefined?"":String(v); if(sel.value!==nv) sel.value=nv; });
+    return; }
+  if(old) return;
+  var card=en9PolicyCard(want); if(!card) return;
+  var stack=document.querySelector(".view-stack"); if(!stack) return;
+  stack.appendChild(card);
+}
+
+var EN9PASS={t:0,v:null,q:null};
 function rebuildAll(){
   enhancing=true;
   try{
@@ -2707,6 +3037,20 @@ function rebuildAll(){
     enhanceOverviewButton();
     enhancePills();
     enhanceLog();
+    /* v20 UI pass — each isolated so one failure cannot take the rest down.
+       Never while a run is processing (the page's main thread is the
+       processor's), and the text-walking passes at most once a second. */
+    var EN9busy=(function(){ var s0=st(); return !!(s0&&(s0.busy||(s0.entities||[]).some(function(x){return x.status==="processing";}))); })();
+    var EN9now=Date.now(), EN9heavy=!EN9busy&&(EN9now-EN9PASS.t>1000||(window.__WPVIEW||null)!==EN9PASS.v);
+    if(!EN9busy){
+      try{ enhanceReviewActions(); }catch(e){}
+      try{ enhanceRememberToggle(); }catch(e){}
+      try{ enhancePolicyCards(); }catch(e){}
+    }
+    if(EN9heavy){ EN9PASS.t=EN9now; EN9PASS.v=window.__WPVIEW||null;
+      try{ enhanceBilingual(); }catch(e){}
+      try{ enhanceA11y(); }catch(e){}
+    } else if(!EN9busy){ clearTimeout(EN9PASS.q); EN9PASS.q=setTimeout(schedule,1050); }
   }catch(e){ /* never break the app */ }
   requestAnimationFrame(function(){ enhancing=false; });
 }

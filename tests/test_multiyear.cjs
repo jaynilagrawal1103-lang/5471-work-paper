@@ -142,7 +142,7 @@ t("dist carries the same pieces", () => {
                    "/*EN9CASHOWN*/", "/*EN9NONUS*/", "/*EN9GRIDYEAR*/", "/*EN9TBSEED*/"]) {
     assert.ok(dist.includes(s), s);
   }
-  assert.ok(/var EN9RULEVER=(1[3-9]);/.test(dist));
+  assert.ok(/var EN9RULEVER=(1[3-9]|[2-9]\d);/.test(dist));
   assert.ok(layer.includes("var EN9OCRFIG=") && /EN9OCRFIG\.test\(r\.text\.split/.test(layer), "the OCR text layer never joins two figures");
 });
 

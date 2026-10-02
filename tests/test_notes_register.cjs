@@ -194,7 +194,7 @@ t("src and the shipped file read the register identically", () => {
 
 t("the pipeline reads the notes and the register", () => {
   const store = fs.readFileSync(path.join(root, "src/prototype/wp/store.ts"), "utf8");
-  assert.ok(store.includes("statementNotes(extractPositionedRows"), "notes pages are extracted");
+  assert.ok(store.includes("statementNotes(extractPositionedRows") || (store.includes("const noteRows = notePages.size ? extractPositionedRows(pdf, rulers, { pages: notePages })") && store.includes("statementNotes(noteRows)")), "notes pages are extracted");
   assert.ok(store.includes("fixedAssetSplit(notes)"), "the split is taken");
   assert.ok(store.includes("directoryShareholders(parsed.pdf.rows"), "the register is read");
   for (const s of ["/*EN9NOTECALL-BEGIN*/", "/*EN9DIRCALL-BEGIN*/", "/*EN9DIRSEED-BEGIN*/"]) {

@@ -118,7 +118,7 @@ t("catalogue v15 rules, and a v14 catalogue receives them", () => {
   assert.strictEqual(m("Furniture and Equipment", "BS"), "BS:28");
   assert.strictEqual(m("Rental income", "IS"), "IS:16", "income from renting out is not rent paid");
   assert.ok(S.RULE_CATALOGUE_VERSION >= 15);
-  assert.ok(/var EN9RULEVER=1[5-9];/.test(dist));
+  assert.ok(/var EN9RULEVER=(1[5-9]|[2-9]\d);/.test(dist));
   const v14 = R.filter((r) => !r.kw.some((k) => ["checking", "staff loan", "due from shareholder", "equipment rental", "donation", "business tax", "furniture and equipment"].includes(k)));
   const up = S.upgradeRules(v14, 14);
   assert.strictEqual(ENG.matchRuleScoped("Atlantic Bank Checking", up, "BS"), "BS:10");

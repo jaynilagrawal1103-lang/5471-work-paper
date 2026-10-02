@@ -587,6 +587,8 @@ function EntityCard({ entity, index }: { entity: Entity; index: number }) {
                               <td>
                                 <select
                                   value=""
+                                  data-en9idx={i} data-en9eid={entity.id} data-en9label={u.label}
+                                  aria-label={`Assign ${u.label} to a template line`}
                                   onChange={(e) => actions.assignUnmatched(entity.id, i, e.target.value)}
                                 >
                                   <option value="">—</option>

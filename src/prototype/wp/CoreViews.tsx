@@ -10,6 +10,7 @@ import {
   PROCESS_STEPS, type Entity,
 } from "./store";
 import { entitySimilarity } from "./classify";
+import { PolicyCard } from "./PolicyCard";
 
 /* Same company, written two ways? The entity's own name or its legal name is
    enough — a document that names neither is named in red. */
@@ -71,8 +72,8 @@ export function OverviewView({ onNavigate }: { onNavigate: (v: ViewId) => void }
           <div className="signoff-actions">
             <button type="button" className="button" onClick={() => onNavigate("entities")}>Open workspace</button>
             {state.entities.some((e) => Object.keys(e.lines).length > 0 || e.status === "ready") ? (
-              <button type="button" className="button primary" disabled={state.busy} onClick={() => void actions.generateWorkpapers()}>
-                {state.busy ? "Working…" : "Generate work paper"}
+              <button type="button" className="button primary" disabled={state.busy} title="Generation goes through Review & sign-off, the human gate" onClick={() => onNavigate("signoff")}>
+                Review &amp; sign-off
               </button>
             ) : (
               // Nothing processed yet — there is nothing to generate. One
@@ -186,7 +187,8 @@ export function WorkspaceView({ onNavigate }: { onNavigate: (v: ViewId) => void 
         kicker={state.stakeholder}
         title="Entity workspace"
         description="Everything known about the active entity, and what still stands between it and a finished work paper."
-        action={<button type="button" className="button primary" disabled={state.busy || cellCount(ent) === 0} onClick={() => void actions.generateOne(ent.id)}>Generate this entity</button>}
+        /* Generation goes through Review & sign-off, the human gate (U2). */
+        action={<button type="button" className="button primary" disabled={state.busy || cellCount(ent) === 0} title="Generation goes through Review & sign-off, the human gate" onClick={() => onNavigate("signoff")}>Review &amp; generate</button>}
       />
       <ActiveEntityBar state={state} />
       <div className="metric-grid">
@@ -512,6 +514,8 @@ export function MappingView() {
                                   className="stake-input"
                                   style={{ maxWidth: 220, padding: "2px 6px" }}
                                   value={key}
+                                  data-en9from={key} data-en9label={caption} data-en9eid={ent.id}
+                                  aria-label={`Template line for ${caption}`}
                                   onChange={(e) => actions.remapCaption(ent.id, key, caption, e.target.value || null)}
                                 >
                                   <option value="">— unassign —</option>
@@ -533,6 +537,7 @@ export function MappingView() {
           </div>
         </section>
       ) : <NoData what="No lines have been mapped for this entity." />}
+      <PolicyCard scope="entity" />
     </div>
   );
 }
@@ -740,7 +745,8 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
                                   actions.resubmitReviewItem(b.entityId, b.id, d?.value ?? String(b.currentValue), d?.note || undefined);
                                 }}
                               >
-                                Save & sign off
+                                {/* An OCR flag has no booked cell to rewrite (U6): say so. */}
+                                {/^ocr-flag-/.test(b.id) ? "Sign off (figure unchanged)" : "Save & sign off"}
                               </button>
                             </>
                           ) : null}
@@ -842,7 +848,7 @@ export function ExceptionsView({ onNavigate }: { onNavigate: (v: ViewId) => void
                     <td>{u.entity}</td>
                     <td className="numeric">{u.values.map((v) => v.toLocaleString()).join(" · ")}</td>
                     <td>
-                      <select value="" onChange={(e) => actions.assignUnmatched(u.entityId, u.index, e.target.value)}>
+                      <select value="" data-en9idx={u.index} data-en9eid={u.entityId} data-en9label={u.label} aria-label={`Assign ${u.label} to a template line`} onChange={(e) => actions.assignUnmatched(u.entityId, u.index, e.target.value)}>
                         <option value="">—</option>
                         {IS_LINES.map((l) => <option key={`is${l.row}`} value={`IS:${l.row}`}>Sch C · {l.label}</option>)}
                         {BS_LINES.map((l) => <option key={`bs${l.row}`} value={`BS:${l.row}`}>Sch F · {l.label}</option>)}

@@ -659,6 +659,158 @@ export const DEFAULT_RULES: MappingRule[] = [
   { kw: ["depreciaci\u00f3n contable", "depreciacion contable", "depreciaci\u00f3n del ejercicio", "depreciacion del ejercicio"], t: "IS:30" },
   { kw: ["gastos de servicio", "gastos de servicios", "gastos de administraci\u00f3n", "gastos de administracion",
           "gastos de venta", "gastos de ventas", "gastos generales", "gastos de operaci\u00f3n", "gastos de operacion"], t: "IS:OD" },
+  /* ---- v20 (2026-10-02): the multilingual lexicon. ----
+     Matching is accent-insensitive from v20 (foldAccents), so each word is
+     written once. Every group below is a standard statutory or chart-of-
+     accounts caption in its language (HGB, PCG, RJ, OIC, PGC/PUC, CPC, KILA)
+     or an everyday English synonym the catalogue was missing. Direction words
+     decide the line where the same noun can go either way: a loan TO a
+     shareholder is line 6, a loan FROM one is line 18. */
+  // Income statement — revenue and contra-revenue
+  { kw: ["umsatzerl\u00f6se", "umsatzerlose", "umsatz", "erl\u00f6se", "netto-omzet", "netto omzet", "omzet",
+          "ventes de marchandises", "production vendue", "ventes de services", "receita de vendas", "receita bruta",
+          "receita l\u00edquida", "receita operacional", "ricavi delle vendite", "ricavi", "liikevaihto", "myyntituotot",
+          "ingresos de actividades ordinarias", "ingresos ordinarios", "prestaci\u00f3n de servicios", "net sales",
+          "fee income", "consulting revenue", "service revenue"], t: "IS:7" },
+  { kw: ["devoluciones sobre ventas", "devoluciones en ventas", "devoluciones de ventas", "devoluciones y descuentos",
+          "descuentos sobre ventas", "descuentos en ventas", "rebajas sobre ventas", "devolu\u00e7\u00f5es de vendas",
+          "devolu\u00e7\u00f5es e abatimentos", "rabais, remises et ristournes", "erl\u00f6sschm\u00e4lerungen",
+          "sales returns", "sales discounts"], t: "IS:8" },
+  // Cost of goods sold
+  { kw: ["wareneinsatz", "wareneingang", "materialaufwand", "aufwendungen f\u00fcr bezogene leistungen", "bezogene leistungen",
+          "aufwendungen f\u00fcr roh-, hilfs- und betriebsstoffe", "kostprijs van de omzet", "inkoopwaarde van de omzet",
+          "kosten van de omzet", "inkoopwaarde", "achats consomm\u00e9s", "variation de stocks", "variation des stocks",
+          "custo dos produtos vendidos", "custo das mercadorias vendidas", "custo dos servi\u00e7os prestados",
+          "costi per materie prime", "materie prime", "variazione delle rimanenze", "materiaalit ja palvelut",
+          "aineet, tarvikkeet ja tavarat", "costo de los servicios", "costo de servicios", "costo de lo vendido",
+          "costo de mercader\u00edas", "cost of revenue", "materials and supplies", "freight in", "freight-in"], t: "IS:11" },
+  // Other income lines
+  { kw: ["dividendos recibidos", "dividendos ganados", "erträge aus beteiligungen", "produits de participations",
+          "proventi da partecipazioni", "dividendos recebidos", "osinkotuotot"], t: "IS:14" },
+  { kw: ["ingresos por intereses", "intereses ganados", "intereses cobrados", "intereses percibidos", "intereses financieros ganados",
+          "rendimientos financieros", "ingresos financieros", "receitas financeiras", "juros recebidos", "juros ativos",
+          "rendimentos de aplica\u00e7\u00f5es", "int\u00e9r\u00eats et produits assimil\u00e9s", "produits d'int\u00e9r\u00eats",
+          "int\u00e9r\u00eats re\u00e7us", "zinsertr\u00e4ge", "zinsen und \u00e4hnliche ertr\u00e4ge", "renteopbrengsten",
+          "ontvangen rente", "interessi attivi", "proventi finanziari", "korkotuotot", "rahoitustuotot", "bank interest received",
+          "interest earned", "interest on deposits"], t: "IS:15" },
+  { kw: ["rent received", "rents received", "ingresos por arrendamiento", "ingresos por alquileres", "receitas de alugu\u00e9is",
+          "mieterträge", "huuropbrengsten", "revenus locatifs"], t: "IS:16" },
+  { kw: ["royalties received", "royalty income", "ingresos por regal\u00edas"], t: "IS:17" },
+  { kw: ["profit on sale", "profit on disposal", "gain on disposal", "loss on disposal", "utilidad en venta de activos",
+          "p\u00e9rdida en venta de activos", "resultado en venta de activos", "plusvalue de cession", "ganho na venda"], t: "IS:18" },
+  { kw: ["unrealised foreign exchange", "unrealized foreign exchange", "diferencia en cambio", "diferencias en cambio",
+          "diferencia de cambio", "diferencias de cambio", "diferencia cambiaria", "varia\u00e7\u00e3o cambial",
+          "varia\u00e7\u00f5es cambiais", "\u00e9carts de change", "diff\u00e9rences de change", "pertes de change",
+          "gains de change", "kursdifferenzen", "w\u00e4hrungskursdifferenzen", "kursgewinne", "kursverluste",
+          "utili e perdite su cambi", "differenze cambio", "differenze di cambio", "kurssierot", "kurssivoitot", "kurssitappiot"], t: "IS:19" },
+  { kw: ["realised foreign exchange", "realized foreign exchange", "realised fx", "realized fx",
+          "realised currency", "realized currency"], t: "IS:20" },
+  { kw: ["miscellaneous income", "ingresos diversos", "otros ingresos operacionales", "sonstige betriebliche ertr\u00e4ge",
+          "sonstige ertr\u00e4ge", "autres produits", "overige opbrengsten", "outras receitas operacionais", "altri ricavi e proventi",
+          "liiketoiminnan muut tuotot"], t: "IS:OI" },
+  // Deductions
+  { kw: ["salaires et traitements", "salaires", "traitements et salaires", "r\u00e9mun\u00e9rations du personnel", "charges sociales",
+          "l\u00f6hne und geh\u00e4lter", "l\u00f6hne", "geh\u00e4lter", "personalaufwand", "personalkosten", "soziale abgaben",
+          "lonen en salarissen", "salarissen", "personeelskosten", "sociale lasten", "pensioenlasten", "sal\u00e1rios",
+          "ordenados", "encargos sociais", "costi per il personale", "salari e stipendi", "stipendi", "oneri sociali",
+          "henkil\u00f6st\u00f6kulut", "palkat", "palkat ja palkkiot", "el\u00e4kekulut", "henkil\u00f6sivukulut",
+          "employee benefits", "staff salaries", "officers' compensation", "officer compensation"], t: "IS:26" },
+  { kw: ["alquiler", "alquileres", "arrendamiento de oficinas", "arrendamiento de local", "miete", "mieten", "mietaufwand",
+          "raumkosten", "huur", "huurkosten", "alugu\u00e9is", "aluguel", "alugueres", "affitti", "locazioni",
+          "godimento di beni di terzi", "vuokrat", "vuokrakulut", "locations immobili\u00e8res", "office rent"], t: "IS:27" },
+  { kw: ["royalties paid", "royalty paid", "royalties expense", "regal\u00edas pagadas"], t: "IS:28" },
+  { kw: ["intereses pagados", "gastos por intereses", "intereses bancarios", "charges d'int\u00e9r\u00eats",
+          "int\u00e9r\u00eats et charges assimil\u00e9es", "int\u00e9r\u00eats pay\u00e9s", "zinsaufwand", "zinsaufwendungen",
+          "zinsen und \u00e4hnliche aufwendungen", "rentekosten", "betaalde rente", "despesas financeiras", "juros pagos",
+          "juros passivos", "interessi passivi", "oneri finanziari", "korkokulut", "rahoituskulut", "loan interest",
+          "bank interest paid", "interest paid"], t: "IS:29" },
+  { kw: ["abschreibungen", "afschrijvingen", "afschrijvingskosten", "amortissements", "deprecia\u00e7\u00e3o",
+          "deprecia\u00e7\u00f5es", "ammortamenti", "ammortamento", "poistot", "suunnitelman mukaiset poistot",
+          "depreciation expense"], t: "IS:30" },
+  { kw: ["impuestos y contribuciones", "impuestos, tasas y contribuciones", "tributos", "impuestos municipales",
+          "sonstige steuern", "steuern und abgaben", "overige belastingen", "impostos e taxas", "oneri tributari",
+          "imposte e tasse", "muut verot", "local business taxes", "payroll taxes", "property taxes"], t: "IS:32" },
+  { kw: ["impuesto sobre la renta", "impuesto a la renta", "impuesto a las ganancias", "impuesto de sociedades",
+          "impuesto sobre sociedades", "impuesto a las utilidades", "imp\u00f4t sur les soci\u00e9t\u00e9s",
+          "imp\u00f4ts sur les b\u00e9n\u00e9fices", "steuern vom einkommen und vom ertrag", "steuern vom einkommen",
+          "k\u00f6rperschaftsteuer", "ertragsteuern", "vennootschapsbelasting", "belastingen naar de winst",
+          "imposto de renda", "imposto sobre o rendimento", "irpj", "csll", "imposte sul reddito", "tuloverot",
+          "v\u00e4litt\u00f6m\u00e4t verot", "income tax", "provision for income taxes"], t: "IS:62" },
+  { kw: ["autres charges externes", "honoraires", "assurances", "frais bancaires", "publicit\u00e9", "kfz-kosten",
+          "fahrzeugkosten", "werbekosten", "reisekosten", "versicherungen", "b\u00fcrokosten", "rechts- und beratungskosten",
+          "sonstige betriebliche aufwendungen", "autokosten", "overige bedrijfskosten", "despesas administrativas",
+          "despesas gerais", "despesas com vendas", "costi per servizi", "oneri diversi di gestione", "spese bancarie",
+          "assicurazioni", "liiketoiminnan muut kulut", "servicios p\u00fablicos", "motor vehicle expenses",
+          "legal and professional", "computer software"], t: "IS:OD" },
+  { kw: ["deferred income tax", "deferred income taxes", "impuesto diferido", "impuestos diferidos", "latente steuern",
+          "imp\u00f4ts diff\u00e9r\u00e9s", "uitgestelde belasting", "imposte differite", "laskennallinen verosaaminen"], t: "IS:63" },
+  // Balance sheet — assets
+  { kw: ["caja", "caja chica", "caisse", "disponibilit\u00e9s", "kasse", "kassenbestand", "guthaben bei kreditinstituten",
+          "bankguthaben", "fl\u00fcssige mittel", "liquide mittel", "liquide middelen", "kas en bank", "banktegoeden",
+          "bancos conta movimento", "caixa e equivalentes de caixa", "disponibilit\u00e0 liquide", "cassa",
+          "depositi bancari", "rahat ja pankkisaamiset", "pankkitilit", "efectivo y equivalentes de efectivo",
+          "cash and cash equivalents", "bank balances", "bank balance", "balances at bank"], t: "BS:10" },
+  { kw: ["clientes", "clients et comptes rattach\u00e9s", "clients", "forderungen aus lieferungen und leistungen",
+          "forderungen aus l+l", "forderungen aus lul", "debiteuren", "handelsdebiteuren", "vorderingen op handelsdebiteuren",
+          "duplicatas a receber", "crediti verso clienti", "crediti commerciali", "myyntisaamiset",
+          "cuentas por cobrar comerciales", "trade receivables"], t: "BS:11" },
+  { kw: ["allowance for doubtful", "allowance for bad debt", "allowance for credit loss", "provision for bad debt",
+          "bad debt provision", "doubtful debts provision", "provisi\u00f3n para cuentas incobrables", "provisi\u00f3n para incobrables",
+          "estimaci\u00f3n para cuentas incobrables", "cuentas incobrables", "wertberichtigung", "d\u00e9pr\u00e9ciation des cr\u00e9ances",
+          "voorziening dubieuze debiteuren", "fondo svalutazione crediti", "provis\u00e3o para devedores duvidosos"], t: "BS:12" },
+  { kw: ["stock", "inventarios", "inventario", "existencias", "mercader\u00edas", "marchandises", "stocks de marchandises",
+          "vorr\u00e4te", "waren", "roh-, hilfs- und betriebsstoffe", "fertige erzeugnisse", "voorraden", "voorraad",
+          "estoques", "estoque", "mercadorias para revenda", "rimanenze", "vaihto-omaisuus", "finished goods",
+          "raw materials", "work in progress"], t: "BS:14" },
+  { kw: ["charges constat\u00e9es d'avance", "sonstige verm\u00f6gensgegenst\u00e4nde", "overige vorderingen",
+          "anticipos a proveedores", "accrued interest receivable", "deposits and prepayments"], t: "BS:OCA" },
+  { kw: ["pr\u00e9stamos a socios", "pr\u00e9stamos a accionistas", "cuentas por cobrar a accionistas", "cuentas por cobrar a socios",
+          "cuentas por cobrar a relacionadas", "cuentas por cobrar a partes relacionadas", "cuentas por cobrar empresas relacionadas",
+          "forderungen gegen gesellschafter", "vorderingen op aandeelhouders", "crediti verso soci", "empr\u00e9stimos a s\u00f3cios",
+          "due from related part", "amounts due from related", "receivable from related", "amount due from shareholder",
+          "amount due from director", "loan to director", "loans to directors"], t: "BS:19" },
+  { kw: ["investments in subsidiar", "investment in subsidiaries", "shares in subsidiar", "inversiones en subsidiarias",
+          "inversiones en filiales", "participaciones en empresas del grupo", "anteile an verbundenen unternehmen",
+          "deelnemingen in groepsmaatschappijen", "partecipazioni in imprese controllate"], t: "BS:21" },
+  { kw: ["maschinen", "technische anlagen und maschinen", "betriebs- und gesch\u00e4ftsausstattung", "sachanlagen",
+          "immobilisations corporelles", "mat\u00e9riel de transport", "mat\u00e9riel et outillage", "inventaris",
+          "materi\u00eble vaste activa", "bedrijfsgebouwen", "imobilizado", "ve\u00edculos", "m\u00e1quinas e equipamentos",
+          "immobilizzazioni materiali", "impianti e macchinari", "koneet ja kalusto", "aineelliset hy\u00f6dykkeet",
+          "maquinaria y equipo", "equipment", "furniture and fittings", "leasehold improvements", "motor vehicles"], t: "BS:28" },
+  { kw: ["grundst\u00fccke", "terrains", "terreinen", "terrenos", "terreni", "maa-alueet", "freehold land"], t: "BS:32" },
+  { kw: ["rental deposit", "rent deposit", "security deposit", "lease deposit", "refundable deposit", "dep\u00f3sitos en garant\u00eda",
+          "d\u00e9p\u00f4ts et cautionnements"], t: "BS:39" },
+  // Balance sheet — liabilities
+  { kw: ["verbindlichkeiten aus lieferungen und leistungen", "verbindlichkeiten aus l+l", "verbindlichkeiten aus lul",
+          "crediteuren", "handelscrediteuren", "leveranciers", "schulden aan leveranciers", "fournisseurs",
+          "fournisseurs et comptes rattach\u00e9s", "debiti verso fornitori", "fornitori", "ostovelat",
+          "cuentas por pagar comerciales", "trade payables"], t: "BS:46" },
+  { kw: ["dettes fiscales et sociales", "dettes fiscales", "dettes sociales", "steuerr\u00fcckstellungen", "steuerverbindlichkeiten",
+          "sonstige verbindlichkeiten", "belastingschulden", "belastingen en premies sociale verzekeringen", "omzetbelasting",
+          "debiti tributari", "impostos a recolher", "obriga\u00e7\u00f5es trabalhistas", "obriga\u00e7\u00f5es fiscais",
+          "verovelat", "remuneraciones por pagar", "impuesto sobre la renta por pagar", "impuesto a la renta por pagar",
+          "caja de compensaci\u00f3n", "wages payable", "customer deposits", "accrued liabilities"], t: "BS:OCL" },
+  { kw: ["pr\u00e9stamos de socios", "pr\u00e9stamos de accionistas", "cuentas por pagar a socios", "cuentas por pagar a accionistas",
+          "cuentas por pagar a relacionadas", "cuentas por pagar a partes relacionadas", "cuentas por pagar empresas relacionadas",
+          "comptes courants d'associ\u00e9s", "verbindlichkeiten gegen\u00fcber gesellschaftern", "schulden aan aandeelhouders",
+          "rekening-courant aandeelhouder", "debiti verso soci", "empr\u00e9stimos de s\u00f3cios", "lainat osakkailta",
+          "due to related part", "amounts due to related", "payable to related", "amount due to director",
+          "amount due to shareholder", "loan from director", "loans from directors"], t: "BS:52" },
+  { kw: ["pr\u00e9stamos bancarios", "obligaciones financieras", "verbindlichkeiten gegen\u00fcber kreditinstituten",
+          "emprunts et dettes aupr\u00e8s des \u00e9tablissements de cr\u00e9dit", "emprunts bancaires", "schulden aan kredietinstellingen op lange termijn",
+          "empr\u00e9stimos e financiamentos", "debiti verso banche", "lainat rahoituslaitoksilta", "mortgage payable",
+          "mortgage", "notes payable", "long-term loan"], t: "BS:OL" },
+  // Balance sheet — equity
+  { kw: ["gezeichnetes kapital", "stammkapital", "grundkapital", "gestort en opgevraagd kapitaal", "geplaatst kapitaal",
+          "aandelenkapitaal", "osakep\u00e4\u00e4oma", "capitale sociale", "capital stock", "ordinary shares"], t: "BS:59" },
+  { kw: ["kapitalr\u00fccklage", "agioreserve", "agio", "riserva sovrapprezzo azioni", "sijoitetun vapaan oman p\u00e4\u00e4oman rahasto",
+          "additional paid-in capital", "additional paid in capital", "paid-in capital", "paid in capital", "capital reserve",
+          "capital reserves", "prima de emisi\u00f3n", "reserva de capital"], t: "BS:60" },
+  { kw: ["gewinnr\u00fccklagen", "gewinnvortrag", "verlustvortrag", "bilanzgewinn", "bilanzverlust", "jahres\u00fcberschuss",
+          "jahresfehlbetrag", "overige reserves", "algemene reserve", "onverdeelde winst", "r\u00e9serve l\u00e9gale",
+          "r\u00e9serves", "reserva legal", "reservas de lucros", "preju\u00edzos acumulados", "riserva legale",
+          "utili portati a nuovo", "utili (perdite) portati a nuovo", "edellisten tilikausien voitto", "tilikauden voitto",
+          "accumulated deficit", "accumulated losses"], t: "BS:61" },
 ];
 
 /* ---------- numeric parsing ---------- */
@@ -700,6 +852,20 @@ export function numeric(v: unknown, opts?: { dotThousands?: boolean }): number |
 /* ---------- keyword matching ---------- */
 const kwCache = new Map<string, RegExp>();
 
+/** Accent-insensitive comparison form: "Impôts et taxes" and "impots et
+    taxes" are one caption. Used for MATCHING only — the caption is stored,
+    shown and cited exactly as printed. */
+export function foldAccents(s: string): string {
+  return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\u00df/g, "ss").replace(/\u0153/g, "oe").replace(/\u00e6/g, "ae").normalize("NFC");
+}
+const kwFoldCache = new Map<string, string>();
+const kwFold = (k: string): string => {
+  let f = kwFoldCache.get(k);
+  if (f === undefined) { f = foldAccents(String(k).toLowerCase()); kwFoldCache.set(k, f); }
+  return f;
+};
+
 function kwHit(label: string, kw: string): boolean {
   if (!kw) return false;
   if (/[^\u0000-\u024F]/.test(kw)) return label.includes(kw);
@@ -733,6 +899,21 @@ export function matchRule(label: string, rules: MappingRule[]): string | null {
     merely letting the wrong one lose. SKIP stays reachable from either sheet:
     a total is a total wherever it is printed. */
 export function matchRuleScoped(label: string, rules: MappingRule[], sheet: "IS" | "BS" | null): string | null {
+  return matchRuleStrength(label, rules, sheet).t;
+}
+
+/** The same scan, also saying how long the winning keyword was (0 for a
+    structural answer such as a total). A one-word hit ("intereses") is weak
+    evidence; a phrase ("intereses ganados") is strong — the translation
+    fallback compares the two. */
+export function matchRuleStrength(label: string, rules: MappingRule[], sheet: "IS" | "BS" | null): { t: string | null; len: number } {
+  const t = matchRuleCore(label, rules, sheet);
+  return { t, len: t ? lastKwLen : 0 };
+}
+
+let lastKwLen = 0;
+function matchRuleCore(label: string, rules: MappingRule[], sheet: "IS" | "BS" | null): string | null {
+  lastKwLen = 0;
   /* A caption the accounting package itself cut short. CONTPAQ i prints
      "Depreciación acumulada de Eq. de Se.." when the account name does not
      fit the column; matched with the ellipsis attached, the visible stem
@@ -768,16 +949,18 @@ export function matchRuleScoped(label: string, rules: MappingRule[], sheet: "IS"
   if (bare !== l && isBannerLabel(bare)) return "SKIP";
   let best: string | null = null;
   let bestLen = 0;
+  const lf = foldAccents(l);
   for (const r of rules) {
     if (sheet && r.t !== "SKIP" && !r.t.startsWith(sheet)) continue;
     for (const k of r.kw) {
-      const kk = String(k).toLowerCase();
-      if (kk.length > bestLen && kwHit(l, kk)) {
+      const kk = kwFold(k);
+      if (kk.length > bestLen && kwHit(lf, kk)) {
         best = r.t;
         bestLen = kk.length;
       }
     }
   }
+  lastKwLen = bestLen;
   return best;
 }
 

@@ -282,7 +282,7 @@ t("catalogue v19 places the Nordic captions", () => {
   assert.strictEqual(m("Long-term receivables", "BS"), "BS:39");
   assert.strictEqual(m("1381, Unfinished construction project", "BS"), "BS:39");
   assert.strictEqual(m("9610, Collection costs", "IS"), "IS:OD");
-  assert.ok(/RULE_CATALOGUE_VERSION = 19/.test(STORE_SRC) && DIST.includes("EN9RULEVER=19"));
+  assert.ok(/RULE_CATALOGUE_VERSION = (19|[2-9]\d)/.test(STORE_SRC) && /EN9RULEVER=(19|[2-9]\d)/.test(DIST));
 });
 
 t("the Nordic banners are known, and each side keeps its meaning", () => {

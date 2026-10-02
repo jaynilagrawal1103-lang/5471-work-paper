@@ -1,9 +1,11 @@
 "use client";
 
+import { liabilityNoteBreakdown } from "./noteBreakdown";
+import { effectivePolicy, policyTarget, policyNetReturns, describePolicy, type MappingPolicy } from "./policy";
 import {
   BS_LINES, CATEGORY_CELLS, DEFAULT_RULES, DEMO_RELABELS, FORMULA_REFS, FX_FIELDS, IS_LINES, REPLACEABLE_FORMULA_REFS,
   OWNERSHIP_FIELDS, POOLS, PROFILE_FIELDS, SHEET,
-  detectRulers, resolveWordRulers, inheritRulers, detectPeriodRulers, explainUnreadable, isProcessorFee, splitSidePanels, extractPositionedRows, extractRows, fixedAssetSplit, movementFixedAssetSplit, matchRule, matchRuleScoped, noteLookthrough, numeric, numericCell, readDocument, signForLabel, stackedCaptionRows, statementNotes, boxedFormCodes, boxedFormSpec, isTaxRegisterCaption,
+  detectRulers, resolveWordRulers, inheritRulers, detectPeriodRulers, explainUnreadable, isProcessorFee, splitSidePanels, extractPositionedRows, extractRows, fixedAssetSplit, movementFixedAssetSplit, matchRule, matchRuleScoped, matchRuleStrength, noteLookthrough, numeric, numericCell, readDocument, signForLabel, stackedCaptionRows, statementNotes, boxedFormCodes, boxedFormSpec, isTaxRegisterCaption,
   type ExtractedRow, type MappingRule, type ParsedDoc,
 } from "./engine";
 import { r2, r2add, sanitize } from "./hygiene";
@@ -152,6 +154,9 @@ export type Contribution = {
   year?: number | null;
   /** "section": no keyword matched — the statement's own section heading placed it. */
   via: "rule" | "section" | "groq" | "manual";
+  /** The mapping policy switch that moved this figure off the line the rules
+      chose (policy.ts), so the Provenance sheet can say why. */
+  policy?: string;
   /** The document's original row values/years (pre-sign, pre-routing) —
       what unassign needs to reconstruct the unmatched row faithfully. */
   srcValues?: number[];
@@ -162,7 +167,13 @@ export type Contribution = {
 
 /** A user's standing decision about where a caption maps; survives
     re-processing because it is keyed by caption, not by run state. */
-export type MapOverride = { to: string | null };   // null = force-unassign
+export type MapOverride = {
+  to: string | null;   // null = force-unassign
+  /** Who decided it. An AI proposal the preparer did not touch is replayed
+      as the model's answer (with its confidence), never as the preparer's. */
+  by?: "manual" | "ai";
+  confidence?: "high" | "medium" | "low";
+};
 
 export type PolicyMatch = { id?: string; category?: ReviewItem["category"]; message?: string; regex?: boolean };
 export type PolicyAction = "keep" | "block" | "warn" | "info" | "suppress";
@@ -204,6 +215,10 @@ export type ReviewItem = {
   target?: string;                    // "Balance Sheet!F54"
   source?: string;
   suggestedValue?: string | number;
+  /** Set by a sign-off that staged a value on an IS/BS line, or created the
+      schedule writes it booked — what Restore takes back (U5). */
+  stagedLine?: { key: string; field: string };
+  createdWrites?: boolean;
   /** The document caption this item quotes, kept as a field so the message can
       be re-resolved against the entity's translations when it is read. The
       message is built during processing but translation runs afterwards, so
@@ -303,6 +318,9 @@ export type Entity = {
       Written once, read by the provenance sheet and by every cell that
       depends on the opening figures. */
   openingRate?: { rate: number; why: string; source: string } | null;
+  /** This entity's own mapping-policy switches, on top of the firm's
+      (policy.ts). Unset switches follow the firm, then the rules. */
+  mappingPolicy?: MappingPolicy;
   detected: Record<string, DetectedField>;
   lines: Record<string, LineValue>;
   relabels: Record<string, string>;
@@ -428,6 +446,9 @@ export type WpState = {
       keeps the preparer's edited rules verbatim, so without this a returning
       user would silently never receive a rule added since they last saved. */
   rulesVersion?: number;
+  /** The firm's mapping policy profile (policy.ts): where its reviewers put
+      the figures the rules could place either way. Empty = the rules. */
+  mappingPolicy?: MappingPolicy;
   policies: PolicyRule[];
   rateDb: RateDb;
   groq: GroqState;
@@ -625,7 +646,7 @@ const initialStakeholder = "New stakeholder";
    Version 2 (2026-09-09) added the six groups from the round-5 review:
    werkkostenregeling, kleinmateriaal, issued & paid-up capital, the periodic
    opening/closing stock pair and stock on hand. */
-export const RULE_CATALOGUE_VERSION = 19;
+export const RULE_CATALOGUE_VERSION = 20;
 
 /** SKIP keywords added at each version. The SKIP group already exists in
     every saved catalogue, so these are MERGED into it rather than added as a
@@ -708,6 +729,15 @@ const RULES_ADDED_SINCE: Record<number, string[]> = {
   16: ["antic. a trabajadores", "anticipo de clientes", "impto de renta"],
   17: ["bienes ra\u00edces", "cta. participaci\u00f3n", "pr\u00e9stamo a plazo", "correcci\u00f3n monetaria", "impuesto 1era cat", "accum. dep", "talent fee"],
   18: ["income taxes", "other current assets", "long-term receivables", "penalties for late payment"],
+  /* v20 (2026-10-02): the multilingual lexicon (DE/FR/NL/IT/PT/FI/ES and
+     everyday English) — one distinctive keyword per new group. */
+  19: ["umsatzerl\u00f6se", "devoluciones sobre ventas", "wareneinsatz", "dividendos recibidos", "ingresos por intereses",
+       "rent received", "royalties received", "profit on sale", "unrealised foreign exchange", "realised foreign exchange",
+       "miscellaneous income", "salaires et traitements", "alquiler", "royalties paid", "intereses pagados", "abschreibungen",
+       "impuestos y contribuciones", "impuesto sobre la renta", "autres charges externes", "deferred income tax", "caja",
+       "clientes", "allowance for doubtful", "inventarios", "charges constat\u00e9es d'avance", "pr\u00e9stamos a socios",
+       "investments in subsidiar", "sachanlagen", "grundst\u00fccke", "rental deposit", "crediteuren", "dettes fiscales et sociales",
+       "pr\u00e9stamos de socios", "pr\u00e9stamos bancarios", "gezeichnetes kapital", "kapitalr\u00fccklage", "gewinnvortrag"],
 };
 
 /** Keywords that MOVED to a different line at a given version. Adding a group
@@ -938,6 +968,8 @@ export function loadState(next: WpState) {
     );
   }
 }
+
+const undoStack: Array<{ label: string; at: string; snap: Partial<WpState> }> = [];
 
 function set(patch: Partial<WpState>) {
   state = { ...state, ...patch };
@@ -2016,7 +2048,10 @@ export const actions = {
     updateEntity(entityId, { relabels });
   },
 
-  assignUnmatched(entityId: string, index: number, target: string) {
+  /** Assign an unmatched caption to a line for THIS entity. It learns a
+      mapping rule for every client only when asked (opts.remember) — before
+      v20 every assignment silently became a global rule (U9). */
+  assignUnmatched(entityId: string, index: number, target: string, opts?: { remember?: boolean }) {
     const ent = state.entities.find((e) => e.id === entityId);
     if (!ent || !target) return;
     const row = ent.unmatched[index];
@@ -2041,6 +2076,7 @@ export const actions = {
     // And it teaches the tool: the caption becomes a mapping rule, so FUTURE
     // documents map it automatically (rules are editable in Settings).
     const kw = norm(row.label);
+    if (!opts?.remember) { toast(`Mapped for ${ent.name}. Tick "remember for every client" to also learn a rule.`, "ok"); return; }
     if (kw.length >= 3 && !state.rules.some((r) => r.kw.some((k) => k.toLowerCase() === kw))) {
       set({ rules: [...state.rules, { kw: [kw], t: target }] });
       logEvent("Mapping rule learned", `"${kw}" → ${target} (from a manual assignment)`, ent.name);
@@ -2198,6 +2234,9 @@ export const actions = {
 
     let priorValue: string | number | undefined;
     let landed = false;
+    /* What this sign-off wrote, so Restore can take exactly that back (U5). */
+    let stagedLine: { key: string; field: string } | undefined;
+    const writesBefore = ent.extraWrites.filter((w) => w.reviewId === id).length;
 
     // (a) Every schedule write linked by reviewId takes the new value.
     const linked = ent.extraWrites.filter((w) => w.reviewId === id);
@@ -2243,6 +2282,7 @@ export const actions = {
         priorValue = (ent.lines[key] as Record<string, number | null | undefined> | undefined)?.[field] ?? undefined;
         lines = { ...ent.lines, [key]: { ...(ent.lines[key] || {}), [field]: value } };
         landed = true;
+        stagedLine = { key, field };
       }
     }
     // (c) Neither: the edit is recorded on the item itself (documentation).
@@ -2252,6 +2292,8 @@ export const actions = {
       resolution: "edited",
       editedValue: value,
       priorValue,
+      ...(stagedLine ? { stagedLine } : {}),
+      ...(!writesBefore && extraWrites.some((w) => w.reviewId === id) ? { createdWrites: true } : {}),
       dismissed: true,
       dismissedNote: note || "",
     };
@@ -2270,16 +2312,26 @@ export const actions = {
     if (!ent) return;
     const item = ent.reviewItems.find((r) => r.id === id);
     if (!item) return;
-    // An edited item reverts its value along with its sign-off.
+    // An edited item reverts its value along with its sign-off — every write
+    // the sign-off made: a linked cell, a cell it created, a staged line (U5).
     let extraWrites = ent.extraWrites;
-    if (item.resolution === "edited" && item.priorValue !== undefined) {
-      extraWrites = ent.extraWrites.map((w) => (w.reviewId === id ? { ...w, value: item.priorValue as string | number } : w));
+    let lines = ent.lines;
+    if (item.resolution === "edited") {
+      if (item.createdWrites) extraWrites = ent.extraWrites.filter((w) => w.reviewId !== id);
+      else if (item.priorValue !== undefined) extraWrites = ent.extraWrites.map((w) => (w.reviewId === id ? { ...w, value: item.priorValue as string | number } : w));
+      if (item.stagedLine) {
+        const { key, field } = item.stagedLine;
+        const cur = { ...(ent.lines[key] || {}) } as Record<string, unknown>;
+        if (item.priorValue === undefined) delete cur[field]; else cur[field] = item.priorValue;
+        lines = { ...ent.lines, [key]: cur as LineValue };
+      }
     }
     updateEntity(entityId, {
       extraWrites,
+      lines,
       reviewItems: ent.reviewItems.map((r) =>
         r.id === id
-          ? { ...r, dismissed: false, dismissedNote: "", resolution: undefined, editedValue: undefined, priorValue: undefined }
+          ? { ...r, dismissed: false, dismissedNote: "", resolution: undefined, editedValue: undefined, priorValue: undefined, stagedLine: undefined, createdWrites: undefined }
           : r,
       ),
     });
@@ -2729,9 +2781,25 @@ export const actions = {
               if (!directors.length) directors = directoryDirectors(dirRows);
             }
             const notePages = new Set((cls.pages || []).filter((p) => p.kind === "fs-notes").map((p) => p.page));
-            const notes = notePages.size
-              ? statementNotes(extractPositionedRows(pdf, rulers, { pages: notePages }))
-              : [];
+            const noteRows = notePages.size ? extractPositionedRows(pdf, rulers, { pages: notePages }) : [];
+            const notes = notePages.size ? statementNotes(noteRows) : [];
+            /* A creditors line whose note lists what it is made of: the
+               components replace it when they add up to it (noteBreakdown.ts). */
+            if (noteRows.length) {
+              const notePageText: Record<number, string> = {};
+              for (const r of pdf.rows) if (notePages.has(r.page)) notePageText[r.page] = (notePageText[r.page] || "") + " " + r.cells.map((c) => c.text).join(" ");
+              const splits = liabilityNoteBreakdown(noteRows, pdfBs.map((m) => (m.skipReason || m.row.isBanner ? { label: "", values: [] } : m.row)), notePageText);
+              for (const sp of [...splits].sort((x, y) => y.faceIndex - x.faceIndex)) {
+                const host = pdfBs[sp.faceIndex];
+                /* A note prints its year headers once; the components carry
+                   the face row's years, current year first ("7,362 -"). */
+                const hostYears = (host.row.years || []).filter((y): y is number => typeof y === "number");
+                const parts = sp.components.map((c) => ({ ...host, section: sp.section, row: { ...c, x0: host.row.x0, isBanner: false,
+                  years: c.years && c.years.some((y) => typeof y === "number") ? c.years : hostYears.slice(0, (c.values || []).length) } }));
+                pdfBs.splice(sp.faceIndex, 1, ...parts);
+                log.push(`${file.name}: "${host.row.label}" booked through its note (page ${sp.page}) — ${sp.components.length} components that add up to it: ${sp.components.map((c) => c.label).join("; ")}`);
+              }
+            }
             const lookthrough = notes.length ? noteLookthrough(notes) : new Map<string, string>();
             if (lookthrough.size) {
               const key = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -2833,10 +2901,13 @@ export const actions = {
                 const head = r.cells.map((c) => c.text).join(" ");
                 if (isPages.has(r.page) && (DETAIL_PNL_TITLE.test(head) || (TRADING_PNL_TITLE.test(head) && notStatutory))) detailPages.add(r.page);
               }
-              const sup = supplementaryDetailPages(pdfIs, detailPages);
+              const preferDetail = effectivePolicy(state.mappingPolicy, state.entities.find((e) => e.id === entityId)?.mappingPolicy).detailedAccounts === "detail";
+              const sup = supplementaryDetailPages(pdfIs, detailPages, preferDetail);
               if (sup.dropped) {
                 pdfIs = sup.rows;
-                log.push(sup.abridged
+                log.push(preferDetail && sup.abridged
+                  ? `${file.name}: the mapping policy books the detailed profit and loss account (page${detailPages.size > 1 ? "s" : ""} ${[...detailPages].join(", ")}); the ${sup.dropped} face row(s) it restates are set aside`
+                  : sup.abridged
                   ? `${file.name}: the profit and loss account is abridged (it opens at gross profit), so the detailed account (page${detailPages.size > 1 ? "s" : ""} ${[...detailPages].join(", ")}) is booked and the ${sup.dropped} face row(s) it restates are set aside`
                   : `${file.name}: the detailed profit and loss account (page${detailPages.size > 1 ? "s" : ""} ${[...detailPages].join(", ")}) restates the profit and loss account line by line — ${sup.dropped} row(s) set aside so nothing is booked twice; the face statement is booked`);
               }
@@ -3365,6 +3436,12 @@ export const actions = {
         const contributions: Record<string, Contribution[]> = {};
         const unmatched: Entity["unmatched"] = [...looseRows];
         const statedResults: NonNullable<Entity["statedResults"]> = [];
+        /* Captions read as totals and left out, per document (Review lists them). */
+        const skippedTotals = new Map<string, { docName: string; rows: string[] }>();
+        /* The firm's mapping policy with this entity's switches on top. */
+        const policy = effectivePolicy(state.mappingPolicy, ent.mappingPolicy);
+        const policyOwners = [...(ent.shareholders || []), ...(ent.usShareholders || [])].map((h) => h.name).filter(Boolean);
+        let policyMoved = 0;
         const pools = makePoolState();
         // Standing user remaps survive re-processing. Pre-reserve their pool
         // rows so auto-allocation cannot collide onto a user-chosen slot.
@@ -3392,8 +3469,23 @@ export const actions = {
         // only which template line the caption is matched to.
         let viaTranslation = 0;
         const matchWithTranslation = (label: string): { target: string | null; translated: boolean } => {
-          const direct = matchRule(label, state.rules);
-          if (direct) return { target: direct, translated: false };
+          const directM = matchRuleStrength(label, state.rules, null);
+          const direct = directM.t;
+          if (direct) {
+            /* The raw caption still comes first — but a ONE-word hit in the
+               original language ("intereses" → interest paid) loses to a
+               phrase the English translation matches ("interest earned" →
+               interest income) when the two disagree. */
+            const en0 = ent.translations?.[label];
+            if (direct !== "SKIP" && en0 && en0 !== label && directM.len <= 9) {
+              const viaEn = matchRuleStrength(en0, state.rules, null);
+              if (viaEn.t && viaEn.t !== "SKIP" && viaEn.t !== direct && viaEn.len >= directM.len + 4) {
+                viaTranslation++;
+                return { target: viaEn.t, translated: true };
+              }
+            }
+            return { target: direct, translated: false };
+          }
           const en = ent.translations?.[label];
           if (!en || en === label) return { target: null, translated: false };
           const t = matchRule(en, state.rules);
@@ -3515,6 +3607,10 @@ export const actions = {
              related persons), not a trade payable: "Cuentas por Pagar
              Accionistas" matched the generic "cuentas por pagar" keyword. */
           if (target === "BS:46" && /\b(accionistas?|socios?|shareholders?|stockholders?|partes\s+relacionadas|compa[n\u00f1][i\u00ed]as\s+relacionadas|related\s+(?:part(?:y|ies)|compan(?:y|ies)))\b/i.test(m.row.label)) target = "BS:52";
+          /* A finance lease or hire-purchase obligation the statement files
+             among the creditors falling due within one year is current: Schedule F
+             line 16, not the long-term borrowings of line 19 (v20). */
+          if (target === "BS:OL" && m.section === "liabilities" && /\b(finance\s+leases?|hire\s+purchase|leasing)\b/i.test(String(m.row.label || ""))) target = "BS:OCL";
           /* The mirror of it, one line up. A payment processor's fee is the
              cost of COLLECTING the money, so it is an ordinary deduction like
              any bank charge — unless the statement itself files it under cost
@@ -3539,7 +3635,7 @@ export const actions = {
              other deductions even when the books file them under cost of
              sales. Freight IN (on purchases, customs, duty) stays in cost of
              goods sold. Both reviewed papers with such a line agree. */
-          if (m.feed === "is" && m.section === "cogs" && target && /^IS:1[0-2]$/.test(target)
+          if (m.feed === "is" && m.section === "cogs" && target && /^IS:1[0-2]$/.test(target) && !policy.cogsAsPrinted
             && overrides[norm(m.row.label)] === undefined && OUTBOUND_DELIVERY.test(String(m.row.label || ""))
             && !INBOUND_FREIGHT.test(String(m.row.label || ""))) {
             target = "IS:OD";
@@ -3552,6 +3648,11 @@ export const actions = {
           }
           // A numbered-box return's code decided the line; its caption did not.
           if (m.formTarget) target = m.formTarget;
+          /* The preparer's own assignment outranks a total keyword: a caption
+             the catalogue reads as a subtotal ("Total other income") but the
+             preparer mapped stays mapped. Before, the SKIP branch ran first and
+             the override was never reached. */
+          if (target === "SKIP" && overrides[norm(m.row.label)] !== undefined) target = null;
           if (target === "SKIP") {
             // "Net income" in an equity section is closing equity, not a
             // P&L subtotal — the one SKIP that depends on which statement
@@ -3563,7 +3664,18 @@ export const actions = {
                nothing itemised beneath it — there is nothing else to book,
                so it goes to the section's line instead of vanishing. */
             if (!equity && m.feed === "is" && m.collapsed && m.collapsedLead) target = null;
-            else if (!equity) continue;
+            else if (!equity) {
+              /* Not booked — it is read as a total. Kept on a list so the
+                 preparer can see every figure that was left out this way. */
+              const fig = (m.row.values || []).find((v) => typeof v === "number" && v !== 0);
+              if (typeof fig === "number" && !m.row.isBanner) {
+                const k = m.docId;
+                const cur = skippedTotals.get(k) || { docName: m.docName, rows: [] as string[] };
+                if (cur.rows.length < 400) cur.rows.push(`"${m.row.label}" ${fig.toLocaleString()}`);
+                skippedTotals.set(k, cur);
+              }
+              continue;
+            }
             else target = equity;
           }
           /* How the line was chosen — the Provenance sheet must say so honestly. */
@@ -3573,7 +3685,7 @@ export const actions = {
             // The user's standing decision wins over rules and feed scoping.
             if (ov.to === null) { unmatched.push({ ...m.row, docId: m.docId, docName: m.docName, reason: "You unassigned this caption — pick a template line to book it." }); continue; }
             target = ov.to;
-            via = "manual";
+            via = ov.by === "ai" ? "groq" : "manual";
           } else {
             // Feed scoping: a P&L page may only hit IS lines, a balance-sheet
             // page only BS lines. A related-party balance is recognized by the
@@ -3633,7 +3745,9 @@ export const actions = {
              "Current assets" cannot be an income line however the keyword
              reads. Applied AFTER the target is chosen, because the veto needs
              to know what was proposed — and only as a veto, never to pick. */
-          if (target && m.section && !sectionOk(m.section, target)) target = null;
+          /* A preparer's (or an accepted AI) assignment is a decision, not a
+             proposal: the banner veto does not undo it. */
+          if (target && m.section && ov === undefined && !sectionOk(m.section, target)) target = null;
           // Only once the rules have failed: the banner's own routing. Last
           // resort, and honest about the assets side having no catch-all.
           if (!target && m.section) {
@@ -3718,6 +3832,16 @@ export const actions = {
               target: `${SHEET.bs}!F16`, source: m.docName,
             });
           }
+          /* The firm's convention, applied to the rules' answer — never to a
+             preparer's own assignment, which is a decision. */
+          const ruleTarget = target;
+          let polRule: string | undefined;
+          let polGroup: string | undefined;
+          let polSign: "negate" | "negative" | undefined;
+          if (target && ov === undefined) {
+            const mv = policyTarget(target, { label: m.row.label, feed: m.feed, section: m.section, ownerNames: policyOwners }, policy);
+            if (mv) { target = mv.target; polRule = mv.rule; polGroup = mv.group; polSign = mv.sign === -1 ? "negative" : undefined; }
+          }
           if (!target) {
             unmatched.push({
               ...m.row, docId: m.docId, docName: m.docName, section: m.section,
@@ -3731,7 +3855,7 @@ export const actions = {
           }
 
           let routed = routeRow(m.row, target.startsWith("BS"), caseYears, m.kind);
-          if (Array.isArray(routed)) signTally(m, target, routed);
+          if (Array.isArray(routed)) signTally(m, ruleTarget || target, routed);
           // The rule and its reasoning live in sections.ts.
           if (Array.isArray(routed) && contraRevenueFlip(target, m.inTotal, routed[0]?.value)) {
             const asPrinted = routed[0]?.value ?? 0;
@@ -3804,6 +3928,16 @@ export const actions = {
               target: `${SHEET.bs}!D${target.split(":")[1]}`, source: m.docName,
             });
           }
+          /* Returns netted into gross receipts: after the contra-revenue sign
+             rule, so 1a carries exactly what 1a − 1b would have. */
+          if (Array.isArray(routed) && ov === undefined) {
+            const nr = policyNetReturns(target, policy);
+            if (nr) { target = nr.target; polRule = nr.rule; polSign = "negate"; }
+          }
+          if (Array.isArray(routed) && polSign) {
+            routed = routed.map((r) => ({ ...r, value: polSign === "negate" ? -r.value : -Math.abs(r.value) }));
+          }
+          if (polRule) policyMoved++;
           if (routed === "ambiguous") {
             unmatched.push({
               ...m.row, docId: m.docId, docName: m.docName,
@@ -3818,7 +3952,7 @@ export const actions = {
              line it took a row a real balance needed ("2010 Brex Credit Card
              0.00" sat first among the credit cards). */
           if (!isOverride && POOLS[target] && routed.every((r) => !r.value)) continue;
-          const resolved = isOverride ? { target, relabel: undefined, overflowNote: undefined } : resolvePool(pools, target, m.row.label, m.group);
+          const resolved = isOverride ? { target, relabel: undefined, overflowNote: undefined } : resolvePool(pools, target, m.row.label, polGroup || m.group);
           if (isOverride && specFor(target)?.relabel && !relabels[target]) relabels[target] = m.row.label;
           if (resolved.relabel) relabels[resolved.target] = resolved.relabel;
 
@@ -3901,9 +4035,23 @@ export const actions = {
               docId: m.docId, docName: m.docName, page: m.row.page,
               label: m.row.label, value: booked, field: r.field, year: r.year, via,
               srcValues: m.row.values, srcYears: m.row.years, period: m.row.period,
+              ...(polRule ? { policy: polRule } : {}),
             });
           }
           sourceLabels[resolved.target] = { label: m.row.label, values: m.row.values, years: m.row.years };
+        }
+
+        /* Every figure the catalogue read as a total was left out silently.
+           Most are totals; the one that is an account is invisible unless it
+           is listed somewhere the preparer looks. One info item per document. */
+        if (policyMoved) log.push(`Mapping policy moved ${policyMoved} caption(s): ${describePolicy(policy)}`);
+        for (const [docId, t] of skippedTotals) {
+          if (!t.rows.length) continue;
+          rv({
+            id: `skipped-totals-${docId}`, level: "info", category: "mapping", applied: true,
+            message: `${t.rows.length} caption(s) in ${t.docName} were read as totals or subtotals and not booked (the template recomputes its own totals): ${t.rows.slice(0, 12).join("; ")}${t.rows.length > 12 ? `; and ${t.rows.length - 12} more` : ""}. If one of them is a real account, assign it on Mapping & adjustments — your assignment now outranks the total rule.`,
+            source: t.docName,
+          });
         }
 
         /* Periodic inventory: the P&L reports the stock movement as two
@@ -5118,6 +5266,40 @@ export const actions = {
 
   /* ---------------- Groq ---------------- */
   setGroq(patch: Partial<GroqState>) { set({ groq: { ...state.groq, ...patch } }); },
+  /** Undo for destructive actions (U11, U14). State is updated immutably, so
+      a snapshot is the previous references — documents' bytes included —
+      not a copy. The last ten are kept for this session. */
+  takeSnapshot(label: string) {
+    undoStack.push({ label, at: new Date().toISOString(), snap: { entities: state.entities, activeEntityId: state.activeEntityId, rules: state.rules, policies: state.policies, mappingPolicy: state.mappingPolicy, usage: state.usage } });
+    if (undoStack.length > 10) undoStack.shift();
+  },
+  undoSnapshot(): string | null {
+    const s0 = undoStack.pop();
+    if (!s0) { toast("Nothing to undo", "bad"); return null; }
+    set({ ...s0.snap });
+    logEvent("Undo", s0.label, null, "user");
+    toast(`Undone: ${s0.label}`, "ok");
+    return s0.label;
+  },
+  canUndo(): string | null { return undoStack.length ? undoStack[undoStack.length - 1].label : null; },
+  /** The firm's mapping policy profile (policy.ts). A switch set to "" or
+      undefined is cleared and follows the rules again. Takes effect on the
+      next processing run. */
+  setMappingPolicy(patch: Partial<MappingPolicy>) {
+    const next: MappingPolicy = { ...(state.mappingPolicy || {}), ...patch };
+    for (const k of Object.keys(next) as Array<keyof MappingPolicy>) if (next[k] === undefined || (next[k] as unknown) === "") delete next[k];
+    set({ mappingPolicy: next });
+    logEvent("Mapping policy changed", describePolicy(next) || "every switch follows the rules", null, "user");
+  },
+  /** One entity's own switches, on top of the firm's. */
+  setEntityMappingPolicy(entityId: string, patch: Partial<MappingPolicy>) {
+    const ent = state.entities.find((e) => e.id === entityId);
+    if (!ent) return;
+    const next: MappingPolicy = { ...(ent.mappingPolicy || {}), ...patch };
+    for (const k of Object.keys(next) as Array<keyof MappingPolicy>) if (next[k] === undefined || (next[k] as unknown) === "") delete next[k];
+    updateEntity(entityId, { mappingPolicy: next });
+    logEvent("Entity mapping policy changed", describePolicy(next) || "follows the firm policy", ent.name, "user");
+  },
 
   /** The agent's only setting: whether it runs during processing. It has no
       key of its own — it uses the Groq credential above. */
@@ -5835,14 +6017,21 @@ export function openingRateFor(
   pyRate: number | null,
   priorRate?: number | null,
 ): { rate: number; why: string } | null {
-  const peg = peggedRate(currency || "");
-  if (peg) return { rate: peg.rate, why: peg.note };
+  /* v20 (2026-10-02): the APPROVED prior year-end rate comes first. Schedule
+     F's USD opening column is the local-currency figure divided by that very
+     cell (Basic Information C61), so only the same rate turns the filed USD
+     back into a local figure that divides back to the filed USD. Converting at
+     the peg while the sheet divides by the approved rate moved every opening
+     line by the difference (DFRNT: AED 3.6725 vs 3.673, 0.014% on eleven
+     lines). The peg and the printed rate are for when no rate is approved. */
   if (typeof pyRate === "number" && pyRate > 0) {
-    return { rate: pyRate, why: `the approved prior year-end rate (${pyRate})` };
+    return { rate: pyRate, why: `the approved prior year-end rate (${pyRate}), the rate Schedule F divides the opening column by` };
   }
   if (typeof priorRate === "number" && priorRate > 0) {
     return { rate: priorRate, why: `the prior return printed (${priorRate}); no approved year-end rate was available` };
   }
+  const peg = peggedRate(currency || "");
+  if (peg) return { rate: peg.rate, why: peg.note };
   return null;
 }
 
@@ -6681,6 +6870,12 @@ export async function materializeCaseWrites(
   const cyRate = numeric(ent.fx.cyRate);
   const pyRate = numeric(ent.fx.pyRate);
   const w = (write: CellWrite) => list.push(write);
+  /* Mapping policy: the template captions line 23a "Current year net income
+     or (loss) per books", and a firm that fills it as captioned wants line 24
+     to equal net income. A formula, so it follows any later edit. */
+  if (effectivePolicy(state.mappingPolicy, ent.mappingPolicy).ociEqualsNetIncome) {
+    w({ sheet: SHEET.is, ref: "F65", value: "=F64", source: "Mapping policy: line 23a = net income per books, as the template captions it" });
+  }
   /* The year's distribution: an equity-movement statement, an Australian
      return's franked dividends, or — when neither — a dividend line printed
      inside the balance sheet's equity ("Dividend Payouts 43,478"). */
@@ -7822,10 +8017,13 @@ export function buildWrites(ent: Entity): Writes {
     if (v !== undefined && v !== "") basic[f.cell] = Number(v);
   });
 
+  /* Mapping policy: whole units, line by line, as a hand-prepared paper. */
+  const whole = !!effectivePolicy(state.mappingPolicy, ent.mappingPolicy).wholeUnits;
+  const amt = (v: number) => (whole ? Math.round(v) : v);
   const is: Record<string, string | number> = {};
   IS_LINES.forEach((l) => {
     const d = ent.lines[`IS:${l.row}`];
-    if (d && typeof d.amount === "number") is[`F${l.row}`] = d.amount;
+    if (d && typeof d.amount === "number") is[`F${l.row}`] = amt(d.amount);
     /* Resolve the caption at WRITE time, not when the mapping was made:
        translation runs as its own step after processing, so a caption fixed
        at mapping time would ship the original wording into the workbook until
@@ -7839,8 +8037,8 @@ export function buildWrites(ent: Entity): Writes {
   BS_LINES.forEach((l) => {
     const d = ent.lines[`BS:${l.row}`];
     if (d) {
-      if (typeof d.boy === "number") bs[`D${l.row}`] = d.boy;
-      if (typeof d.eoy === "number") bs[`F${l.row}`] = d.eoy;
+      if (typeof d.boy === "number") bs[`D${l.row}`] = amt(d.boy);
+      if (typeof d.eoy === "number") bs[`F${l.row}`] = amt(d.eoy);
     }
     const rl = ent.relabels[`BS:${l.row}`];
     if (l.relabel && rl) bs[`B${l.row}`] = displayLabel(ent.translations, rl);
@@ -8436,8 +8634,9 @@ function provenanceRows(ent: Entity): CellValue[][] {
         `${label(target)} (${c.field})`,
         bilingualLabel(ent.translations, c.label || ""), c.docName || "", c.page != null ? c.page : "",
         typeof c.value === "number" ? c.value : "",
-        c.via === "groq" ? (flaggedLow ? "LOW — verify" : "model-reported ok") : "",
-        PROVENANCE_NOTE[c.via] || PROVENANCE_NOTE.rule,
+        c.via === "groq" ? (flaggedLow || ent.mapOverrides?.[norm(c.label || "")]?.confidence === "low" ? "LOW — verify"
+          : ent.mapOverrides?.[norm(c.label || "")]?.by === "ai" ? `model-reported ${ent.mapOverrides[norm(c.label || "")].confidence || "ok"} (kept from an earlier AI pass)` : "model-reported ok") : "",
+        (PROVENANCE_NOTE[c.via] || PROVENANCE_NOTE.rule) + (c.policy ? ` Moved by the mapping policy: ${c.policy}.` : ""),
       ]) - 1], [
         c.page != null ? `page ${c.page}` : "spreadsheet",
         `row "${c.label || ""}"`,
@@ -9141,7 +9340,7 @@ async function agentRun(entityId: string, log?: string[]): Promise<AgentRunResul
       continue;
     }
     sourceLabels[sg.target] = { label: row.label, values: row.values, years: row.years };
-    mapOverrides[key] = { to: sg.target };
+    mapOverrides[key] = { to: sg.target, by: "ai", confidence: sg.confidence === "high" ? "high" : "medium" };
     accepted++;
     if (sg.confidence !== "high") {
       flags.push({
@@ -9404,7 +9603,7 @@ async function aiRun(entityId: string, log?: string[], forced?: boolean): Promis
         }
 
         sourceLabels[p.t] = { label: row.label, values: row.values, years: row.years };
-        mapOverrides[key] = { to: p.t };
+        mapOverrides[key] = { to: p.t, by: "ai", confidence: aiOk(p) ? (p.c === "high" ? "high" : "medium") : "low" };
         booked.add(key);
         applied++;
         if (!aiOk(p)) {

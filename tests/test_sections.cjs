@@ -420,7 +420,7 @@ t("step 3 skips structure, applies the veto AFTER a target is chosen, then the f
   assert.ok(loop.includes("if (m.skipReason || m.row.isBanner) {"), "structure is booked");
   assert.ok(loop.includes("if (m.agentImportant && !m.row.isBanner) {"), "an important structural row reaches Review");
   assert.ok(/if \(m\.skipReason \|\| m\.row\.isBanner\) \{[\s\S]{0,2000}?continue;\s*\}/.test(loop), "and nothing in that branch books anything");
-  const veto = loop.indexOf("if (target && m.section && !sectionOk(m.section, target)) target = null;");
+  const veto = loop.indexOf("if (target && m.section && ov === undefined && !sectionOk(m.section, target)) target = null;");
   const fallback = loop.search(/if \(!target && m\.section\) \{\s*const byBanner = sectionRoute\(m\.section, m\.row\.label\)/);
   assert.ok(veto > 0 && fallback > veto, "the fallback must run after the veto, not before");
 });

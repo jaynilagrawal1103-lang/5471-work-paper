@@ -40,11 +40,11 @@ export function PreviewView({ onNavigate }: { onNavigate: (v: ViewId) => void })
             <button
               type="button"
               className="button primary"
-              disabled={state.busy || !!blockers.length}
-              title={blockers.length ? blockers[0].message : ""}
-              onClick={() => void actions.generateOne(ent.id)}
+              disabled={state.busy}
+              title={blockers.length ? blockers[0].message : "Generation goes through Review & sign-off, the human gate"}
+              onClick={() => onNavigate("signoff")}
             >
-              Generate workbook
+              Continue to sign-off
             </button>
           </div>
         }

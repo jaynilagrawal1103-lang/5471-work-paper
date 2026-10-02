@@ -156,6 +156,22 @@ year end that was assumed or that contradicts the statements is raised as a
 review item. The year end selects the exchange-rate tables and dates Schedules
 E and J, so a fiscal entity dated 31 December is wrong throughout.
 
+### Mapping policy
+
+Some figures can sit on more than one line and reviewers differ: staff costs
+on line 11 or line 17, exchange differences on 8a or 8b, credit cards on line
+16 or 19, the detailed profit and loss account or the statutory face. Settings
+▸ Policies holds your firm's choice for each; Mapping & adjustments holds the
+exceptions for one entity. A switch left on its first choice follows the
+mapping rules. A switch moves figures on the next processing run, never a line
+you assigned yourself, and every figure it moved says so on the Provenance
+sheet.
+
+Assigning an unmatched caption books it for this entity only. Tick "remember
+for every client" to also learn a mapping rule. Remap and assign take two
+steps (pick the line, then Move or Assign), and destructive actions ask in the
+page and offer Undo.
+
 ## Exchange rates
 
 Rates follow a fixed chain: bundled IRS yearly-average and US Treasury 12/31
@@ -167,7 +183,8 @@ throughout the app.
 
 ## Generation blockers
 
-Generation is refused while:
+Every Generate button leads to Review & sign-off, the human gate; the work
+paper is written from there. Generation is refused while:
 
 1. any of the three exchange rates is missing, or
 2. the balance sheet **does not balance** (assets vs liabilities + equity, per

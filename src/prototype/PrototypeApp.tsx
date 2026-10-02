@@ -58,6 +58,13 @@ export function PrototypeApp({ initialView }: AppProps) {
     safeReplaceState(`?view=${view}`);
   };
 
+  /* The enhancement layer navigates through the app (Exception center links
+     on every review surface) instead of clicking nav items by their text. */
+  if (typeof window !== "undefined") {
+    (window as unknown as { __WPNAV?: (v: ViewId) => void; __WPVIEW?: ViewId }).__WPNAV = navigate;
+    (window as unknown as { __WPVIEW?: ViewId }).__WPVIEW = activeView;
+  }
+
   let content = <OverviewView onNavigate={navigate} />;
   if (activeView === "tasks") content = <TasksView onNavigate={navigate} />;
   if (activeView === "portfolio") content = <PortfolioView onNavigate={navigate} />;

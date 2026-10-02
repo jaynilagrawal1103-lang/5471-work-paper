@@ -133,7 +133,9 @@ const run = () => new Promise(r => setTimeout(r, 250));
   assert(groups[0].textContent.includes('Income statement')&&groups[0].textContent.includes('2'), 'Sch C header with count');
   const subs=[...d.querySelectorAll('tr.en9-subtotal')];
   assert(subs.length===2, 'two subtotal rows');
-  assert(subs[0].textContent.replace(/\u00a0/g,' ').includes((2290116+429372).toLocaleString('en-US')), 'Sch C subtotal correct: '+subs[0].textContent);
+  // U3/U52: one figure per meaning, from state — never the cell text summed.
+  assert(subs[0].textContent.includes('income 2,290,116') && subs[0].textContent.includes('cost of goods sold 429,372'), 'Sch C subtotal correct: '+subs[0].textContent);
+  assert(subs[1].textContent.includes('assets D 0 / F 60,000'), 'Sch F subtotal per column: '+subs[1].textContent);
 
   // 5. filter bar + filtering
   const bar=d.querySelector('.en9-fb');
@@ -177,13 +179,14 @@ const run = () => new Promise(r => setTimeout(r, 250));
   // 9. REACTIVITY: simulate a React re-render replacing tbody content (user remapped -> new value)
   const body=d.querySelector('tbody');
   [...body.querySelectorAll('tr[data-en9]')].forEach(r=>r.remove());
-  body.innerHTML = body.innerHTML.replace(/429,372/g,'993,558'); // React swaps the rows
+  __state.entities[0].lines['IS:11'] = { amount: 993558 };       // the remap changed state…
+  body.innerHTML = body.innerHTML.replace(/429,372/g,'993,558'); // …and React swaps the rows
   window.dispatchEvent(new window.CustomEvent('wp:state'));
   await run(); await run();
   assert([...d.querySelectorAll('tr.en9-group')].length===2, 'groups rebuilt after simulated React re-render');
   assert(d.querySelectorAll('.en9-chip').length>=4, 'chips re-created after re-render');
   const sub2=[...d.querySelectorAll('tr.en9-subtotal')];
-  assert(sub2.some(s2=>s2.textContent.includes((2290116+993558).toLocaleString('en-US'))), 'subtotal recomputed with new user value');
+  assert(sub2.some(s2=>s2.textContent.includes('cost of goods sold 993,558')), 'subtotal recomputed with new user value');
   assert(d.querySelectorAll('.en9-fb').length===1, 'exactly one filter bar (idempotent re-injection)');
   // regression: search index refreshed -> searching the NEW value finds the row
   const inp2=d.querySelector('.en9-fb .en9-search');

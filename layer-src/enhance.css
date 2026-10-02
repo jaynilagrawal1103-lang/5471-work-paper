@@ -333,3 +333,36 @@ button.en9-swapped{display:none}
    table's width set the column and cut the card off on tablet and phone.
    The column now follows the screen and the table scrolls in its own box. */
 .view-stack:has(>.en9-ocrset){grid-template-columns:minmax(0,1fr)}
+/* ===== v20: contrast (U39) — every grey used for text now meets 4.5:1 on the
+   app's near-white panels; tiny labels are at least 10.5px ===== */
+:root{--en9-muted:#4f5b6b;--teal:#0b6f66}
+.cap-where,.cap-where *,.cap-where .cap-file,.cap-val.alt,.run-state,.ref-cell,.muted-cell,.workflow-number,
+.lineage-flow i,.lineage-flow small,.source-hierarchy em,.source-hierarchy p,.lifecycle-strip i,.entity-chev,
+.wp-field em,.quota-explain dt,.issue-list small,.en9-kitem .en9-kk,.en9-kitem .en9-ksec,.en9-kfoot,.en9-kempty,
+.en9-metahide.en9-open small,.en9-pencil,.en9-noresult td,.en9-fpop-empty,.en9-auth-k,.en9-auth-empty,
+.en9-ocr-adv>summary::before,.en9-ocr-jobdet>summary::before,.en9-ag-flowsep,.en9-logbtn,
+.metric-grid em,.fact-row span,.mini-label,.hint,.section-kicker{color:var(--en9-muted)!important}
+.cap-valhead{color:#4f5b6b!important;font-size:10.5px!important}
+.run-state,.ref-cell,.lineage-flow small,.source-hierarchy em,.source-hierarchy p,.issue-list small,.en9-kitem .en9-kk{font-size:10.5px!important}
+.view-stack em{color:var(--en9-muted)}
+strong[style*="--teal"]{color:#0b6f66!important}
+/* ===== v20 components ===== */
+.en9-why{margin-top:3px;display:grid;gap:2px}
+.en9-why-line{font-size:11.5px;color:#334155;line-height:1.45}
+.en9-openpage,.en9-act{margin-left:8px;border:1px solid #c7d2fe;background:#eef2ff;color:#3730a3;border-radius:7px;padding:2px 8px;font-size:11.5px;font-weight:600;cursor:pointer}
+.en9-openpage:hover,.en9-act:hover{background:#e0e7ff}
+.en9-act{display:inline-block;margin-top:4px}
+.en9-target{outline:3px solid #6366f1;outline-offset:-2px;background:#eef2ff!important}
+.en9-bi{color:#1e3a8a;font-style:italic}
+.en9-apply{display:inline-flex;gap:6px;align-items:center;margin-left:6px;flex-wrap:wrap}
+.en9-apply .button{padding:3px 10px;font-size:12px}
+.en9-remember{font-size:12px;color:#334155;display:inline-flex;gap:4px;align-items:center;margin-right:8px}
+.en9-undobar{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:2147483000;display:flex;gap:10px;align-items:center;background:#0f172a;color:#fff;border-radius:10px;padding:10px 14px;box-shadow:0 8px 24px rgba(15,23,42,.3);font-size:13px;max-width:calc(100vw - 32px)}
+.en9-undobar .button{padding:4px 12px;font-size:12px}
+.en9-policy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px 18px;margin-top:8px}
+.en9-policy-row{display:grid;gap:4px;font-size:12.5px;color:#1e293b;font-weight:600}
+.en9-policy-row select{font-weight:400;font-size:12.5px;padding:5px 8px;border:1px solid #cbd5e1;border-radius:7px;max-width:100%}
+[role=button][tabindex]:focus-visible,.en9-target:focus{outline:3px solid #6366f1;outline-offset:2px}
+@media (prefers-reduced-motion: reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+.en9-sr{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
